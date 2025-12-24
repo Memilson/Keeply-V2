@@ -1,0 +1,5 @@
+{"ts":"2025-12-24T23:26:21.464523700Z","lvl":"INFO","ctx":"Benchmark","msg":"Benchmark started","workers":16,"root":"C:\\c\\Users\\angel\\OneDrive - Olegario Marinho\\Documentos\\GitHub\\Keeply\\--benchmark-c","preload_index_max_rows":2000000,"hash_max_bytes":209715200}
+{"ts":"2025-12-24T23:26:21.477078400Z","lvl":"INFO","ctx":"Orchestrator","msg":"Scan started","root":"C:\\c\\Users\\angel\\OneDrive - Olegario Marinho\\Documentos\\GitHub\\Keeply\\--benchmark-c","scan_id":1}
+{"ts":"2025-12-24T23:26:21.496453200Z","lvl":"INFO","ctx":"Orchestrator","msg":"Scan completed","files_total":0,"issues_dropped":0,"errs_walk":1,"deleted":0,"duration_sec":0,"db_retries":0,"errs_hash":0,"scan_id":1}
+
+--- Ignore Statistics ---
