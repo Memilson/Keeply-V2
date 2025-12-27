@@ -5,3 +5,6 @@ target/
 
 # Ignorar banco de dados SQLite
 Sqlite/
+
+# Keeply test sandbox (gerado automaticamente)
+sandbox/

@@ -18,14 +18,17 @@ import java.util.concurrent.atomic.LongAdder;
 import java.util.HexFormat;
 
 /**
- * LeitorDeArquivos (Incremental + Observability)
+ * LeitorDeArquivos (Incremental + Snapshot + Histórico + Issues + Summary)
  *
- * Principais correções:
- * 1) Snapshot real: deletados são removidos de file_state (não ficam “fantasmas”).
- * 2) Incremental fino: UNCHANGED -> TOUCH (update só do last_scan_id), evitando UPSERT gigante no WAL.
- * 3) MOVED: detecta mudança de caminho (path_id/full_path) mesmo com FILE_KEY.
- * 4) scan_issue: persiste erros por stage (WALK/HASH/DB/IGNORE) com path e mensagem.
- * 5) Ignorados: contagem por glob/rule (sem custo enorme).
+ * Melhorias aplicadas:
+ * - Snapshot puro: deletados removidos do file_state (sem fantasmas).
+ * - Incremental fino: UNCHANGED => TOUCH (update só do last_scan_id).
+ * - Status de hash explícito (hash_status) em file_state.
+ * - scan_summary (1 linha por scan) para "timelapse" sem inflar banco.
+ * - Índice híbrido: Map em RAM + lookup sob demanda no SQLite com cache LRU.
+ *   (Workers usam conexões read-only próprias; writer usa 1 conexão write).
+ * - Erros por stage (WALK/HASH/DB/IGNORE) com queue não-bloqueante (best-effort).
+ * - Métricas honestas: Scan MB/s (metadados) vs Hash MB/s (bytes lidos).
  *
  * Requisitos:
  * - Java 21+
@@ -102,10 +105,32 @@ public class leitorDeArquivos {
         return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
     }
 
+    // helper to build small maps from alternating key,value pairs (avoids Map.of arity limits)
+    static Map<String, Object> kv(Object... pairs) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < pairs.length; i += 2) {
+            m.put(String.valueOf(pairs[i]), pairs[i + 1]);
+        }
+        return Map.copyOf(m);
+    }
+
+    static boolean isWindows() {
+        String os = System.getProperty("os.name", "unknown").toLowerCase(Locale.ROOT);
+        return os.contains("win");
+    }
+
     // ==================================================================================
     // 1) DOMAIN
     // ==================================================================================
     public enum Stage { WALK, HASH, DB, IGNORE }
+
+    public enum HashStatus {
+        NONE,          // não tinha hash anterior e não calculou agora (ex.: SKIPPED_SIZE, DISABLED)
+        OK,            // calculou hash com sucesso
+        SKIPPED_SIZE,  // pulou por tamanho
+        DISABLED,      // hash desligado
+        FAILED         // tentou e falhou
+    }
 
     public enum FileStatus {
         NEW,
@@ -135,40 +160,31 @@ public class leitorDeArquivos {
             long sizeBytes,
             String createdAt,
             String modifiedAt,
-            String fileKey,         // attrs.fileKey() string
-            String identityType,    // "FILE_KEY" or "PATH"
-            String identityValue    // fileKey string or fullPath
+            String fileKey,
+            String identityType,
+            String identityValue
     ) {}
 
-    /**
-     * O que carregamos do snapshot (file_state + path.full_path)
-     * - pathId + knownPath: essencial pra detectar MOVED (renomeio/move).
-     */
     public record PrevInfo(
             long pathId,
             String knownPath,
             long sizeBytes,
             String modifiedAt,
             String contentHash,
-            String contentAlgo
+            String contentAlgo,
+            String hashStatus
     ) {}
 
-    /**
-     * Resultado final do Worker -> Writer
-     * - status define a estratégia no DB: TOUCH vs UPSERT.
-     */
     public record FileResult(
             FileMeta meta,
             FileStatus status,
             String contentAlgo,
             String contentHash,
+            HashStatus hashStatus,
             String reason,
             boolean poison
     ) {}
 
-    /**
-     * Rule compilada (glob -> PathMatcher) com contador.
-     */
     static final class ExcludeRule {
         final String glob;
         final PathMatcher matcher;
@@ -194,13 +210,15 @@ public class leitorDeArquivos {
             long dbRetryBaseMs,
             int dbMaxRetries,
             long writerPollSleepMs,
-            long issueOfferTimeoutMs
+            long issueOfferTimeoutMs,
+            int lruCacheSize,
+            boolean enableDbLookupOnMiss
     ) {
         public static Builder builder() { return new Builder(); }
 
         public static class Builder {
             private int workers = Math.max(2, Runtime.getRuntime().availableProcessors());
-            private int queueCapacity = 10_000;
+            private int queueCapacity = 15_000;
             private int batchLimit = 2_000;
             private boolean computeHash = true;
             private long hashMaxBytes = 200L * 1024 * 1024; // 200MB
@@ -211,6 +229,9 @@ public class leitorDeArquivos {
             private int dbMaxRetries = 6;
             private long writerPollSleepMs = 8;
             private long issueOfferTimeoutMs = 50;
+
+            private int lruCacheSize = 120_000;
+            private boolean enableDbLookupOnMiss = true;
 
             public Builder workers(int v) { this.workers = v; return this; }
             public Builder queueCapacity(int v) { this.queueCapacity = v; return this; }
@@ -223,6 +244,10 @@ public class leitorDeArquivos {
             public Builder dbMaxRetries(int v) { this.dbMaxRetries = v; return this; }
             public Builder writerPollSleepMs(long v) { this.writerPollSleepMs = v; return this; }
             public Builder issueOfferTimeoutMs(long v) { this.issueOfferTimeoutMs = v; return this; }
+
+            public Builder lruCacheSize(int v) { this.lruCacheSize = v; return this; }
+            public Builder enableDbLookupOnMiss(boolean v) { this.enableDbLookupOnMiss = v; return this; }
+
             public Builder addExclude(String glob) { this.excludes.add(glob); return this; }
 
             public ScanConfig build() {
@@ -231,14 +256,15 @@ public class leitorDeArquivos {
                         computeHash, hashMaxBytes,
                         followLinks, List.copyOf(excludes),
                         preloadIndexMaxRows, dbRetryBaseMs, dbMaxRetries,
-                        writerPollSleepMs, issueOfferTimeoutMs
+                        writerPollSleepMs, issueOfferTimeoutMs,
+                        lruCacheSize, enableDbLookupOnMiss
                 );
             }
         }
     }
 
     // ==================================================================================
-    // 3) METRICS
+    // 3) METRICS (inclui contadores por status)
     // ==================================================================================
     static class ScanMetrics {
         final LongAdder filesScanned = new LongAdder();
@@ -246,6 +272,9 @@ public class leitorDeArquivos {
         final LongAdder filesHashed = new LongAdder();
         final LongAdder bytesScanned = new LongAdder();
         final LongAdder bytesHashed = new LongAdder();
+        final LongAdder dirsVisited = new LongAdder();
+        final LongAdder dirsFailed = new LongAdder();
+        final LongAdder dirsSkipped = new LongAdder();
 
         final LongAdder errorsWalk = new LongAdder();
         final LongAdder errorsHash = new LongAdder();
@@ -255,6 +284,19 @@ public class leitorDeArquivos {
 
         final LongAdder dbRetries = new LongAdder();
         final LongAdder issuesDropped = new LongAdder();
+
+        // Summary counts
+        final LongAdder sNew = new LongAdder();
+        final LongAdder sModified = new LongAdder();
+        final LongAdder sMoved = new LongAdder();
+        final LongAdder sUnchanged = new LongAdder();
+        final LongAdder sHashFailed = new LongAdder();
+        final LongAdder sSkippedSize = new LongAdder();
+        final LongAdder sSkippedDisabled = new LongAdder();
+        final LongAdder deletions = new LongAdder();
+
+        final LongAdder dbLookupHits = new LongAdder();
+        final LongAdder dbLookupMiss = new LongAdder();
 
         final Instant start = Instant.now();
         private final AtomicBoolean running = new AtomicBoolean(true);
@@ -319,49 +361,161 @@ public class leitorDeArquivos {
     }
 
     // ==================================================================================
-    // 4) FILE PROCESSOR (Worker brain)
+    // 4) INDEX LOOKUP (Hybrid: Memory + DB + LRU)
+    // ==================================================================================
+    interface IndexLookup {
+        PrevInfo get(String key);
+        boolean isTruncated();
+    }
+
+    static final class LruCache<K,V> extends LinkedHashMap<K,V> {
+        private final int max;
+        LruCache(int max) { super(16, 0.75f, true); this.max = max; }
+        @Override protected boolean removeEldestEntry(Map.Entry<K, V> eldest) { return size() > max; }
+    }
+
+    static final class HybridIndexLookup implements IndexLookup {
+        private final Map<String, PrevInfo> mem;
+        private final boolean truncated;
+        private final ScanConfig cfg;
+        private final ScanMetrics metrics;
+        private final String dbUrl;
+        private final String rootPath;
+
+        // LRU per worker thread (evita lock no map global)
+        private final ThreadLocal<Map<String, PrevInfo>> lruLocal;
+        private final ThreadLocal<Connection> roConn;
+        private final ThreadLocal<PreparedStatement> psLookup;
+
+        HybridIndexLookup(Map<String, PrevInfo> mem,
+                          boolean truncated,
+                          ScanConfig cfg,
+                          ScanMetrics metrics,
+                          String dbUrl,
+                          String rootPath) {
+            this.mem = mem;
+            this.truncated = truncated;
+            this.cfg = cfg;
+            this.metrics = metrics;
+            this.dbUrl = dbUrl;
+            this.rootPath = rootPath;
+
+            this.lruLocal = ThreadLocal.withInitial(() -> Collections.synchronizedMap(new LruCache<>(cfg.lruCacheSize())));
+
+            this.roConn = ThreadLocal.withInitial(() -> {
+                try {
+                    Connection c = DriverManager.getConnection(dbUrl);
+                    c.setReadOnly(true);
+                    c.setAutoCommit(true);
+                    try (Statement st = c.createStatement()) {
+                        st.execute("PRAGMA busy_timeout=5000;");
+                        st.execute("PRAGMA foreign_keys=ON;");
+                    }
+                    return c;
+                } catch (SQLException e) {
+                    throw new RuntimeException("Failed to open read-only sqlite connection: " + e.getMessage(), e);
+                }
+            });
+
+            this.psLookup = ThreadLocal.withInitial(() -> {
+                try {
+                    Connection c = roConn.get();
+                    return c.prepareStatement("""
+                        SELECT fs.path_id, p.full_path,
+                               fs.size_bytes, fs.modified_at, fs.content_hash, fs.content_algo, fs.hash_status
+                        FROM file_state fs
+                        JOIN path p ON p.id = fs.path_id
+                        WHERE fs.root_path=? AND fs.identity_type=? AND fs.identity_value=?
+                        LIMIT 1
+                    """);
+                } catch (SQLException e) {
+                    throw new RuntimeException("Failed to prepare lookup statement: " + e.getMessage(), e);
+                }
+            });
+        }
+
+        @Override
+        public PrevInfo get(String key) {
+            PrevInfo p = mem.get(key);
+            if (p != null) return p;
+
+            if (!cfg.enableDbLookupOnMiss()) return null;
+
+            // LRU
+            PrevInfo cached = lruLocal.get().get(key);
+            if (cached != null) {
+                metrics.dbLookupHits.increment();
+                return cached;
+            }
+
+            // DB lookup on miss
+            String[] parts = key.split(":", 2);
+            if (parts.length != 2) return null;
+            String it = parts[0];
+            String iv = parts[1];
+
+            try {
+                PreparedStatement ps = psLookup.get();
+                ps.setString(1, rootPath);
+                ps.setString(2, it);
+                ps.setString(3, iv);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        PrevInfo pi = new PrevInfo(
+                                rs.getLong(1),
+                                rs.getString(2),
+                                rs.getLong(3),
+                                rs.getString(4),
+                                rs.getString(5),
+                                rs.getString(6),
+                                rs.getString(7)
+                        );
+                        lruLocal.get().put(key, pi);
+                        metrics.dbLookupHits.increment();
+                        return pi;
+                    }
+                }
+                metrics.dbLookupMiss.increment();
+                return null;
+            } catch (SQLException e) {
+                // best-effort: se lookup falhar, trata como null
+                return null;
+            }
+        }
+
+        @Override public boolean isTruncated() { return truncated; }
+
+        void closeThreadLocals() {
+            // opcional: deixar o GC fechar, mas se quiser chamar manualmente no final do worker:
+            try { PreparedStatement ps = psLookup.get(); ps.close(); } catch (Exception ignored) {}
+            try { Connection c = roConn.get(); c.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    // ==================================================================================
+    // 5) FILE PROCESSOR (Worker brain)
     // ==================================================================================
     static final class FileProcessor {
         private final ScanConfig cfg;
-        private final Map<String, PrevInfo> index;
+        private final IndexLookup index;
         private final ScanMetrics metrics;
 
-        FileProcessor(ScanConfig cfg, Map<String, PrevInfo> index, ScanMetrics metrics) {
+        FileProcessor(ScanConfig cfg, IndexLookup index, ScanMetrics metrics) {
             this.cfg = cfg;
             this.index = index;
             this.metrics = metrics;
         }
 
-        /**
-         * Processa meta + prev e decide status/hash.
-         * - MOVED: compara knownPath (case-insensitive no Windows).
-         * - MODIFIED: size/mtime mudou.
-         * - UNCHANGED: tudo igual.
-         */
         FileResult process(FileMeta current) {
             String key = current.identityType() + ":" + current.identityValue();
             PrevInfo prev = index.get(key);
 
-            // Default
-            FileStatus status;
-            String algo = null;
-            String hash = null;
-            String reason = null;
-
+            // NEW
             if (prev == null) {
-                // NEW
-                status = FileStatus.NEW;
-                reason = "NEW_FILE";
-
                 HashOutcome ho = maybeHash(current);
-                algo = ho.algo;
-                hash = ho.hash;
-
-                if (ho.statusOverride != null) {
-                    status = ho.statusOverride;
-                    reason = ho.reasonOverride;
-                }
-                return new FileResult(current, status, algo, hash, reason, false);
+                FileStatus st = ho.statusOverride != null ? ho.statusOverride : FileStatus.NEW;
+                trackStatus(st);
+                return new FileResult(current, st, ho.algo, ho.hash, ho.hashStatus, ho.reasonOverride != null ? ho.reasonOverride : "NEW_FILE", false);
             }
 
             boolean metaChanged = prev.sizeBytes() != current.sizeBytes()
@@ -371,71 +525,75 @@ public class leitorDeArquivos {
                     && !prev.knownPath().equalsIgnoreCase(current.fullPath());
 
             if (metaChanged) {
-                status = FileStatus.MODIFIED;
-                reason = "META_CHANGED";
-
-                // Se meta mudou, hash antigo não é confiável. Se não for hashear, mantém null.
                 HashOutcome ho = maybeHash(current);
-                algo = ho.algo;
-                hash = ho.hash;
-
-                if (ho.statusOverride != null) {
-                    status = ho.statusOverride;
-                    reason = ho.reasonOverride;
-                }
-                return new FileResult(current, status, algo, hash, reason, false);
+                FileStatus st = ho.statusOverride != null ? ho.statusOverride : FileStatus.MODIFIED;
+                trackStatus(st);
+                return new FileResult(current, st, ho.algo, ho.hash, ho.hashStatus, ho.reasonOverride != null ? ho.reasonOverride : "META_CHANGED", false);
             }
 
             if (pathChanged) {
-                // MOVED: reaproveita hash antigo (conteúdo não mudou) e atualiza path_id no snapshot
-                status = FileStatus.MOVED;
-                reason = "PATH_CHANGED";
-                algo = prev.contentAlgo();
-                hash = prev.contentHash();
-                return new FileResult(current, status, algo, hash, reason, false);
+                // MOVED: conteúdo igual => reaproveita hash anterior
+                trackStatus(FileStatus.MOVED);
+                HashStatus hs = parseHashStatus(prev.hashStatus());
+                return new FileResult(current, FileStatus.MOVED, prev.contentAlgo(), prev.contentHash(), hs, "PATH_CHANGED", false);
             }
 
-            // UNCHANGED
-            status = FileStatus.UNCHANGED;
-            algo = prev.contentAlgo();
-            hash = prev.contentHash();
-            return new FileResult(current, status, algo, hash, null, false);
+            // UNCHANGED: touch only
+            trackStatus(FileStatus.UNCHANGED);
+            HashStatus hs = parseHashStatus(prev.hashStatus());
+            return new FileResult(current, FileStatus.UNCHANGED, prev.contentAlgo(), prev.contentHash(), hs, null, false);
         }
 
-        record HashOutcome(String algo, String hash, FileStatus statusOverride, String reasonOverride) {}
+        private void trackStatus(FileStatus st) {
+            switch (st) {
+                case NEW -> metrics.sNew.increment();
+                case MODIFIED -> metrics.sModified.increment();
+                case MOVED -> metrics.sMoved.increment();
+                case UNCHANGED -> metrics.sUnchanged.increment();
+                case HASH_FAILED -> metrics.sHashFailed.increment();
+                case SKIPPED_SIZE -> metrics.sSkippedSize.increment();
+                case SKIPPED_DISABLED -> metrics.sSkippedDisabled.increment();
+            }
+        }
+
+        record HashOutcome(String algo, String hash, HashStatus hashStatus, FileStatus statusOverride, String reasonOverride) {}
 
         private HashOutcome maybeHash(FileMeta m) {
             if (!cfg.computeHash()) {
                 metrics.skippedDisabled.increment();
-                return new HashOutcome(null, null, FileStatus.SKIPPED_DISABLED, "HASH_DISABLED");
+                return new HashOutcome(null, null, HashStatus.DISABLED, FileStatus.SKIPPED_DISABLED, "HASH_DISABLED");
             }
             if (cfg.hashMaxBytes() > 0 && m.sizeBytes() > cfg.hashMaxBytes()) {
                 metrics.skippedSize.increment();
-                return new HashOutcome(null, null, FileStatus.SKIPPED_SIZE, "TOO_LARGE");
+                return new HashOutcome(null, null, HashStatus.SKIPPED_SIZE, FileStatus.SKIPPED_SIZE, "TOO_LARGE");
             }
 
             try {
                 HashResult hr = calculateHashSha256(Path.of(m.fullPath()));
                 metrics.filesHashed.increment();
                 metrics.bytesHashed.add(hr.bytesRead);
-                return new HashOutcome("SHA-256", hr.hex, null, null);
+                return new HashOutcome("SHA-256", hr.hex, HashStatus.OK, null, null);
             } catch (IOException e) {
                 metrics.errorsHash.increment();
-                // Quem chama (worker) é que vai registrar ScanIssue (pra ter path/identidade)
-                return new HashOutcome(null, null, FileStatus.HASH_FAILED, "HASH_IO_FAIL");
+                return new HashOutcome(null, null, HashStatus.FAILED, FileStatus.HASH_FAILED, "HASH_IO_FAIL");
             }
+        }
+
+        private HashStatus parseHashStatus(String s) {
+            if (s == null) return HashStatus.NONE;
+            try { return HashStatus.valueOf(s); }
+            catch (Exception e) { return HashStatus.NONE; }
         }
     }
 
     // ==================================================================================
-    // 5) DB ADAPTER (Single-writer)
+    // 6) DB ADAPTER (Single-writer)
     // ==================================================================================
     static final class DbAdapter implements AutoCloseable {
         private final Connection conn;
         private final ScanConfig cfg;
         private final ScanMetrics metrics;
 
-        // Prepared statements
         private final PreparedStatement psPathUpsert;
         private final PreparedStatement psPathSelect;
 
@@ -446,6 +604,8 @@ public class leitorDeArquivos {
 
         private final PreparedStatement psChangeLog;
         private final PreparedStatement psIssueInsert;
+
+        private final PreparedStatement psSummaryUpsert;
 
         private final Map<String, Long> pathCache = new HashMap<>();
         private final List<FileResult> fileBatch = new ArrayList<>();
@@ -474,8 +634,8 @@ public class leitorDeArquivos {
             psFileStateUpsert = conn.prepareStatement("""
                 INSERT INTO file_state(root_path, identity_type, identity_value,
                                        path_id, name, size_bytes, created_at, modified_at,
-                                       file_key, content_algo, content_hash, last_scan_id)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                                       file_key, content_algo, content_hash, hash_status, last_scan_id)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(root_path, identity_type, identity_value) DO UPDATE SET
                     path_id      = excluded.path_id,
                     name         = excluded.name,
@@ -485,10 +645,10 @@ public class leitorDeArquivos {
                     file_key     = excluded.file_key,
                     content_algo = excluded.content_algo,
                     content_hash = excluded.content_hash,
+                    hash_status  = excluded.hash_status,
                     last_scan_id = excluded.last_scan_id
             """);
 
-            // OTIMIZAÇÃO: touch-only para UNCHANGED
             psTouch = conn.prepareStatement("""
                 UPDATE file_state
                 SET last_scan_id = ?
@@ -507,15 +667,64 @@ public class leitorDeArquivos {
                                        error_type, message, rule, created_at)
                 VALUES(?,?,?,?,?,?,?,?,?)
             """);
+
+            psSummaryUpsert = conn.prepareStatement("""
+                INSERT INTO scan_summary(scan_id, root_path, started_at, finished_at,
+                                         files_total, bytes_scanned, bytes_hashed,
+                                         new_count, modified_count, moved_count, unchanged_count, deleted_count,
+                                         walk_errors, hash_errors, skipped_size, skipped_disabled,
+                                         db_retries, issues_dropped, db_lookup_hits, db_lookup_miss)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(scan_id) DO UPDATE SET
+                    finished_at=excluded.finished_at,
+                    files_total=excluded.files_total,
+                    bytes_scanned=excluded.bytes_scanned,
+                    bytes_hashed=excluded.bytes_hashed,
+                    new_count=excluded.new_count,
+                    modified_count=excluded.modified_count,
+                    moved_count=excluded.moved_count,
+                    unchanged_count=excluded.unchanged_count,
+                    deleted_count=excluded.deleted_count,
+                    walk_errors=excluded.walk_errors,
+                    hash_errors=excluded.hash_errors,
+                    skipped_size=excluded.skipped_size,
+                    skipped_disabled=excluded.skipped_disabled,
+                    db_retries=excluded.db_retries,
+                    issues_dropped=excluded.issues_dropped,
+                    db_lookup_hits=excluded.db_lookup_hits,
+                    db_lookup_miss=excluded.db_lookup_miss
+            """);
         }
 
         static void executePragmas(Connection conn) throws SQLException {
-            try (Statement st = conn.createStatement()) {
-                st.execute("PRAGMA journal_mode=WAL;");
-                st.execute("PRAGMA synchronous=NORMAL;");
-                st.execute("PRAGMA busy_timeout=5000;");
-                st.execute("PRAGMA foreign_keys=ON;");
-            }
+                boolean prevAuto = true;
+                try {
+                    try {
+                        prevAuto = conn.getAutoCommit();
+                    } catch (Exception ignored) {}
+
+                    if (!prevAuto) {
+                        try { conn.commit(); } catch (Exception ignored) {}
+                        try { conn.setAutoCommit(true); } catch (Exception ignored) {}
+                    }
+
+                    try (Statement st = conn.createStatement()) {
+                        try {
+                            st.execute("PRAGMA journal_mode=WAL;");
+                        } catch (SQLException e) {
+                            String msg = e.getMessage() != null ? e.getMessage() : "";
+                            if (!msg.toLowerCase(Locale.ROOT).contains("safety")) throw e;
+                            // ignore safety-level change errors (cannot switch journal mode inside transaction)
+                        }
+                        try { st.execute("PRAGMA synchronous=NORMAL;"); } catch (SQLException ignored) {}
+                        try { st.execute("PRAGMA busy_timeout=5000;"); } catch (SQLException ignored) {}
+                        try { st.execute("PRAGMA foreign_keys=ON;"); } catch (SQLException ignored) {}
+                    }
+                } finally {
+                    if (!prevAuto) {
+                        try { conn.setAutoCommit(false); } catch (Exception ignored) {}
+                    }
+                }
         }
 
         void addFile(FileResult r, long scanId) throws SQLException {
@@ -572,7 +781,6 @@ public class leitorDeArquivos {
             for (FileResult res : items) {
                 if (res.poison()) continue;
 
-                // TOUCH para UNCHANGED
                 if (res.status() == FileStatus.UNCHANGED) {
                     psTouch.setLong(1, scanId);
                     psTouch.setString(2, res.meta().rootPath());
@@ -582,10 +790,8 @@ public class leitorDeArquivos {
                     continue;
                 }
 
-                // UPSERT completo: NEW/MODIFIED/MOVED/HASH_FAILED/SKIPPED_*
                 long pathId = getOrCreatePathId(res.meta().fullPath());
 
-                // content (só se tiver hash)
                 if (res.contentAlgo() != null && res.contentHash() != null) {
                     psContentUpsert.setString(1, res.contentAlgo());
                     psContentUpsert.setString(2, res.contentHash());
@@ -604,10 +810,11 @@ public class leitorDeArquivos {
                 psFileStateUpsert.setString(9, res.meta().fileKey());
                 psFileStateUpsert.setString(10, res.contentAlgo());
                 psFileStateUpsert.setString(11, res.contentHash());
-                psFileStateUpsert.setLong(12, scanId);
+                psFileStateUpsert.setString(12, res.hashStatus() != null ? res.hashStatus().name() : HashStatus.NONE.name());
+                psFileStateUpsert.setLong(13, scanId);
                 psFileStateUpsert.addBatch();
 
-                // Histórico: tudo que não é UNCHANGED (economia + auditoria)
+                // Histórico: tudo que não é UNCHANGED
                 psChangeLog.setString(1, res.meta().rootPath());
                 psChangeLog.setString(2, res.meta().identityType());
                 psChangeLog.setString(3, res.meta().identityValue());
@@ -626,6 +833,38 @@ public class leitorDeArquivos {
             psChangeLog.executeBatch();
         }
 
+        void upsertSummary(long scanId, String rootPath, String startedAt, String finishedAt) throws SQLException {
+            runWithRetry(() -> {
+                psSummaryUpsert.setLong(1, scanId);
+                psSummaryUpsert.setString(2, rootPath);
+                psSummaryUpsert.setString(3, startedAt);
+                psSummaryUpsert.setString(4, finishedAt);
+
+                psSummaryUpsert.setLong(5, metrics.filesScanned.sum());
+                psSummaryUpsert.setLong(6, metrics.bytesScanned.sum());
+                psSummaryUpsert.setLong(7, metrics.bytesHashed.sum());
+
+                psSummaryUpsert.setLong(8, metrics.sNew.sum());
+                psSummaryUpsert.setLong(9, metrics.sModified.sum());
+                psSummaryUpsert.setLong(10, metrics.sMoved.sum());
+                psSummaryUpsert.setLong(11, metrics.sUnchanged.sum());
+                psSummaryUpsert.setLong(12, metrics.deletions.sum());
+
+                psSummaryUpsert.setLong(13, metrics.errorsWalk.sum());
+                psSummaryUpsert.setLong(14, metrics.errorsHash.sum());
+                psSummaryUpsert.setLong(15, metrics.skippedSize.sum());
+                psSummaryUpsert.setLong(16, metrics.skippedDisabled.sum());
+
+                psSummaryUpsert.setLong(17, metrics.dbRetries.sum());
+                psSummaryUpsert.setLong(18, metrics.issuesDropped.sum());
+                psSummaryUpsert.setLong(19, metrics.dbLookupHits.sum());
+                psSummaryUpsert.setLong(20, metrics.dbLookupMiss.sum());
+
+                psSummaryUpsert.executeUpdate();
+                conn.commit();
+            });
+        }
+
         private long getOrCreatePathId(String fullPath) throws SQLException {
             Long cached = pathCache.get(fullPath);
             if (cached != null) return cached;
@@ -637,7 +876,7 @@ public class leitorDeArquivos {
             try (ResultSet rs = psPathSelect.executeQuery()) {
                 if (rs.next()) {
                     long id = rs.getLong(1);
-                    if (pathCache.size() < 100_000) pathCache.put(fullPath, id);
+                    if (pathCache.size() < 120_000) pathCache.put(fullPath, id);
                     return id;
                 }
             }
@@ -674,11 +913,12 @@ public class leitorDeArquivos {
             psTouch.close();
             psChangeLog.close();
             psIssueInsert.close();
+            psSummaryUpsert.close();
         }
     }
 
     // ==================================================================================
-    // 6) SCHEMA + SCAN ROWS
+    // 7) SCHEMA + SCAN ROWS
     // ==================================================================================
     static void initSchema(Connection conn) throws SQLException {
         List<String> ddl = List.of(
@@ -719,6 +959,7 @@ public class leitorDeArquivos {
                   file_key TEXT,
                   content_algo TEXT,
                   content_hash TEXT,
+                  hash_status TEXT,
                   last_scan_id INTEGER,
                   PRIMARY KEY(root_path, identity_type, identity_value),
                   FOREIGN KEY(path_id) REFERENCES path(id)
@@ -752,16 +993,39 @@ public class leitorDeArquivos {
                   created_at TEXT
                 )
                 """,
+                """
+                CREATE TABLE IF NOT EXISTS scan_summary (
+                  scan_id INTEGER PRIMARY KEY,
+                  root_path TEXT,
+                  started_at TEXT,
+                  finished_at TEXT,
+                  files_total INTEGER,
+                  bytes_scanned INTEGER,
+                  bytes_hashed INTEGER,
+                  new_count INTEGER,
+                  modified_count INTEGER,
+                  moved_count INTEGER,
+                  unchanged_count INTEGER,
+                  deleted_count INTEGER,
+                  walk_errors INTEGER,
+                  hash_errors INTEGER,
+                  skipped_size INTEGER,
+                  skipped_disabled INTEGER,
+                  db_retries INTEGER,
+                  issues_dropped INTEGER,
+                  db_lookup_hits INTEGER,
+                  db_lookup_miss INTEGER
+                )
+                """,
                 "CREATE INDEX IF NOT EXISTS idx_file_state_root_lastscan ON file_state(root_path, last_scan_id)",
                 "CREATE INDEX IF NOT EXISTS idx_issue_scan_stage ON scan_issue(scan_id, stage)",
+                "CREATE INDEX IF NOT EXISTS idx_change_scan ON file_change(scan_id)",
                 "CREATE INDEX IF NOT EXISTS idx_path_full ON path(full_path)",
                 "CREATE INDEX IF NOT EXISTS idx_file_state_path ON file_state(path_id)"
         );
 
         try (Statement st = conn.createStatement()) {
-            for (String sql : ddl) {
-                st.execute(sql);
-            }
+            for (String sql : ddl) st.execute(sql);
         }
     }
 
@@ -780,6 +1044,16 @@ public class leitorDeArquivos {
         }
     }
 
+    static String getScanStartedAt(Connection conn, long scanId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT started_at FROM scan WHERE id=?")) {
+            ps.setLong(1, scanId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getString(1);
+            }
+        }
+        return Instant.now().toString();
+    }
+
     static void finishScan(Connection conn, long id, String status, String error) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
                 "UPDATE scan SET finished_at=?, status=?, error_message=? WHERE id=?"
@@ -792,12 +1066,6 @@ public class leitorDeArquivos {
         }
     }
 
-    /**
-     * Load index (snapshot) em memória.
-     * IMPORTANTE:
-     * - Se bater no LIMIT, o índice fica truncado -> deletions ficam perigosas.
-     * - Por isso retornamos um flag "truncated".
-     */
     static final class LoadedIndex {
         final Map<String, PrevInfo> map;
         final boolean truncated;
@@ -808,11 +1076,10 @@ public class leitorDeArquivos {
         Map<String, PrevInfo> idx = new HashMap<>();
         boolean truncated = false;
 
-        // Join com path pra trazer knownPath
         try (PreparedStatement ps = conn.prepareStatement("""
             SELECT fs.identity_type, fs.identity_value,
                    fs.path_id, p.full_path,
-                   fs.size_bytes, fs.modified_at, fs.content_hash, fs.content_algo
+                   fs.size_bytes, fs.modified_at, fs.content_hash, fs.content_algo, fs.hash_status
             FROM file_state fs
             JOIN path p ON p.id = fs.path_id
             WHERE fs.root_path=?
@@ -821,8 +1088,8 @@ public class leitorDeArquivos {
             ps.setString(1, rootPath);
             ps.setLong(2, maxRows);
 
+            long count = 0;
             try (ResultSet rs = ps.executeQuery()) {
-                long count = 0;
                 while (rs.next()) {
                     String it = rs.getString(1);
                     String iv = rs.getString(2);
@@ -832,23 +1099,20 @@ public class leitorDeArquivos {
                     String modAt = rs.getString(6);
                     String hash = rs.getString(7);
                     String algo = rs.getString(8);
+                    String hs = rs.getString(9);
 
-                    idx.put(it + ":" + iv, new PrevInfo(pathId, knownPath, size, modAt, hash, algo));
+                    idx.put(it + ":" + iv, new PrevInfo(pathId, knownPath, size, modAt, hash, algo, hs));
                     count++;
                 }
-                if (count >= maxRows) truncated = true;
             }
+            if (count >= maxRows) truncated = true;
         }
         return new LoadedIndex(idx, truncated);
     }
 
-    /**
-     * DELETED:
-     * 1) registra em file_change
-     * 2) REMOVE do snapshot file_state (snapshot “puro”)
-     */
     static int handleDeletions(Connection conn, long scanId, String rootPath) throws SQLException {
         int deletedCount;
+
         try (PreparedStatement ps = conn.prepareStatement("""
             INSERT INTO file_change(root_path, identity_type, identity_value, scan_id, size_bytes, modified_at, content_algo, content_hash, reason)
             SELECT root_path, identity_type, identity_value, ?, size_bytes, modified_at, content_algo, content_hash, 'DELETED'
@@ -875,43 +1139,57 @@ public class leitorDeArquivos {
     }
 
     // ==================================================================================
-    // 7) ENGINE (Orchestrator)
+    // 8) ENGINE (Orchestrator)
     // ==================================================================================
-    public static void runScan(Connection conn, Path root, ScanConfig cfg) throws Exception {
+    public static void runScan(String dbUrl, Connection writerConn, Path root, ScanConfig cfg) throws Exception {
         ScanMetrics metrics = new ScanMetrics();
+        initSchema(writerConn);
 
-        initSchema(conn);
+        Path rootAbs = root.toAbsolutePath().normalize();
+        String rootPath = rootAbs.toString();
 
-        String rootPath = root.toAbsolutePath().normalize().toString();
-        long scanId = startScan(conn, rootPath);
-
-        logJson("Benchmark", "INFO", "Benchmark started", Map.of(
+        // validações (inclui "caminho com espaço" -> orientação)
+        if (!Files.exists(rootAbs)) {
+            logJson("Orchestrator", "ERROR", "Root path does not exist", kv(
                 "root", rootPath,
-                "hash_max_bytes", cfg.hashMaxBytes(),
-                "preload_index_max_rows", cfg.preloadIndexMaxRows(),
-                "workers", cfg.workers()
+                "hint", "Se o caminho tiver espaço, use aspas no terminal: \"C:\\\\Games\\\\Fall Guys\""
+            ));
+            return;
+        }
+
+        long scanId = startScan(writerConn, rootPath);
+        String startedAt = getScanStartedAt(writerConn, scanId);
+
+        logJson("Benchmark", "INFO", "Benchmark started", kv(
+            "root", rootPath,
+            "db", dbUrl,
+            "os", System.getProperty("os.name"),
+            "hash_max_bytes", cfg.hashMaxBytes(),
+            "preload_index_max_rows", cfg.preloadIndexMaxRows(),
+            "workers", cfg.workers()
         ));
 
-        LoadedIndex loaded = loadIndex(conn, rootPath, cfg.preloadIndexMaxRows());
-        Map<String, PrevInfo> index = loaded.map;
+        LoadedIndex loaded = loadIndex(writerConn, rootPath, cfg.preloadIndexMaxRows());
+        HybridIndexLookup index = new HybridIndexLookup(loaded.map, loaded.truncated, cfg, metrics, dbUrl, rootPath);
 
-        long estimate = Math.max(1000, index.size());
+        long estimate = Math.max(1000, loaded.map.size());
         metrics.startReporter(estimate);
 
         List<ExcludeRule> rules = cfg.excludes().stream().map(ExcludeRule::new).toList();
 
         BlockingQueue<FileMeta> inQ = new ArrayBlockingQueue<>(cfg.queueCapacity());
         BlockingQueue<FileResult> outQ = new ArrayBlockingQueue<>(cfg.queueCapacity());
+
+        // Issue queue: best-effort (não pode travar scan)
         BlockingQueue<ScanIssue> issueQ = new ArrayBlockingQueue<>(Math.max(2_000, cfg.queueCapacity() / 5));
 
         AtomicBoolean abort = new AtomicBoolean(false);
 
         // Writer (single-writer)
         Thread writer = Thread.ofVirtual().name("writer").start(() -> {
-            try (DbAdapter db = new DbAdapter(conn, cfg, metrics)) {
+            try (DbAdapter db = new DbAdapter(writerConn, cfg, metrics)) {
                 int poisonCount = 0;
                 while (!abort.get()) {
-                    // consome arquivos
                     FileResult r = outQ.poll();
                     if (r != null) {
                         if (r.poison()) {
@@ -922,20 +1200,17 @@ public class leitorDeArquivos {
                         }
                     }
 
-                    // consome issues
                     ScanIssue si;
                     while ((si = issueQ.poll()) != null) {
                         db.addIssue(si, scanId);
                     }
 
-                    // backoff leve
                     if (r == null) {
                         try { Thread.sleep(cfg.writerPollSleepMs()); }
                         catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
                     }
                 }
 
-                // flush final
                 db.flushAll(scanId);
             } catch (Exception e) {
                 abort.set(true);
@@ -954,28 +1229,25 @@ public class leitorDeArquivos {
                         if (m == null) continue;
                         if ("__POISON__".equals(m.identityType())) break;
 
-                        // Excludes
-                        if (isExcluded(m, rules, rootPath, metrics, issueQ, scanId, cfg)) continue;
+                        if (isExcluded(m, rules, rootAbs, metrics)) continue;
 
-                        // Decide status
                         FileResult res = processor.process(m);
 
-                        // Se o processor sinalizou HASH_FAILED, registra issue HASH com detalhes
                         if (res.status() == FileStatus.HASH_FAILED) {
                             offerIssue(issueQ, cfg, metrics, new ScanIssue(
                                     scanId, Stage.HASH, m.fullPath(),
                                     m.identityType(), m.identityValue(),
-                                    "IOException",
-                                    "HASH_FAILED (read error during hashing)",
-                                    null
+                                    "IOException", "HASH_FAILED (read error during hashing)", null
                             ));
                         }
 
-                        // Envia resultado pro writer
                         if (!offerWithAbort(outQ, res, abort)) break;
                     }
                 } catch (Exception e) {
                     abort.set(true);
+                } finally {
+                    // fecha conexão read-only desse worker (se você quiser forçar)
+                    // index.closeThreadLocals(); // se usar por-thread explicitamente, chamaria aqui (mas é ThreadLocal; opcional)
                 }
             });
         }
@@ -987,11 +1259,55 @@ public class leitorDeArquivos {
 
         Thread walker = Thread.ofVirtual().name("walker").start(() -> {
             try {
-                Files.walkFileTree(root, opts, Integer.MAX_VALUE, new SimpleFileVisitor<>() {
+                Files.walkFileTree(rootAbs, opts, Integer.MAX_VALUE, new SimpleFileVisitor<Path>() {
+                    @Override
+                    public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                        if (abort.get()) return FileVisitResult.TERMINATE;
+
+                        metrics.dirsVisited.increment();
+
+                        // Evita reparse points/symlinks no Windows (podem explodir a arvore).
+                        if (isWindows() && Files.isSymbolicLink(dir)) {
+                            metrics.dirsSkipped.increment();
+                            return FileVisitResult.SKIP_SUBTREE;
+                        }
+
+                        if (!Files.isReadable(dir)) {
+                            metrics.dirsFailed.increment();
+                            metrics.errorsWalk.increment();
+                            offerIssue(issueQ, cfg, metrics, new ScanIssue(
+                                    scanId, Stage.WALK,
+                                    dir.toAbsolutePath().normalize().toString(),
+                                    null, null,
+                                    "AccessDenied",
+                                    "Directory not readable; skipping subtree",
+                                    null
+                            ));
+                            return FileVisitResult.SKIP_SUBTREE;
+                        }
+                        return FileVisitResult.CONTINUE;
+                    }
+
+                    @Override
+                    public FileVisitResult postVisitDirectory(Path dir, IOException exc) {
+                        if (exc != null) {
+                            metrics.dirsFailed.increment();
+                            metrics.errorsWalk.increment();
+                            offerIssue(issueQ, cfg, metrics, new ScanIssue(
+                                    scanId, Stage.WALK,
+                                    dir.toAbsolutePath().normalize().toString(),
+                                    null, null,
+                                    exc.getClass().getSimpleName(),
+                                    String.valueOf(exc.getMessage()),
+                                    null
+                            ));
+                        }
+                        return FileVisitResult.CONTINUE;
+                    }
+
                     @Override
                     public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                         if (abort.get()) return FileVisitResult.TERMINATE;
-
                         if (!attrs.isRegularFile()) return FileVisitResult.CONTINUE;
 
                         metrics.filesScanned.increment();
@@ -1035,57 +1351,72 @@ public class leitorDeArquivos {
                         return FileVisitResult.CONTINUE;
                     }
                 });
-
             } catch (Exception e) {
                 abort.set(true);
             } finally {
-                // poison workers
                 for (int i = 0; i < cfg.workers(); i++) {
                     inQ.offer(new FileMeta(null, null, null, 0, null, null, null, "__POISON__", null));
                 }
             }
         });
 
-        logJson("Orchestrator", "INFO", "Scan started", Map.of("scan_id", scanId, "root", rootPath));
+        logJson("Orchestrator", "INFO", "Scan started", kv("scan_id", scanId, "root", rootPath));
 
         // Shutdown
         walker.join();
         pool.shutdown();
         pool.awaitTermination(1, TimeUnit.DAYS);
 
-        // poison writer
-        for (int i = 0; i < cfg.workers(); i++) outQ.put(new FileResult(null, null, null, null, null, true));
+        for (int i = 0; i < cfg.workers(); i++) outQ.put(new FileResult(null, null, null, null, null, null, true));
         writer.join();
 
         metrics.stop();
 
-        // Deletions (somente se o índice NÃO foi truncado)
+        // Deletions (somente se índice NÃO foi truncado)
         int deleted = 0;
         if (!loaded.truncated) {
-            deleted = handleDeletions(conn, scanId, rootPath);
+            deleted = handleDeletions(writerConn, scanId, rootPath);
+            metrics.deletions.add(deleted);
         } else {
-            logJson("Orchestrator", "WARN", "Index truncated; skipping deletions to avoid false DELETED", Map.of(
+                logJson("Orchestrator", "WARN", "Index truncated; skipping deletions to avoid false DELETED", kv(
                     "max_rows", cfg.preloadIndexMaxRows(),
-                    "loaded", index.size()
-            ));
+                    "loaded", loaded.map.size()
+                ));
         }
 
-        finishScan(conn, scanId, "SUCCESS", null);
-        conn.commit();
+        finishScan(writerConn, scanId, "SUCCESS", null);
+        writerConn.commit();
+
+        String finishedAt = Instant.now().toString();
+
+        // Summary row
+        try (DbAdapter db = new DbAdapter(writerConn, cfg, metrics)) {
+            db.upsertSummary(scanId, rootPath, startedAt, finishedAt);
+        }
 
         Duration dur = Duration.between(metrics.start, Instant.now());
-        logJson("Orchestrator", "INFO", "Scan completed", Map.of(
-                "scan_id", scanId,
-                "duration_sec", dur.toSeconds(),
-                "files_total", metrics.filesScanned.sum(),
-                "deleted", deleted,
-                "errs_walk", metrics.errorsWalk.sum(),
-                "errs_hash", metrics.errorsHash.sum(),
-                "db_retries", metrics.dbRetries.sum(),
-                "issues_dropped", metrics.issuesDropped.sum()
+        logJson("Orchestrator", "INFO", "Scan completed", kv(
+            "scan_id", scanId,
+            "duration_sec", dur.toSeconds(),
+            "files_total", metrics.filesScanned.sum(),
+            "deleted", deleted,
+            "new", metrics.sNew.sum(),
+            "modified", metrics.sModified.sum(),
+            "moved", metrics.sMoved.sum(),
+            "unchanged", metrics.sUnchanged.sum(),
+            "dirs_visited", metrics.dirsVisited.sum(),
+            "dirs_failed", metrics.dirsFailed.sum(),
+            "dirs_skipped", metrics.dirsSkipped.sum(),
+            "errs_walk", metrics.errorsWalk.sum(),
+            "errs_hash", metrics.errorsHash.sum(),
+            "skipped_size", metrics.skippedSize.sum(),
+            "skipped_disabled", metrics.skippedDisabled.sum(),
+            "db_retries", metrics.dbRetries.sum(),
+            "issues_dropped", metrics.issuesDropped.sum(),
+            "db_lookup_hits", metrics.dbLookupHits.sum(),
+            "db_lookup_miss", metrics.dbLookupMiss.sum()
         ));
 
-        // Print ignore stats (rules já têm contador)
         System.out.println("\n--- Ignore Statistics ---");
         for (ExcludeRule r : rules) {
             long c = r.count.sum();
@@ -1094,31 +1425,18 @@ public class leitorDeArquivos {
     }
 
     // ==================================================================================
-    // 8) EXCLUDES + ISSUE HELPERS
+    // 9) EXCLUDES + ISSUE HELPERS
     // ==================================================================================
-    static boolean isExcluded(FileMeta m,
-                              List<ExcludeRule> rules,
-                              String rootPath,
-                              ScanMetrics metrics,
-                              BlockingQueue<ScanIssue> issueQ,
-                              long scanId,
-                              ScanConfig cfg) {
-
+    static boolean isExcluded(FileMeta m, List<ExcludeRule> rules, Path rootAbs, ScanMetrics metrics) {
         if (rules.isEmpty()) return false;
 
-        Path root = Path.of(rootPath);
         Path abs = Path.of(m.fullPath());
-        Path rel = relativizeOrName(root, abs);
+        Path rel = relativizeOrName(rootAbs, abs);
 
         for (ExcludeRule r : rules) {
             if (r.matcher.matches(rel)) {
                 r.count.increment();
                 metrics.filesIgnored.increment();
-
-                // opcional: persistir IGNORE (pode gerar muitos rows; aqui fica só 1 issue por ignore? melhor NÃO.)
-                // Se quiser registrar, habilite só quando necessário:
-                // offerIssue(issueQ, cfg, metrics, new ScanIssue(scanId, Stage.IGNORE, m.fullPath(), m.identityType(), m.identityValue(), null, null, r.glob));
-
                 return true;
             }
         }
@@ -1143,7 +1461,7 @@ public class leitorDeArquivos {
     }
 
     // ==================================================================================
-    // 9) HASH
+    // 10) HASH
     // ==================================================================================
     record HashResult(String hex, long bytesRead) {}
 
@@ -1165,7 +1483,7 @@ public class leitorDeArquivos {
     }
 
     // ==================================================================================
-    // 10) UTILS
+    // 11) UTILS
     // ==================================================================================
     static Path relativizeOrName(Path root, Path abs) {
         try {
@@ -1181,7 +1499,7 @@ public class leitorDeArquivos {
     }
 
     // ==================================================================================
-    // 11) MAIN
+    // 12) MAIN
     // ==================================================================================
     public static void main(String[] args) throws Exception {
         ScanConfig cfg = ScanConfig.builder()
@@ -1191,6 +1509,8 @@ public class leitorDeArquivos {
                 .computeHash(true)
                 .hashMaxBytes(200L * 1024 * 1024)
                 .preloadIndexMaxRows(2_000_000)
+                .enableDbLookupOnMiss(true)
+                .lruCacheSize(120_000)
                 .addExclude("**/node_modules/**")
                 .addExclude("**/.git/**")
                 .addExclude("**/$Recycle.Bin/**")
@@ -1198,17 +1518,20 @@ public class leitorDeArquivos {
                 .build();
 
         // Uso:
-        // java LeitorDeArquivos <root> <dbfile>
+        // java LeitorDeArquivos "<root com espaço>" "<dbfile>"
         Path root = (args.length >= 1) ? Paths.get(args[0]) : Paths.get("C:\\");
-        String db = (args.length >= 2) ? args[1] : "scan-incremental.db";
+        String dbFile = (args.length >= 2) ? args[1] : "scan-incremental.db";
+
+        // Dica se estiver dando “trava” por espaço no caminho:
+        // PowerShell/CMD: sempre use aspas.
+        String dbUrl = "jdbc:sqlite:" + dbFile;
 
         try (LogTee tee = setupLogFile(Paths.get("logs"), "scan-benchmark");
-             Connection conn = DriverManager.getConnection("jdbc:sqlite:" + db)) {
-            runScan(conn, root, cfg);
+             Connection writerConn = DriverManager.getConnection(dbUrl)) {
+            runScan(dbUrl, writerConn, root, cfg);
         }
     }
 
-    // Wrapper usado pelo Main.java
     public static void runCli(String[] args) throws Exception {
         main(args);
     }
