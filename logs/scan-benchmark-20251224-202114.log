@@ -1,2 +1,0 @@
-{"ts":"2025-12-24T23:21:14.346373300Z","lvl":"INFO","ctx":"Benchmark","msg":"Benchmark started","root":"C:\\","workers":16,"hash_max_bytes":209715200,"preload_index_max_rows":2000000}
-{"ts":"2025-12-24T23:21:14.363691600Z","lvl":"INFO","ctx":"Orchestrator","msg":"Scan started","scan_id":1,"root":"C:\\"}

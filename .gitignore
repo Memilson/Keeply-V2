@@ -1,10 +1,40 @@
+
+# Java
 target/
-*.iml
+*.class
+*.jar
+*.war
+*.ear
+
+# IDEs
 .idea/
+*.iml
+*.ipr
+*.iws
 .vscode/
 
-# Ignorar banco de dados SQLite
-Sqlite/
+# Maven
+.mvn/
 
-# Keeply test sandbox (gerado automaticamente)
-sandbox/
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Banco de dados
+*.db
+*.sqlite
+
+# Node (se presente)
+node_modules/
+
+# Sistema
+$RECYCLE.BIN/
+System Volume Information/
+
+# Outros
+*.swp
+*~
