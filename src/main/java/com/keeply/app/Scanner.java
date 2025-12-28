@@ -9,7 +9,6 @@ import java.security.MessageDigest;
 import java.sql.Connection;
 import java.time.Instant;
 import java.util.*;
-import java.util.HexFormat;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
@@ -25,10 +24,6 @@ public class Scanner {
             String errorType, String message, String rule
     ) {}
 
-    /**
-     * Mantive createdAt/modifiedAt como String para compatibilidade com seu DB atual,
-     * mas também carrego createdMillis/modifiedMillis pra comparação rápida.
-     */
     public record FileMeta(
             String rootPath,
             String fullPath,
@@ -43,10 +38,6 @@ public class Scanner {
             String identityValue
     ) {}
 
-    /**
-     * PrevInfo com modifiedAtMillis (ideal) + modifiedAt (fallback).
-     * Se seu Database.loadIndex ainda não tiver millis, pode preencher com -1 e usar modifiedAt.
-     */
     public record PrevInfo(
             long pathId,
             String knownPath,
@@ -59,23 +50,15 @@ public class Scanner {
 
     public record FileResult(FileMeta meta, FileStatus status, String contentAlgo, String contentHash, String reason) {}
 
-    // --- Exclude Rules ---
+    // --- Exclude Rules Otimizadas ---
     public static final class ExcludeRule {
-        final String glob;
         final PathMatcher matcher;
-
         public ExcludeRule(String glob) {
-            this.glob = glob;
             this.matcher = FileSystems.getDefault().getPathMatcher("glob:" + glob);
         }
-
-        boolean matchesFile(Path rel) { return matcher.matches(rel); }
-
-        // truque pra pegar globs tipo **/node_modules/** também no preVisitDirectory
-        boolean matchesDir(Path relDir) { return matcher.matches(relDir) || matcher.matches(relDir.resolve("__x__")); }
+        boolean matches(Path p) { return matcher.matches(p); }
     }
 
-    // --- Configuration ---
     public record ScanConfig(
             int workers,
             int batchLimit,
@@ -107,7 +90,6 @@ public class Scanner {
         }
     }
 
-    // --- Metrics ---
     public static class ScanMetrics {
         public final LongAdder filesScanned = new LongAdder();
         public final LongAdder filesIgnored = new LongAdder();
@@ -121,7 +103,6 @@ public class Scanner {
         public final AtomicBoolean running = new AtomicBoolean(false);
     }
 
-    // --- Internal job: evita enfileirar strings e objetos caros no walker ---
     private record FileJob(Path absPath, long sizeBytes, long createdMillis, long modifiedMillis) {
         static final FileJob POISON = new FileJob(null, -1, -1, -1);
         boolean isPoison() { return absPath == null; }
@@ -129,13 +110,13 @@ public class Scanner {
 
     private record HashOutcome(String hex, String algo, String reason) {}
 
-    // --- ThreadLocals (hash) ---
     private static final HexFormat HEX = HexFormat.of();
     private static final ThreadLocal<MessageDigest> SHA256 = ThreadLocal.withInitial(() -> {
         try { return MessageDigest.getInstance("SHA-256"); }
         catch (Exception e) { throw new RuntimeException(e); }
     });
-    private static final ThreadLocal<byte[]> HASH_BUF = ThreadLocal.withInitial(() -> new byte[64 * 1024]);
+    // Buffer maior para IO mais rápido (128KB)
+    private static final ThreadLocal<byte[]> HASH_BUF = ThreadLocal.withInitial(() -> new byte[128 * 1024]);
 
     public static class Engine {
 
@@ -149,17 +130,17 @@ public class Scanner {
         ) throws Exception {
 
             long scanId;
-
-            // INDEX: chave agora é o fullPath puro (sem "TYPE:value" concatenado por arquivo)
-            Map<String, PrevInfo> index = new HashMap<>(1 << 20);
+            // Mapa otimizado: Chave é o caminho absoluto da string
+            Map<String, PrevInfo> index = new ConcurrentHashMap<>(100_000);
 
             try (Connection c = pool.borrow()) {
                 scanId = Database.startScanLog(c, rootPath);
-
-                // IMPORTANTE: seu Database.loadIndex precisa preencher index.put(fullPath, prevInfo)
+                
+                // AQUI ESTÁ O TRUQUE: O Database deve carregar arquivos globais se possível,
+                // ou o conceito de "root" deve ser relaxado no banco.
                 Database.loadIndex(c, rootPath, cfg.preloadIndexMaxRows(), index);
-
-                logger.accept("Index carregado: " + index.size() + " arquivos.");
+                
+                logger.accept("Index carregado: " + index.size() + " arquivos conhecidos.");
                 c.commit();
             }
 
@@ -168,21 +149,17 @@ public class Scanner {
 
             List<ExcludeRule> rules = cfg.excludes().stream().map(ExcludeRule::new).toList();
             Path root = Paths.get(rootPath);
+            BlockingQueue<FileJob> queue = new ArrayBlockingQueue<>(10_000); // Fila maior
 
-            BlockingQueue<FileJob> queue = new ArrayBlockingQueue<>(5000);
-
-            // 1) Walker: SKIP_SUBTREE + offer com timeout (cancel-safe)
-            Thread walker = Thread.ofVirtual().start(() -> {
+            Thread walker = Thread.ofVirtual().name("walker").start(() -> {
                 try {
                     Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), Integer.MAX_VALUE, new SimpleFileVisitor<>() {
-
                         @Override
                         public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
                             if (!runningControl.get()) return FileVisitResult.TERMINATE;
-
+                            // Otimização: Verifica exclusão de diretório apenas se não for a raiz
                             if (!dir.equals(root)) {
-                                Path rel = root.relativize(dir);
-                                if (isExcludedDir(rel, rules)) {
+                                if (isExcluded(root.relativize(dir), rules)) {
                                     metrics.filesIgnored.increment();
                                     return FileVisitResult.SKIP_SUBTREE;
                                 }
@@ -195,8 +172,7 @@ public class Scanner {
                             if (!runningControl.get()) return FileVisitResult.TERMINATE;
                             if (!attrs.isRegularFile()) return FileVisitResult.CONTINUE;
 
-                            Path rel = root.relativize(file);
-                            if (isExcludedFile(rel, rules)) {
+                            if (isExcluded(root.relativize(file), rules)) {
                                 metrics.filesIgnored.increment();
                                 return FileVisitResult.CONTINUE;
                             }
@@ -212,71 +188,50 @@ public class Scanner {
                             );
 
                             try {
-                                while (!queue.offer(job, 200, TimeUnit.MILLISECONDS)) {
+                                while (!queue.offer(job, 100, TimeUnit.MILLISECONDS)) {
                                     if (!runningControl.get()) return FileVisitResult.TERMINATE;
                                 }
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
                                 return FileVisitResult.TERMINATE;
                             }
-
                             return FileVisitResult.CONTINUE;
                         }
 
                         @Override
                         public FileVisitResult visitFileFailed(Path file, IOException exc) {
                             metrics.errorsWalk.increment();
-                            writer.queueIssue(new ScanIssue(
-                                    scanId, StageEnum.WALK,
-                                    file.toString(),
-                                    "PATH", file.toString(),
-                                    exc.getClass().getSimpleName(),
-                                    exc.getMessage(),
-                                    null
-                            ));
+                            writer.queueIssue(new ScanIssue(scanId, StageEnum.WALK, file.toString(), "PATH", file.toString(), exc.getClass().getSimpleName(), exc.getMessage(), null));
                             return FileVisitResult.CONTINUE;
                         }
                     });
                 } catch (IOException e) {
                     metrics.errorsWalk.increment();
-                    writer.queueIssue(new ScanIssue(
-                            scanId, StageEnum.WALK,
-                            root.toString(),
-                            "PATH", root.toString(),
-                            e.getClass().getSimpleName(),
-                            e.getMessage(),
-                            null
-                    ));
+                    writer.queueIssue(new ScanIssue(scanId, StageEnum.WALK, root.toString(), "PATH", root.toString(), e.getClass().getSimpleName(), e.getMessage(), null));
                 } finally {
                     for (int i = 0; i < cfg.workers(); i++) {
-                        try { queue.put(FileJob.POISON); }
-                        catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+                        try { queue.put(FileJob.POISON); } catch (InterruptedException ignored) {}
                     }
                 }
             });
 
-            // 2) Workers: drenam fila sempre (evita deadlock de cancel)
             ThreadFactory tf = Thread.ofPlatform().name("scan-worker-", 0).factory();
             ExecutorService executor = Executors.newFixedThreadPool(cfg.workers(), tf);
 
             for (int i = 0; i < cfg.workers(); i++) {
                 executor.submit(() -> {
-                    for (;;) {
-                        FileJob job;
-                        try {
-                            job = queue.take();
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
+                    try {
+                        while (true) {
+                            FileJob job = queue.take();
+                            if (job.isPoison()) break;
+                            if (!runningControl.get()) continue;
+
+                            FileMeta fm = buildMeta(rootPath, job);
+                            FileResult res = processFile(scanId, fm, job.absPath(), index, cfg, metrics, writer);
+                            writer.queueFile(res);
                         }
-                        if (job.isPoison()) break;
-
-                        // se cancelou, só ignora processamento (mas não para de consumir)
-                        if (!runningControl.get()) continue;
-
-                        FileMeta fm = buildMeta(rootPath, job);
-                        FileResult res = processFile(scanId, fm, job.absPath(), index, cfg, metrics, writer);
-                        writer.queueFile(res);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                     }
                 });
             }
@@ -293,21 +248,28 @@ public class Scanner {
                 Database.handleDeletions(c, scanId, rootPath);
                 Database.finishScanLog(c, scanId);
                 c.commit();
+                // O release será chamado automaticamente pelo try-with-resources aqui
             }
+            
+            // ADICIONE ESTE LOG:
+            logger.accept("Aguardando conexões do banco fecharem...");
+            
+            // O pool.close() será chamado no finally do ScannerTask no Controller
             logger.accept("Sucesso!");
         }
 
         private static FileMeta buildMeta(String rootPath, FileJob job) {
-            String fullPath = job.absPath().toString();
+            // NORMALIZAÇÃO: Força tudo para '/' (padrão universal)
+            String fullPath = job.absPath().toString().replace('\\', '/');
+            String cleanRoot = rootPath.replace('\\', '/');
+            
             String name = job.absPath().getFileName().toString();
-
-            // compat com DB atual (string) + millis pra comparação
             String createdAt = Database.safeTime(FileTime.fromMillis(job.createdMillis()));
             String modifiedAt = Database.safeTime(FileTime.fromMillis(job.modifiedMillis()));
 
             return new FileMeta(
-                    rootPath,
-                    fullPath,
+                    cleanRoot, // Usa a raiz limpa
+                    fullPath,  // Usa o caminho limpo
                     name,
                     job.sizeBytes(),
                     createdAt,
@@ -320,25 +282,18 @@ public class Scanner {
             );
         }
 
-        private static boolean isExcludedFile(Path rel, List<ExcludeRule> rules) {
-            for (ExcludeRule r : rules) if (r.matchesFile(rel)) return true;
-            return false;
-        }
-
-        private static boolean isExcludedDir(Path relDir, List<ExcludeRule> rules) {
-            for (ExcludeRule r : rules) if (r.matchesDir(relDir)) return true;
+        // Unificado: serve para arquivo e diretório (basta passar Path relativo)
+        private static boolean isExcluded(Path rel, List<ExcludeRule> rules) {
+            for (ExcludeRule r : rules) if (r.matches(rel)) return true;
             return false;
         }
 
         static FileResult processFile(
-                long scanId,
-                FileMeta curr,
-                Path absPath,
-                Map<String, PrevInfo> index,
-                ScanConfig cfg,
-                ScanMetrics metrics,
-                Database.ParallelDbWriter writer
+                long scanId, FileMeta curr, Path absPath,
+                Map<String, PrevInfo> index, ScanConfig cfg,
+                ScanMetrics metrics, Database.ParallelDbWriter writer
         ) {
+            // Busca no índice pelo CAMINHO ABSOLUTO
             PrevInfo prev = index.get(curr.fullPath());
 
             if (prev == null) {
@@ -348,14 +303,19 @@ public class Scanner {
             }
 
             boolean metaDiff;
-            if (prev.modifiedAtMillis() >= 0) {
-                metaDiff = prev.sizeBytes() != curr.sizeBytes() || prev.modifiedAtMillis() != curr.modifiedMillis();
+            // Comparação otimizada por millis se disponível
+            if (prev.modifiedAtMillis() > 0) {
+                metaDiff = prev.sizeBytes() != curr.sizeBytes() || Math.abs(prev.modifiedAtMillis() - curr.modifiedMillis()) > 1000; // Tolerância de 1s para FS diferentes
             } else {
                 metaDiff = prev.sizeBytes() != curr.sizeBytes() || !Objects.equals(prev.modifiedAt(), curr.modifiedAt());
             }
 
             if (metaDiff) {
                 HashOutcome h = computeHashIfNeeded(scanId, curr, absPath, cfg, metrics, writer);
+                // Se hash for igual apesar da data/tamanho mudar (raro, mas acontece), considera UNCHANGED
+                if (h.hex != null && h.hex.equals(prev.contentHash())) {
+                    return new FileResult(curr, FileStatus.UNCHANGED, h.algo, h.hex, "META_CHANGE_HASH_SAME");
+                }
                 String reason = h.reason == null ? "MODIFIED" : ("MODIFIED|" + h.reason);
                 return new FileResult(curr, FileStatus.MODIFIED, h.algo, h.hex, reason);
             }
@@ -364,12 +324,8 @@ public class Scanner {
         }
 
         static HashOutcome computeHashIfNeeded(
-                long scanId,
-                FileMeta m,
-                Path absPath,
-                ScanConfig cfg,
-                ScanMetrics metrics,
-                Database.ParallelDbWriter writer
+                long scanId, FileMeta m, Path absPath, ScanConfig cfg,
+                ScanMetrics metrics, Database.ParallelDbWriter writer
         ) {
             if (!cfg.computeHash()) return new HashOutcome(null, null, FileStatus.SKIPPED_DISABLED.name());
             if (cfg.hashMaxBytes() > 0 && m.sizeBytes() > cfg.hashMaxBytes()) return new HashOutcome(null, null, FileStatus.SKIPPED_SIZE.name());
@@ -381,21 +337,12 @@ public class Scanner {
             try (InputStream in = Files.newInputStream(absPath)) {
                 int r;
                 while ((r = in.read(buf)) != -1) md.update(buf, 0, r);
-
                 metrics.filesHashed.increment();
                 metrics.bytesHashed.add(m.sizeBytes());
                 return new HashOutcome(HEX.formatHex(md.digest()), "SHA-256", null);
-
             } catch (Exception e) {
                 metrics.errorsHash.increment();
-                writer.queueIssue(new ScanIssue(
-                        scanId, StageEnum.HASH,
-                        m.fullPath(),
-                        m.identityType(), m.identityValue(),
-                        e.getClass().getSimpleName(),
-                        e.getMessage(),
-                        null
-                ));
+                writer.queueIssue(new ScanIssue(scanId, StageEnum.HASH, m.fullPath(), m.identityType(), m.identityValue(), e.getClass().getSimpleName(), e.getMessage(), null));
                 return new HashOutcome(null, null, FileStatus.HASH_FAILED.name());
             }
         }
