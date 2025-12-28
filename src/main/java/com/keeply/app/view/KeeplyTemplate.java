@@ -97,6 +97,10 @@ public final class KeeplyTemplate {
     }
 
     public void setFooter(Node node) {
+        if (node == null) {
+            footerHost.getChildren().clear();
+            return;
+        }
         footerHost.getChildren().setAll(node);
     }
 

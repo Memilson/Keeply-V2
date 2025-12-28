@@ -13,71 +13,44 @@ import com.keeply.app.Scanner.HashUpdate;
 
 public final class Database {
 
-    private Database() {
-    }
+    private Database() {}
 
-    public record InventoryRow(String rootPath, String pathRel, String name, long sizeBytes, long modifiedMillis,
-            long createdMillis, String status, String hashHex) {
-    }
+    // --- RECORDS (Modelos de Dados) ---
+    // Devem ser 'public' para serem vistos pelos Controllers
+    public record InventoryRow(String rootPath, String pathRel, String name, long sizeBytes, long modifiedMillis, long createdMillis, String status, String hashHex) {}
+    public record ScanSummary(long scanId, String rootPath, String startedAt, String finishedAt) {}
+    public record FileHistoryRow(long scanId, String rootPath, String startedAt, String finishedAt, String hashHex, long sizeBytes, String statusEvent, String createdAt) {}
+    public record CapacityReport(String date, long totalBytes, long growthBytes) {}
 
-    public record ScanSummary(long scanId, String rootPath, String startedAt, String finishedAt) {
-    }
-
-    public record FileHistoryRow(long scanId, String rootPath, String startedAt, String finishedAt, String hashHex,
-            long sizeBytes, String statusEvent, String createdAt) {
-    }
-
+    // --- CONNECTION POOL ---
     public static final class SimplePool implements AutoCloseable {
         private final BlockingQueue<Connection> idle;
 
         public SimplePool(String jdbcUrl, int poolSize) throws SQLException {
             this.idle = new ArrayBlockingQueue<>(poolSize);
-            for (int i = 0; i < poolSize; i++)
-                idle.add(openEncryptedPhysical(jdbcUrl));
+            for (int i = 0; i < poolSize; i++) idle.add(openEncryptedPhysical(jdbcUrl));
         }
 
         public Connection borrow() throws InterruptedException {
             var physical = idle.take();
-            return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(),
-                    new Class<?>[] { Connection.class }, (p, m, a) -> {
-                        if (m.getName().equals("close")) {
-                            release(physical);
-                            return null;
-                        }
-                        return m.invoke(physical, a);
-                    });
+            return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(), new Class<?>[]{Connection.class}, (p, m, a) -> {
+                if (m.getName().equals("close")) { release(physical); return null; }
+                return m.invoke(physical, a);
+            });
         }
 
         private void release(Connection c) {
-            try {
-                if (!c.getAutoCommit())
-                    c.rollback();
-            } catch (Exception ignored) {
-            }
-            if (!idle.offer(c))
-                try {
-                    c.close();
-                } catch (Exception ignored) {
-                }
+            try { if (!c.getAutoCommit()) c.rollback(); } catch (Exception ignored) {}
+            if (!idle.offer(c)) try { c.close(); } catch (Exception ignored) {}
         }
 
-        @Override
-        public void close() {
-            Connection c;
-            while ((c = idle.poll()) != null)
-                try {
-                    c.close();
-                } catch (Exception ignored) {
-                }
+        @Override public void close() {
+            Connection c; while ((c = idle.poll()) != null) try { c.close(); } catch (Exception ignored) {}
         }
     }
 
     private static Connection openEncryptedPhysical(String url) throws SQLException {
-        try {
-            Class.forName("org.sqlite.JDBC");
-        } catch (ClassNotFoundException ignored) {
-        }
-
+        try { Class.forName("org.sqlite.JDBC"); } catch (ClassNotFoundException ignored) {}
         var props = new Properties();
         props.setProperty("cipher", "sqlcipher");
         props.setProperty("key", Config.getSecretKey());
@@ -98,45 +71,71 @@ public final class Database {
         return openEncryptedPhysical(Config.getDbUrl());
     }
 
+    // --- SCHEMA ---
     public static void ensureSchema(Connection c) throws SQLException {
         try (var st = c.createStatement()) {
-            st.execute(
-                    "CREATE TABLE IF NOT EXISTS scans (scan_id INTEGER PRIMARY KEY AUTOINCREMENT, root_path TEXT, started_at TEXT, finished_at TEXT)");
+            try { st.execute("ALTER TABLE scans ADD COLUMN total_usage INTEGER"); } catch (SQLException ignored) {}
 
-            // Tabela de Inventário (Estado Atual)
-            st.execute(
-                    """
-                                CREATE TABLE IF NOT EXISTS file_inventory (
-                                    path_rel TEXT PRIMARY KEY, name TEXT, size_bytes INTEGER, modified_millis INTEGER, created_millis INTEGER,
-                                    file_key TEXT, hash_hex TEXT, last_scan_id INTEGER, status TEXT
-                                )
-                            """);
-
-            // --- NOVO: Tabela de Histórico (Time Lapse) ---
+            st.execute("CREATE TABLE IF NOT EXISTS scans (scan_id INTEGER PRIMARY KEY AUTOINCREMENT, root_path TEXT, started_at TEXT, finished_at TEXT, total_usage INTEGER)");
+            
             st.execute("""
-                        CREATE TABLE IF NOT EXISTS file_history (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            scan_id INTEGER,       -- Liga ao scan específico
-                            path_rel TEXT,         -- O arquivo
-                            hash_hex TEXT,         -- O hash naquele momento
-                            size_bytes INTEGER,    -- O tamanho naquele momento
-                            status_event TEXT,     -- O que aconteceu: 'CREATED', 'MODIFIED'
-                            created_at TEXT        -- Data real do registro
-                        )
-                    """);
-            st.execute("CREATE INDEX IF NOT EXISTS idx_history_path ON file_history(path_rel)");
+                CREATE TABLE IF NOT EXISTS file_inventory (
+                    path_rel TEXT PRIMARY KEY, name TEXT, size_bytes INTEGER, modified_millis INTEGER, created_millis INTEGER,
+                    file_key TEXT, hash_hex TEXT, last_scan_id INTEGER, status TEXT
+                )
+            """);
 
-            st.execute(
-                    "CREATE TABLE IF NOT EXISTS scan_issues (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_id INTEGER, path TEXT, message TEXT, created_at TEXT)");
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS file_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scan_id INTEGER, path_rel TEXT, hash_hex TEXT, size_bytes INTEGER, status_event TEXT, created_at TEXT
+                )
+            """);
+            st.execute("CREATE INDEX IF NOT EXISTS idx_history_path ON file_history(path_rel)");
+            st.execute("CREATE TABLE IF NOT EXISTS scan_issues (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_id INTEGER, path TEXT, message TEXT, created_at TEXT)");
         }
     }
 
-    // ... (startScanLog, finishScanLog, deleteStaleFiles e fetchDirtyFiles
-    // permanecem iguais) ...
+    // --- LOGS E SCAN ---
+    public static long startScanLog(Connection c, String rootPath) throws SQLException {
+        try (var ps = c.prepareStatement("INSERT INTO scans(root_path, started_at) VALUES(?, datetime('now'))", Statement.RETURN_GENERATED_KEYS)) {
+            ps.setString(1, rootPath);
+            ps.executeUpdate();
+            try (var rs = ps.getGeneratedKeys()) { if (rs.next()) return rs.getLong(1); }
+        }
+        return 0;
+    }
+
+    public static void finishScanLog(Connection c, long scanId) throws SQLException {
+        long totalBytes = 0;
+        try (var rs = c.createStatement().executeQuery("SELECT SUM(size_bytes) FROM file_inventory")) {
+            if (rs.next()) totalBytes = rs.getLong(1);
+        }
+        try (var ps = c.prepareStatement("UPDATE scans SET finished_at=datetime('now'), total_usage=? WHERE scan_id=?")) {
+            ps.setLong(1, totalBytes);
+            ps.setLong(2, scanId);
+            ps.executeUpdate();
+        }
+    }
+
+    // --- CORE LOGIC ---
+    public static int deleteStaleFiles(Connection c, long currentScanId) throws SQLException {
+        try (var ps = c.prepareStatement("DELETE FROM file_inventory WHERE last_scan_id < ?")) {
+            ps.setLong(1, currentScanId);
+            return ps.executeUpdate();
+        }
+    }
+
+    public static List<HashCandidate> fetchDirtyFiles(Connection c, long scanId, int limit) throws SQLException {
+        var out = new ArrayList<HashCandidate>();
+        try (var ps = c.prepareStatement("SELECT path_rel, size_bytes FROM file_inventory WHERE last_scan_id = ? AND (status = 'NEW' OR status = 'MODIFIED' OR hash_hex IS NULL) LIMIT ?")) {
+            ps.setLong(1, scanId); ps.setInt(2, limit);
+            try (var rs = ps.executeQuery()) { while (rs.next()) out.add(new HashCandidate(0, rs.getString(1), rs.getLong(2))); }
+        }
+        return out;
+    }
 
     public static void updateHashes(Connection c, List<HashUpdate> updates) throws SQLException {
-        // MUDANÇA: Status agora é 'HASHED' (temporário) em vez de 'Synced'
-        // Isso nos ajuda a identificar quem mudou neste scan exato.
         try (var ps = c.prepareStatement("UPDATE file_inventory SET hash_hex=?, status='HASHED' WHERE path_rel=?")) {
             for (var u : updates) {
                 ps.setString(1, u.hashHex());
@@ -147,143 +146,111 @@ public final class Database {
         }
     }
 
-    /**
-     * --- A MÁGICA DO TIME LAPSE ---
-     * Copia para o histórico apenas os arquivos que foram criados (NEW)
-     * ou modificados (HASHED/MODIFIED) neste scan.
-     */
     public static int snapshotToHistory(Connection c, long scanId) throws SQLException {
         int count = 0;
         try (var st = c.createStatement()) {
-            // 1. Copia para o histórico tudo que é relevante deste scan
             String sqlCopy = """
-                    INSERT INTO file_history (scan_id, path_rel, hash_hex, size_bytes, status_event, created_at)
-                    SELECT last_scan_id, path_rel, hash_hex, size_bytes, status, datetime('now')
-                    FROM file_inventory
-                    WHERE last_scan_id = """ + scanId + """
-                          AND status IN ('NEW', 'HASHED', 'MODIFIED')
-                    """;
+                INSERT INTO file_history (scan_id, path_rel, hash_hex, size_bytes, status_event, created_at)
+                SELECT last_scan_id, path_rel, hash_hex, size_bytes, status, datetime('now')
+                FROM file_inventory
+                WHERE last_scan_id = """ + scanId + """
+                  AND status IN ('NEW', 'HASHED', 'MODIFIED')
+            """;
             count = st.executeUpdate(sqlCopy);
-
-            // 2. Reseta o status para 'STABLE' para que no próximo scan a gente saiba que
-            // nada mudou
             st.execute("UPDATE file_inventory SET status='STABLE' WHERE last_scan_id = " + scanId);
         }
         return count;
     }
 
-    public static long startScanLog(Connection c, String rootPath) throws SQLException {
-        try (var ps = c.prepareStatement("INSERT INTO scans(root_path, started_at) VALUES(?, datetime('now'))",
-                Statement.RETURN_GENERATED_KEYS)) {
-            ps.setString(1, rootPath);
-            ps.executeUpdate();
-            try (var rs = ps.getGeneratedKeys()) {
-                if (rs.next())
-                    return rs.getLong(1);
-            }
-        }
-        return 0;
-    }
-
-    public static void finishScanLog(Connection c, long scanId) throws SQLException {
-        try (var ps = c.prepareStatement("UPDATE scans SET finished_at=datetime('now') WHERE scan_id=?")) {
-            ps.setLong(1, scanId);
-            ps.executeUpdate();
-        }
-    }
-
-    public static int deleteStaleFiles(Connection c, long currentScanId) throws SQLException {
-        try (var ps = c.prepareStatement("DELETE FROM file_inventory WHERE last_scan_id < ?")) {
-            ps.setLong(1, currentScanId);
-            return ps.executeUpdate();
-        }
-    }
-
-    public static List<HashCandidate> fetchDirtyFiles(Connection c, long scanId, int limit) throws SQLException {
-        var out = new ArrayList<HashCandidate>();
-        try (var ps = c.prepareStatement(
-                "SELECT path_rel, size_bytes FROM file_inventory WHERE last_scan_id = ? AND (status = 'NEW' OR status = 'MODIFIED' OR hash_hex IS NULL) LIMIT ?")) {
-            ps.setLong(1, scanId);
-            ps.setInt(2, limit);
-            try (var rs = ps.executeQuery()) {
-                while (rs.next())
-                    out.add(new HashCandidate(0, rs.getString(1), rs.getLong(2)));
-            }
-        }
-        return out;
-    }
-
+    // --- FETCH DATA ---
     public static List<InventoryRow> fetchInventory(Connection c) throws SQLException {
         ensureSchema(c);
         var out = new ArrayList<InventoryRow>();
         var sql = """
-                    SELECT fi.path_rel, fi.name, fi.size_bytes, fi.modified_millis, fi.created_millis, fi.status, fi.hash_hex,
-                           COALESCE(s.root_path, '') AS root_path
-                    FROM file_inventory fi
-                    LEFT JOIN scans s ON s.scan_id = fi.last_scan_id
-                    ORDER BY fi.path_rel
-                """;
-        try (var ps = c.prepareStatement(sql); var rs = ps.executeQuery()) {
-            while (rs.next()) {
-                out.add(new InventoryRow(
-                        rs.getString("root_path"),
-                        rs.getString("path_rel"),
-                        rs.getString("name"),
-                        rs.getLong("size_bytes"),
-                        rs.getLong("modified_millis"),
-                        rs.getLong("created_millis"),
-                        rs.getString("status"),
-                        rs.getString("hash_hex")));
+            SELECT fi.path_rel, fi.name, fi.size_bytes, fi.modified_millis, fi.created_millis, fi.status, fi.hash_hex, COALESCE(s.root_path, '') AS root_path
+            FROM file_inventory fi
+            LEFT JOIN scans s ON s.scan_id = fi.last_scan_id
+            ORDER BY fi.path_rel
+        """;
+        try (var rs = c.prepareStatement(sql).executeQuery()) {
+            while (rs.next()) out.add(mapInventoryRow(rs));
+        }
+        return out;
+    }
+
+    public static List<InventoryRow> fetchSnapshotFiles(Connection c, long targetScanId) throws SQLException {
+        ensureSchema(c);
+        var out = new ArrayList<InventoryRow>();
+        var sql = """
+            WITH LatestState AS (
+                SELECT path_rel, MAX(scan_id) as max_scan
+                FROM file_history
+                WHERE scan_id <= ?
+                GROUP BY path_rel
+            )
+            SELECT fh.path_rel, fh.size_bytes, fh.hash_hex, fh.status_event, fh.created_at, fh.scan_id
+            FROM file_history fh
+            JOIN LatestState ls ON fh.path_rel = ls.path_rel AND fh.scan_id = ls.max_scan
+            ORDER BY fh.path_rel
+        """;
+        try (var ps = c.prepareStatement(sql)) {
+            ps.setLong(1, targetScanId);
+            try (var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String path = rs.getString("path_rel");
+                    String name = path.contains("/") ? path.substring(path.lastIndexOf('/') + 1) : path;
+                    out.add(new InventoryRow("", path, name, rs.getLong("size_bytes"), 0, 0, rs.getString("status_event"), rs.getString("hash_hex")));
+                }
             }
         }
         return out;
     }
 
-    public static ScanSummary fetchLastScan(Connection c) throws SQLException {
-        try (var ps = c.prepareStatement("""
-                    SELECT scan_id, root_path, started_at, finished_at
-                    FROM scans
-                    ORDER BY scan_id DESC
-                    LIMIT 1
-                """); var rs = ps.executeQuery()) {
-            if (rs.next()) {
-                return new ScanSummary(
-                        rs.getLong("scan_id"),
-                        rs.getString("root_path"),
-                        rs.getString("started_at"),
-                        rs.getString("finished_at"));
-            }
+    public static List<ScanSummary> fetchAllScans(Connection c) throws SQLException {
+        var list = new ArrayList<ScanSummary>();
+        try (var rs = c.createStatement().executeQuery("SELECT scan_id, root_path, started_at, finished_at FROM scans ORDER BY scan_id DESC")) {
+            while (rs.next()) list.add(new ScanSummary(rs.getLong("scan_id"), rs.getString("root_path"), rs.getString("started_at"), rs.getString("finished_at")));
         }
-        return null;
+        return list;
+    }
+
+    public static ScanSummary fetchLastScan(Connection c) throws SQLException {
+        var list = fetchAllScans(c);
+        return list.isEmpty() ? null : list.get(0);
     }
 
     public static List<FileHistoryRow> fetchFileHistory(Connection c, String pathRel) throws SQLException {
         ensureSchema(c);
         var out = new ArrayList<FileHistoryRow>();
         var sql = """
-                SELECT fh.scan_id, fh.hash_hex, fh.size_bytes, fh.status_event, fh.created_at,
-                       s.root_path, s.started_at, s.finished_at
-                FROM file_history fh
-                LEFT JOIN scans s ON s.scan_id = fh.scan_id
-                WHERE fh.path_rel = ?
-                ORDER BY fh.scan_id DESC, fh.created_at DESC
-                """;
+            SELECT fh.scan_id, fh.hash_hex, fh.size_bytes, fh.status_event, fh.created_at, s.root_path, s.started_at, s.finished_at
+            FROM file_history fh
+            LEFT JOIN scans s ON s.scan_id = fh.scan_id
+            WHERE fh.path_rel = ?
+            ORDER BY fh.scan_id DESC
+        """;
         try (var ps = c.prepareStatement(sql)) {
             ps.setString(1, pathRel);
             try (var rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.add(new FileHistoryRow(
-                            rs.getLong("scan_id"),
-                            rs.getString("root_path"),
-                            rs.getString("started_at"),
-                            rs.getString("finished_at"),
-                            rs.getString("hash_hex"),
-                            rs.getLong("size_bytes"),
-                            rs.getString("status_event"),
-                            rs.getString("created_at")));
-                }
+                while (rs.next()) out.add(new FileHistoryRow(rs.getLong("scan_id"), rs.getString("root_path"), rs.getString("started_at"), rs.getString("finished_at"), rs.getString("hash_hex"), rs.getLong("size_bytes"), rs.getString("status_event"), rs.getString("created_at")));
             }
         }
         return out;
+    }
+
+    public static List<CapacityReport> predictGrowth(Connection c) throws SQLException {
+        var list = new ArrayList<CapacityReport>();
+        var sql = """
+            SELECT started_at, total_usage, (total_usage - LAG(total_usage, 1, 0) OVER (ORDER BY scan_id)) as crescimento
+            FROM scans WHERE total_usage IS NOT NULL ORDER BY scan_id DESC LIMIT 10
+        """;
+        try (var rs = c.createStatement().executeQuery(sql)) {
+            while (rs.next()) list.add(new CapacityReport(rs.getString("started_at"), rs.getLong("total_usage"), rs.getLong("crescimento")));
+        }
+        return list;
+    }
+
+    private static InventoryRow mapInventoryRow(ResultSet rs) throws SQLException {
+        return new InventoryRow(rs.getString("root_path"), rs.getString("path_rel"), rs.getString("name"), rs.getLong("size_bytes"), rs.getLong("modified_millis"), rs.getLong("created_millis"), rs.getString("status"), rs.getString("hash_hex"));
     }
 }

@@ -8,12 +8,10 @@ import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.sql.Connection;
-import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Objects;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
@@ -246,6 +244,7 @@ public final class Scanner {
         private final ScanMetrics metrics;
         private final BlockingQueue<FileSeen> queue = new ArrayBlockingQueue<>(10000);
         private final Thread worker;
+        @SuppressWarnings("unused")
         private final Consumer<String> logger;
         private volatile boolean finished = false;
 

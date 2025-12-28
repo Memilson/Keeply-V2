@@ -68,7 +68,7 @@ public class Main extends Application {
         tabs.getSelectionModel().selectedItemProperty().addListener((obs, oldTab, newTab) -> {
             if (newTab == inventoryTab) {
                 shell.setTitle("Inventário");
-                shell.setFooter(inventory.footer());
+                shell.setFooter(null);
             } else {
                 shell.setTitle("Scanner");
                 shell.setFooter(scan.footer());

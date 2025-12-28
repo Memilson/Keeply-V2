@@ -144,6 +144,7 @@ public final class ScanController {
     private void performWipeLogic() throws Exception {
         try (Connection conn = Database.openSingleConnection()) {
             conn.setAutoCommit(false);
+            Database.ensureSchema(conn); // garante tabelas antes de operar em bancos antigos
             try (var stmt = conn.createStatement()) {
                 stmt.execute("PRAGMA busy_timeout = 5000");
                 

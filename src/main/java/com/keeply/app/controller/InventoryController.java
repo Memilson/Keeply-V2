@@ -1,14 +1,23 @@
 package com.keeply.app.controller;
 
 import com.keeply.app.Database;
+// IMPORTANTE: Importando as classes estáticas dentro de Database
+import com.keeply.app.Database.InventoryRow;
+import com.keeply.app.Database.ScanSummary;
+import com.keeply.app.Database.CapacityReport;
 import com.keeply.app.view.InventoryScreen;
 import javafx.application.Platform;
 
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 public final class InventoryController {
 
     private final InventoryScreen view;
+    private List<InventoryRow> allRows = new ArrayList<>();
+    private ScanSummary currentScanData = null;
+    private boolean suppressSelection = false;
 
     public InventoryController(InventoryScreen view) {
         this.view = view;
@@ -20,52 +29,113 @@ public final class InventoryController {
         view.refreshButton().setOnAction(e -> refresh());
         view.expandButton().setOnAction(e -> view.expandAll());
         view.collapseButton().setOnAction(e -> view.collapseAll());
-        view.onFileSelected(this::loadHistory);
+        view.searchField().textProperty().addListener((obs, oldVal, newVal) -> applyFilter(newVal));
+
+        view.scanSelector().valueProperty().addListener((obs, oldScan, newScan) -> {
+            if (suppressSelection) return;
+            if (newScan != null) loadSnapshot(newScan);
+        });
+
+        // Evento vazio para seleção simples
+        view.onFileSelected(path -> {}); 
+        
+        // Evento de menu de contexto -> Abre Dialog
+        view.onShowHistory(this::loadDialogHistory);
     }
 
     private void refresh() {
         view.showLoading(true);
-        Thread.ofVirtual().name("keeply-inventory-refresh").start(() -> {
+        Thread.ofVirtual().name("keeply-refresh").start(() -> {
             try (var conn = Database.openSingleConnection()) {
                 Database.ensureSchema(conn);
                 var rows = Database.fetchInventory(conn);
-                var scan = Database.fetchLastScan(conn);
+                var lastScan = Database.fetchLastScan(conn);
+                var allScans = Database.fetchAllScans(conn);
+                var reports = Database.predictGrowth(conn);
+
+                printCapacityAnalysis(reports);
+
                 Platform.runLater(() -> {
                     view.showLoading(false);
-                    view.renderTree(rows, scan);
-                    view.renderHistory(new ArrayList<>(), null);
+                    
+                    // Atualiza Combo sem disparar evento
+                    suppressSelection = true;
+                    view.scanSelector().getItems().setAll(allScans);
+                    
+                    if (!allScans.isEmpty()) {
+                        // Seleciona o último e carrega via Snapshot (consistência)
+                        view.scanSelector().getSelectionModel().select(0); 
+                        suppressSelection = false;
+                        loadSnapshot(allScans.get(0));
+                    } else {
+                        suppressSelection = false;
+                        this.allRows = rows;
+                        this.currentScanData = lastScan;
+                        view.renderTree(rows, lastScan);
+                    }
                 });
             } catch (Exception e) {
-                Platform.runLater(() -> {
-                    view.showLoading(false);
-                    view.showError("Erro ao carregar inventário: " + safeMsg(e));
-                });
+                e.printStackTrace();
+                Platform.runLater(() -> { view.showLoading(false); view.showError("Erro: " + e.getMessage()); });
             }
         });
     }
 
-    private void loadHistory(String pathRel) {
-        if (pathRel == null || pathRel.isBlank()) {
-            view.renderHistory(new ArrayList<>(), null);
-            return;
-        }
-        view.showHistoryLoading(true);
-        Thread.ofVirtual().name("keeply-history-load").start(() -> {
+    private void loadSnapshot(ScanSummary scan) {
+        view.showLoading(true);
+        Thread.ofVirtual().name("keeply-snapshot").start(() -> {
+            try (var conn = Database.openSingleConnection()) {
+                var snapshotRows = Database.fetchSnapshotFiles(conn, scan.scanId());
+                this.allRows = snapshotRows;
+                this.currentScanData = scan;
+                Platform.runLater(() -> {
+                    view.showLoading(false);
+                    view.renderTree(snapshotRows, scan);
+                    applyFilter(view.searchField().getText());
+                });
+            } catch (Exception e) {
+                Platform.runLater(() -> { view.showLoading(false); view.showError("Erro Snapshot: " + e.getMessage()); });
+            }
+        });
+    }
+
+    private void applyFilter(String query) {
+        if (allRows == null || allRows.isEmpty()) return;
+        if (query == null || query.isBlank()) { view.renderTree(allRows, currentScanData); return; }
+        
+        String term = query.toLowerCase(Locale.ROOT);
+        var filtered = allRows.stream()
+                .filter(r -> r.pathRel().toLowerCase().contains(term) || r.name().toLowerCase().contains(term))
+                .toList();
+                
+        view.renderTree(filtered, currentScanData);
+        if (!filtered.isEmpty()) view.expandAll();
+    }
+
+    private void loadDialogHistory(String pathRel) {
+        if (pathRel == null) return;
+        Thread.ofVirtual().start(() -> {
             try (var conn = Database.openSingleConnection()) {
                 var rows = Database.fetchFileHistory(conn, pathRel);
-                Platform.runLater(() -> {
-                    view.showHistoryLoading(false);
-                    view.renderHistory(rows, pathRel);
-                });
-            } catch (Exception e) {
-                Platform.runLater(() -> {
-                    view.showHistoryLoading(false);
-                    view.showError("Erro ao carregar histórico: " + safeMsg(e));
-                });
-            }
+                Platform.runLater(() -> view.showHistoryDialog(rows, pathRel));
+            } catch (Exception e) { e.printStackTrace(); }
         });
     }
 
+    private void printCapacityAnalysis(List<CapacityReport> reports) {
+        if (reports == null || reports.isEmpty()) return;
+        System.out.println("\n=== RELATÓRIO DE CAPACIDADE ===");
+        var latest = reports.get(0);
+        double gb = latest.totalBytes() / (1024.0 * 1024.0 * 1024.0);
+        System.out.printf("Total: %.2f GB\n", gb);
+        
+        // Uso dos records diretos, sem getters
+        if (latest.growthBytes() > 0) System.out.printf("Crescimento: +%.2f MB\n", latest.growthBytes() / (1024.0 * 1024.0));
+        else if (latest.growthBytes() < 0) System.out.printf("Redução: %.2f MB\n", latest.growthBytes() / (1024.0 * 1024.0));
+        else System.out.println("Estável.");
+        System.out.println("==================================\n");
+    }
+    
     private static String safeMsg(Throwable t) {
         return (t.getMessage() != null) ? t.getMessage() : t.getClass().getSimpleName();
     }
