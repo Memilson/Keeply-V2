@@ -8,6 +8,9 @@ import com.keeply.app.Database.CapacityReport;
 import com.keeply.app.view.InventoryScreen;
 import javafx.application.Platform;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -24,6 +27,8 @@ public final class InventoryController {
         wire();
         refresh();
     }
+
+    private static final Logger logger = LoggerFactory.getLogger(InventoryController.class);
 
     private void wire() {
         view.refreshButton().setOnAction(e -> refresh());
@@ -75,7 +80,7 @@ public final class InventoryController {
                     }
                 });
             } catch (Exception e) {
-                e.printStackTrace();
+                logger.error("Erro ao atualizar inventário", e);
                 Platform.runLater(() -> { view.showLoading(false); view.showError("Erro: " + e.getMessage()); });
             }
         });
@@ -94,6 +99,7 @@ public final class InventoryController {
                     applyFilter(view.searchField().getText());
                 });
             } catch (Exception e) {
+                logger.error("Erro ao carregar snapshot", e);
                 Platform.runLater(() -> { view.showLoading(false); view.showError("Erro Snapshot: " + e.getMessage()); });
             }
         });
@@ -118,22 +124,22 @@ public final class InventoryController {
             try (var conn = Database.openSingleConnection()) {
                 var rows = Database.fetchFileHistory(conn, pathRel);
                 Platform.runLater(() -> view.showHistoryDialog(rows, pathRel));
-            } catch (Exception e) { e.printStackTrace(); }
+            } catch (Exception e) { logger.error("Erro ao carregar histórico", e); }
         });
     }
 
     private void printCapacityAnalysis(List<CapacityReport> reports) {
         if (reports == null || reports.isEmpty()) return;
-        System.out.println("\n=== RELATÓRIO DE CAPACIDADE ===");
+        logger.info("=== RELATÓRIO DE CAPACIDADE ===");
         var latest = reports.get(0);
         double gb = latest.totalBytes() / (1024.0 * 1024.0 * 1024.0);
-        System.out.printf("Total: %.2f GB\n", gb);
+        logger.info(String.format("Total: %.2f GB", gb));
         
         // Uso dos records diretos, sem getters
-        if (latest.growthBytes() > 0) System.out.printf("Crescimento: +%.2f MB\n", latest.growthBytes() / (1024.0 * 1024.0));
-        else if (latest.growthBytes() < 0) System.out.printf("Redução: %.2f MB\n", latest.growthBytes() / (1024.0 * 1024.0));
-        else System.out.println("Estável.");
-        System.out.println("==================================\n");
+        if (latest.growthBytes() > 0) logger.info(String.format("Crescimento: +%.2f MB", latest.growthBytes() / (1024.0 * 1024.0)));
+        else if (latest.growthBytes() < 0) logger.info(String.format("Redução: %.2f MB", latest.growthBytes() / (1024.0 * 1024.0)));
+        else logger.info("Estável.");
+        logger.info("==================================");
     }
     
     private static String safeMsg(Throwable t) {

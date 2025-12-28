@@ -6,6 +6,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Optional;
 import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Configuração Central do Keeply.
@@ -31,6 +33,8 @@ public final class Config {
 
     // Construtor privado para impedir instanciação (Utility Class)
     private Config() {}
+
+    private static final Logger logger = LoggerFactory.getLogger(Config.class);
 
     /**
      * Retorna a URL de Conexão JDBC.
@@ -117,7 +121,7 @@ public final class Config {
                 });
         } catch (IOException e) {
             // Log discreto, não queremos travar a aplicação se o .env estiver ilegível
-            System.err.println(">> Aviso: Não foi possível ler o arquivo .env: " + e.getMessage());
+            logger.warn("Não foi possível ler o arquivo .env: {}", e.getMessage());
             return Optional.empty();
         }
     }
@@ -155,13 +159,12 @@ public final class Config {
                 Files.createDirectories(appDataDir);
             }
             // Sucesso: retorna caminho no AppData
-            System.out.println(">> Banco de dados localizado em: " + appDataDir.toAbsolutePath());
+            logger.info("Banco de dados localizado em: {}", appDataDir.toAbsolutePath());
             return appDataDir.resolve(dbFileName);
         } catch (IOException e) {
             // Falha: Fallback para diretório local (onde o jar está)
             Path localPath = Paths.get(dbFileName).toAbsolutePath();
-            System.err.println(">> ERRO PERMISSÃO: Não foi possível usar " + appDataDir);
-            System.err.println(">> Usando diretório local como fallback: " + localPath);
+            logger.warn("ERRO PERMISSÃO: Não foi possível usar {}. Usando diretório local como fallback: {}", appDataDir, localPath);
             return localPath;
         }
     }

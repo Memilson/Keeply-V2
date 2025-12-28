@@ -1,12 +1,12 @@
 package com.keeply.app;
 
-import java.lang.reflect.Proxy;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
+
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
 import com.keeply.app.Scanner.HashCandidate;
 import com.keeply.app.Scanner.HashUpdate;
@@ -22,30 +22,41 @@ public final class Database {
     public record FileHistoryRow(long scanId, String rootPath, String startedAt, String finishedAt, String hashHex, long sizeBytes, String statusEvent, String createdAt) {}
     public record CapacityReport(String date, long totalBytes, long growthBytes) {}
 
-    // --- CONNECTION POOL ---
+    // --- CONNECTION POOL (HikariCP singleton) ---
+    private static HikariDataSource dataSource;
+
+    static {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(Config.getDbUrl());
+        config.addDataSourceProperty("cipher", "sqlcipher");
+        config.addDataSourceProperty("key", Config.getSecretKey());
+        config.addDataSourceProperty("legacy", "0");
+        config.addDataSourceProperty("kdf_iter", "64000");
+
+        // Transactions are manually committed by callers
+        config.setAutoCommit(false);
+
+        // Configurações vitais para SQLite
+        config.setConnectionTestQuery("SELECT 1");
+        config.setMaximumPoolSize(10);
+        config.addDataSourceProperty("journal_mode", "WAL");
+        config.addDataSourceProperty("synchronous", "NORMAL");
+
+        dataSource = new HikariDataSource(config);
+    }
+
     public static final class SimplePool implements AutoCloseable {
-        private final BlockingQueue<Connection> idle;
-
-        public SimplePool(String jdbcUrl, int poolSize) throws SQLException {
-            this.idle = new ArrayBlockingQueue<>(poolSize);
-            for (int i = 0; i < poolSize; i++) idle.add(openEncryptedPhysical(jdbcUrl));
+        // kept for API compatibility with existing code; uses shared Hikari datasource
+        public SimplePool(String jdbcUrl, int poolSize) {
+            // constructor parameters are ignored — singleton datasource already configured
         }
 
-        public Connection borrow() throws InterruptedException {
-            var physical = idle.take();
-            return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(), new Class<?>[]{Connection.class}, (p, m, a) -> {
-                if (m.getName().equals("close")) { release(physical); return null; }
-                return m.invoke(physical, a);
-            });
-        }
-
-        private void release(Connection c) {
-            try { if (!c.getAutoCommit()) c.rollback(); } catch (Exception ignored) {}
-            if (!idle.offer(c)) try { c.close(); } catch (Exception ignored) {}
+        public Connection borrow() throws SQLException {
+            return dataSource.getConnection();
         }
 
         @Override public void close() {
-            Connection c; while ((c = idle.poll()) != null) try { c.close(); } catch (Exception ignored) {}
+            // no-op: datasource is application-wide singleton
         }
     }
 
@@ -68,7 +79,7 @@ public final class Database {
     }
 
     public static Connection openSingleConnection() throws SQLException {
-        return openEncryptedPhysical(Config.getDbUrl());
+        return dataSource.getConnection();
     }
 
     // --- SCHEMA ---

@@ -14,6 +14,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 
@@ -46,6 +48,7 @@ public final class Scanner {
     }
 
     private static final HexFormat HEX = HexFormat.of();
+    private static final Logger logger = LoggerFactory.getLogger(Scanner.class);
     private static final ThreadLocal<MessageDigest> SHA256 = ThreadLocal.withInitial(() -> {
         try { return MessageDigest.getInstance("SHA-256"); } catch (Exception e) { throw new RuntimeException(e); }
     });
@@ -102,7 +105,7 @@ public final class Scanner {
 
         // 4. Hash
         if (cfg.computeHash()) {
-            System.out.println("[SCAN] Calculando Hashes...");
+            logger.accept("[SCAN] Calculando Hashes...");
             processHashes(rootAbs, pool, cfg, metrics, cancel, scanId, logger);
         }
 
@@ -110,14 +113,14 @@ public final class Scanner {
         // Copia as mudanças desse scan para a tabela de histórico
         try (Connection c = pool.borrow()) {
             int hist = Database.snapshotToHistory(c, scanId);
-            if (hist > 0) System.out.println("[DB] Histórico: " + hist + " alterações registradas.");
+            if (hist > 0) logger.info("[DB] Histórico: {} alterações registradas.", hist);
             
             Database.finishScanLog(c, scanId);
             c.commit();
         }
         
-        System.out.println("[SCAN] Finalizado.");
-        
+        logger.accept("[SCAN] Finalizado.");
+
         logger.accept(">> FINALIZADO! Total de arquivos no inventário: " + metrics.filesSeen.sum());
         metrics.running.set(false);
     }
@@ -284,7 +287,7 @@ public final class Scanner {
                     }
                     if (pending > 0) { ps.executeBatch(); c.commit(); metrics.dbBatches.increment(); }
                 }
-            } catch (Exception e) { e.printStackTrace(); }
+            } catch (Exception e) { logger.error("DbWriter error", e); }
         }
     }
 }

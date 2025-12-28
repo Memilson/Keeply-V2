@@ -98,7 +98,7 @@ public final class InventoryScreen {
 
         // Error Banner
         errorLabel.setPadding(new Insets(8));
-        errorLabel.setStyle("-fx-background-color: #FEE2E2; -fx-text-fill: #991B1B; -fx-background-radius: 4;");
+        errorLabel.getStyleClass().add("error-banner");
         errorLabel.setVisible(false);
         errorLabel.setManaged(false);
 
@@ -375,8 +375,12 @@ public final class InventoryScreen {
     }
 
     // Utils
-    private void styleField(Control c) { c.setStyle("-fx-background-radius:4;-fx-border-color:#D1D5DB;-fx-border-radius:4;-fx-padding:6;"); }
-    private void styleButton(Button b, String bg, String fg) { b.setStyle("-fx-background-color:"+bg+";-fx-text-fill:"+fg+";-fx-font-weight:bold;-fx-cursor:hand;-fx-background-radius:4;-fx-padding:6 12;"); }
+    private void styleField(Control c) { c.getStyleClass().add("field-default"); }
+    private void styleButton(Button b, String bg, String fg) {
+        // map known accents to style classes
+        if ("#06B6D4".equalsIgnoreCase(bg)) b.getStyleClass().add("button-action");
+        else b.getStyleClass().add("button-secondary");
+    }
     private String humanSize(long bytes) {
         if (bytes < 1024) return bytes + " B";
         int exp = (int) (Math.log(bytes) / Math.log(1024));

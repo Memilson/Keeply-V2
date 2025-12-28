@@ -1,0 +1,39 @@
+.root {
+    -fx-font-family: 'Segoe UI';
+}
+.button-action {
+    -fx-background-color: #06B6D4;
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+    -fx-cursor: hand;
+    -fx-background-radius: 4;
+}
+.button-action:hover {
+    -fx-background-color: #0891b2;
+}
+.status-pill {
+    -fx-background-radius: 10;
+    -fx-padding: 2 8;
+    -fx-font-weight: bold;
+    -fx-font-size: 10px;
+    -fx-text-fill: white;
+}
+
+.button-secondary {
+    -fx-background-color: #F4F4F5;
+    -fx-text-fill: #18181B;
+    -fx-background-radius: 4;
+    -fx-padding: 6 12;
+}
+.field-default {
+    -fx-background-radius:4;
+    -fx-border-color:#D1D5DB;
+    -fx-border-radius:4;
+    -fx-padding:6;
+}
+.error-banner {
+    -fx-background-color: #FEE2E2;
+    -fx-text-fill: #991B1B;
+    -fx-background-radius: 4;
+    -fx-padding: 8;
+}

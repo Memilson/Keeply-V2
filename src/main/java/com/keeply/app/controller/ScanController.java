@@ -16,6 +16,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class ScanController {
 
@@ -31,6 +33,8 @@ public final class ScanController {
         this.model = model;
         wireEvents();
     }
+
+    private static final Logger logger = LoggerFactory.getLogger(ScanController.class);
 
     private void wireEvents() {
         view.getScanButton().setOnAction(e -> startScan());
@@ -89,7 +93,7 @@ public final class ScanController {
 
         } catch (Exception e) {
             log(">> ERRO AO INICIAR: " + safeMsg(e));
-            e.printStackTrace();
+            logger.error("Erro ao iniciar scan", e);
             setScanningState(false);
             currentTask = null;
             scanThread = null;
@@ -122,7 +126,7 @@ public final class ScanController {
                 log(">> SUCESSO: Banco de dados limpo e otimizado.");
             } catch (Exception e) {
                 log(">> ERRO NO WIPE: " + safeMsg(e));
-                e.printStackTrace();
+                logger.error("Erro no wipe do banco", e);
             } finally {
                 setScanningState(false);
                 ui(() -> view.getStopButton().setDisable(false));
@@ -265,7 +269,7 @@ public final class ScanController {
                 log(">> Operação interrompida.");
             } catch (Exception e) {
                 log(">> ERRO FATAL: " + safeMsg(e));
-                e.printStackTrace();
+                logger.error("Erro fatal durante o scan", e);
             } finally {
                 running.set(false);
                 cleanup();
