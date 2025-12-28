@@ -38,3 +38,4 @@ System Volume Information/
 # Outros
 *.swp
 *~
+.env
