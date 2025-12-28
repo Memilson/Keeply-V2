@@ -10,8 +10,11 @@ import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.util.Duration;
 
-import java.sql.SQLException;
+import java.sql.Connection;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class ScanController {
@@ -19,8 +22,9 @@ public final class ScanController {
     private final ScanScreen view;
     private final ScanModel model;
 
-    private ScannerTask currentTask;
-    private Timeline uiUpdater;
+    private volatile ScannerTask currentTask;
+    private volatile Thread scanThread;
+    private volatile Timeline uiUpdater;
 
     public ScanController(ScanScreen view, ScanModel model) {
         this.view = view;
@@ -34,145 +38,164 @@ public final class ScanController {
         view.getWipeButton().setOnAction(e -> wipeDatabase());
     }
 
+    // -----------------------------
+    // FX-thread helpers
+    // -----------------------------
+    private void ui(Runnable r) {
+        if (Platform.isFxApplicationThread()) r.run();
+        else Platform.runLater(r);
+    }
+
+    // Este método é passado para o Scanner para atualizar a UI
+    private void log(String msg) {
+        ui(() -> view.appendLog(msg));
+    }
+
+    private void setScanningState(boolean scanning) {
+        ui(() -> view.setScanningState(scanning));
+    }
+
+    // -----------------------------
+    // Actions
+    // -----------------------------
     private void startScan() {
-        // 1. Defesa: Verifica se já existe algo rodando e impede duplo clique
         if (currentTask != null && currentTask.isRunning()) {
-            view.appendLog(">> Aviso: Scan anterior ainda está finalizando...");
+            log(">> Aviso: Scan anterior ainda está finalizando...");
             return;
         }
 
-        var path = view.getRootPathText();
-        if (path == null || path.isBlank()) {
-            view.appendLog(">> Erro: Selecione uma pasta primeiro.");
+        var pathText = view.getRootPathText();
+        if (pathText == null || pathText.isBlank()) {
+            log(">> Erro: Selecione uma pasta primeiro.");
             return;
         }
 
         try {
-            // 2. Preparação da UI
-            view.clearConsole();
-            view.appendLog(">> Preparando novo scan em: " + path);
-            model.reset();
-            view.setScanningState(true);
+            ui(() -> {
+                view.clearConsole();
+                model.reset();
+                view.setScanningState(true);
+            });
 
-            // 3. Configuração
+            // Cria a configuração com os filtros
             var config = buildScanConfig();
 
-            // 4. Criação da Tarefa
-            currentTask = new ScannerTask(path, config);
+            // Inicia a tarefa
+            currentTask = new ScannerTask(pathText, config);
             
-            // 5. Início da Thread Virtual
-            Thread.ofVirtual()
-                  .name("keeply-worker-" + System.currentTimeMillis())
-                  .start(currentTask);
+            scanThread = Thread.ofVirtual()
+                    .name("keeply-scan-main")
+                    .start(currentTask);
 
         } catch (Exception e) {
-            // Se falhar ANTES da thread iniciar, destrava a UI
-            view.appendLog(">> ERRO AO INICIAR: " + e.getMessage());
+            log(">> ERRO AO INICIAR: " + safeMsg(e));
             e.printStackTrace();
-            view.setScanningState(false);
+            setScanningState(false);
             currentTask = null;
+            scanThread = null;
         }
     }
 
     private void stopScan() {
-        if (currentTask != null && currentTask.isRunning()) {
-            view.appendLog("!!! Solicitando parada... Aguarde a limpeza dos recursos.");
-            currentTask.cancel();
-            // Desabilita o botão de stop para evitar spam de cliques
-            view.getStopButton().setDisable(true);
+        var task = currentTask;
+        if (task != null && task.isRunning()) {
+            log("!!! Solicitando parada... Aguarde...");
+            task.cancel();
+            
+            var t = scanThread;
+            if (t != null) t.interrupt();
+            
+            ui(() -> view.getStopButton().setDisable(true));
         }
     }
 
     private void wipeDatabase() {
         if (!view.confirmWipe()) return;
 
-        view.setScanningState(true);
-        
-        Thread.ofVirtual().name("keeply-db-wipe").start(() -> {
-            view.appendLog("!!! INICIANDO WIPE (LIMPEZA) !!!");
-            
-            // Tenta fechar o pool da tarefa anterior à força, se existir
-            if (currentTask != null) {
-                // Isso é um hack seguro: acessa o pool via reflexão ou apenas garante cleanup
-                // Mas o ideal é que o stopScan já tenha cuidado disso.
-            }
+        setScanningState(true);
 
+        Thread.ofVirtual().name("keeply-db-wipe").start(() -> {
+            log("!!! INICIANDO WIPE (LIMPEZA) !!!");
             try {
+                requestStopAndWait(5, TimeUnit.SECONDS); // Garante que o scan parou
                 performWipeLogic();
-                view.appendLog(">> Banco de dados limpo com sucesso.");
-            } catch (SQLException e) {
-                // Código 55P03 é "lock_not_available" no Postgres
-                if ("55P03".equals(e.getSQLState())) {
-                    view.appendLog("ERRO: O banco está ocupado por outra conexão.");
-                    view.appendLog("Tente reiniciar a aplicação para liberar os locks.");
-                } else {
-                    view.appendLog("ERRO SQL NO WIPE: " + e.getMessage());
-                }
-                e.printStackTrace();
+                log(">> SUCESSO: Banco de dados limpo e otimizado.");
             } catch (Exception e) {
-                view.appendLog("ERRO CRÍTICO: " + e.getMessage());
+                log(">> ERRO NO WIPE: " + safeMsg(e));
                 e.printStackTrace();
             } finally {
-                Platform.runLater(() -> view.setScanningState(false));
+                setScanningState(false);
+                ui(() -> view.getStopButton().setDisable(false));
             }
         });
     }
 
-    // Lógica blindada contra travamentos
-    private void performWipeLogic() throws Exception {
-        // NÃO USA O POOL AQUI. Usa uma conexão direta e descartável.
-        // Isso garante que não pegamos uma conexão "suja" do pool antigo.
-        try (java.sql.Connection conn = java.sql.DriverManager.getConnection(Config.getDbUrl(), Config.getDbUser(), Config.getDbPass())) {
-            conn.setAutoCommit(false);
-            
-            try (java.sql.Statement stmt = conn.createStatement()) {
-                // 1. Configura Schema
-                stmt.execute("SET search_path TO keeply");
-                
-                // 2. IMPORTANTE: Define timeout de 5 segundos para conseguir o Lock.
-                // Se o banco estiver travado, ele avisa em vez de congelar para sempre.
-                stmt.execute("SET lock_timeout = '5s'");
+    private void requestStopAndWait(long timeout, TimeUnit unit) {
+        var t = scanThread;
+        if (t == null || !t.isAlive()) return;
+        stopScan();
+        try {
+            t.join(unit.toMillis(timeout));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
 
-                view.appendLog(">> Solicitando acesso exclusivo às tabelas...");
+    private void performWipeLogic() throws Exception {
+        try (Connection conn = Database.openSingleConnection()) {
+            conn.setAutoCommit(false);
+            try (var stmt = conn.createStatement()) {
+                stmt.execute("PRAGMA busy_timeout = 5000");
                 
-                // 3. Executa o Truncate
-                stmt.execute("TRUNCATE TABLE file_change, file_state, content, path, scan_issue, scan CASCADE");
+                log(">> Apagando tabelas...");
+                // Ordem correta para evitar erro de Foreign Key
+                stmt.execute("DELETE FROM scan_issues");
+                stmt.execute("DELETE FROM file_inventory");
+                stmt.execute("DELETE FROM scans");
                 
                 conn.commit();
+                
+                log(">> Compactando arquivo (VACUUM)...");
+                conn.setAutoCommit(true);
+                stmt.execute("VACUUM");
             }
         }
     }
 
     private Scanner.ScanConfig buildScanConfig() {
-        int availableCores = Runtime.getRuntime().availableProcessors();
-        // Usa metade dos núcleos para não travar o PC
-        int workers = Math.max(2, availableCores - 1); 
+        var defaults = Scanner.ScanConfig.defaults();
+        
+        // Exclusões de segurança e lixo
+        var excludes = new ArrayList<>(defaults.excludeGlobs());
+        excludes.add("**/Keeply/**");
+        excludes.add("**/*.keeply*");
+        excludes.add("**/AppData/Local/Temp/**");
+        excludes.add("**/AppData/Local/Microsoft/**");
+        excludes.add("**/ntuser.dat*");
+        excludes.add("**/Cookies/**");
+        excludes.add("**/$Recycle.Bin/**");
+        excludes.add("**/System Volume Information/**");
+        excludes.add("**/Windows/**"); // Opcional: evita scanear o sistema operacional
 
-        return Scanner.ScanConfig.builder()
-                .workers(workers)
-                .dbPoolSize(workers + 2)
-                .batchLimit(3000)
-                
-                // --- ISSO AQUI SALVA SUA VIDA (E O LOG) ---
-                .addExclude("**/AppData/**")           // Ignora configurações de programas e caches
-                .addExclude("**/Application Data/**")  // Atalhos antigos de sistema
-                .addExclude("**/ntuser.dat*")          // Arquivos de registro do Windows (sempre bloqueados)
-                .addExclude("**/Cookies/**")           // Cookies de navegador
-                .addExclude("**/Temp/**")              // Lixo temporário (opcional, mas bom ignorar)
-                // ------------------------------------------
-                
-                .addExclude("**/node_modules/**")
-                .addExclude("**/.git/**")
-                .addExclude("**/$Recycle.Bin/**")
-                .addExclude("**/System Volume Information/**")
-                .build();
+        return new Scanner.ScanConfig(
+                defaults.dbBatchSize(),
+                defaults.hashWorkers(),
+                true, 
+                defaults.hashMaxBytes(),
+                defaults.largeFileHashPolicy(),
+                defaults.sampledChunkBytes(),
+                List.copyOf(excludes)
+        );
     }
 
-    // --- Atualização da UI ---
+    private int dbPoolSizeFor(Scanner.ScanConfig cfg) {
+        return Math.max(4, cfg.hashWorkers() + 2);
+    }
 
+    // --- UI UPDATER ---
     private void startUiUpdater(Scanner.ScanMetrics metrics) {
-        stopUiUpdater(); // Garante que não tem timeline antiga rodando
-        uiUpdater = new Timeline(new KeyFrame(Duration.millis(100), evt -> updateModel(metrics)));
+        stopUiUpdater();
+        uiUpdater = new Timeline(new KeyFrame(Duration.millis(500), evt -> updateModel(metrics)));
         uiUpdater.setCycleCount(Timeline.INDEFINITE);
         uiUpdater.play();
     }
@@ -185,25 +208,20 @@ public final class ScanController {
     }
 
     private void updateModel(Scanner.ScanMetrics m) {
-        long elapsedMillis = java.time.Duration.between(m.start, Instant.now()).toMillis();
-        double seconds = Math.max(0.1, elapsedMillis / 1000.0);
-
-        long scanned = m.filesScanned.sum();
-        long hashed  = m.filesHashed.sum();
-        long bytes   = m.bytesScanned.sum();
-
-        double hashRate = hashed / seconds;
-        double mbPerSec = (bytes / 1048576.0) / seconds;
-
+        long elapsed = java.time.Duration.between(m.start, Instant.now()).toSeconds();
+        double seconds = Math.max(1.0, elapsed);
+        
+        long scanned = m.filesSeen.sum();
+        long hashed = m.hashed.sum();
+        
         model.filesScannedProperty.set("%,d".formatted(scanned));
-        model.mbPerSecProperty.set("%.1f".formatted(mbPerSec));
-        model.rateProperty.set("%.0f f/s".formatted(hashRate));
+        model.rateProperty.set("%.0f files/s".formatted(scanned / seconds));
         model.dbBatchesProperty.set(Long.toString(m.dbBatches.sum()));
-        model.errorsProperty.set(Long.toString(m.errorsWalk.sum() + m.errorsHash.sum()));
+        model.errorsProperty.set(Long.toString(m.walkErrors.sum()));
+        model.mbPerSecProperty.set(hashed > 0 ? "Hashing..." : "Scanning..."); 
     }
 
-    // --- Worker ---
-    
+    // --- WORKER ---
     private final class ScannerTask implements Runnable {
         private final String rootPath;
         private final Scanner.ScanConfig config;
@@ -216,58 +234,55 @@ public final class ScanController {
         }
 
         public boolean isRunning() { return running.get(); }
-        public void cancel() { running.set(false); }
+        
+        public void cancel() { 
+            running.set(false);
+            if (scanThread != null) scanThread.interrupt();
+        }
 
         @Override
         public void run() {
             var metrics = new Scanner.ScanMetrics();
             metrics.running.set(true);
-
-            Platform.runLater(() -> startUiUpdater(metrics));
+            ui(() -> startUiUpdater(metrics));
 
             try {
-                view.appendLog("Conectando ao banco...");
-                // Se der erro aqui (ex: muitas conexões), cai no catch e libera a UI
-                pool = new Database.SimplePool(Config.getDbUrl(), Config.getDbUser(), Config.getDbPass(), config.dbPoolSize());
+                log(">> Conectando ao Banco de Dados...");
+                pool = new Database.SimplePool(Config.getDbUrl(), dbPoolSizeFor(config));
 
+                // Garante Schema
                 try (var conn = pool.borrow()) {
-                    Database.initSchema(conn);
+                    Database.ensureSchema(conn);
+                    conn.commit();
                 }
-                
-                view.appendLog("Iniciando varredura...");
-                Scanner.Engine.runScanLogic(rootPath, config, pool, metrics, running, view::appendLog);
+
+                log(">> Iniciando motor de varredura...");
+                // AQUI: Passamos o método 'log' do controller para o Scanner
+                Scanner.runScan(java.nio.file.Path.of(rootPath), config, pool, metrics, running, ScanController.this::log);
 
             } catch (InterruptedException ie) {
-                 view.appendLog(">> Cancelado.");
+                log(">> Operação interrompida.");
             } catch (Exception e) {
-                view.appendLog(">> ERRO FATAL: " + e.getMessage());
+                log(">> ERRO FATAL: " + safeMsg(e));
                 e.printStackTrace();
             } finally {
-                // Limpeza crítica
+                running.set(false);
                 cleanup();
-                metrics.running.set(false);
-                running.set(false); // Garante que o controller saiba que acabou
-                
-                Platform.runLater(() -> {
+                ui(() -> {
                     stopUiUpdater();
-                    updateModel(metrics); // Último update
                     view.setScanningState(false);
-                    view.appendLog("=== FINALIZADO ===");
-                    // Garante que o botão de stop seja reabilitado (caso tenha sido desabilitado no cancel)
                     view.getStopButton().setDisable(false);
                 });
+                currentTask = null;
             }
         }
 
         private void cleanup() {
-            if (pool != null) {
-                try {
-                    pool.close();
-                    view.appendLog("Conexões fechadas.");
-                } catch (Exception e) {
-                    System.err.println("Erro ao fechar pool: " + e.getMessage());
-                }
-            }
+            if (pool != null) try { pool.close(); } catch (Exception ignored) {}
         }
+    }
+
+    private static String safeMsg(Throwable t) {
+        return (t.getMessage() != null) ? t.getMessage() : t.getClass().getSimpleName();
     }
 }
