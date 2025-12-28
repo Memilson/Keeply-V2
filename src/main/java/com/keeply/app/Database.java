@@ -62,10 +62,9 @@ public class Database {
             String normalizedRoot = root.replace('\\', '/');
             String searchPattern = normalizedRoot + "%";
             
-            System.out.println("[DEBUG DB] Buscando (Normalizado): " + searchPattern);
+            //System.out.println("[DEBUG DB] Buscando (Normalizado): " + searchPattern);
 
             ps.setString(1, searchPattern); 
-            // ... resto do código igual
             ps.setLong(2, limit);
             ps.setFetchSize(10000); 
 
@@ -95,7 +94,7 @@ public class Database {
                     ));
                 }
             }
-            System.out.println("[DEBUG DB] Encontrados " + count + " arquivos no banco em " + (System.currentTimeMillis() - start) + "ms");
+            //System.out.println("[DEBUG DB] Encontrados " + count + " arquivos no banco em " + (System.currentTimeMillis() - start) + "ms");
         }
     }
 
