@@ -9,15 +9,15 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.sql.Connection;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class Scanner {
 
@@ -28,7 +28,8 @@ public final class Scanner {
 
     public record ScanConfig(int dbBatchSize, int hashWorkers, boolean computeHash, long hashMaxBytes, LargeFileHashPolicy largeFileHashPolicy, int sampledChunkBytes, List<String> excludeGlobs) {
         public static ScanConfig defaults() {
-            return new ScanConfig(5000, 4, true, 200L * 1024 * 1024, LargeFileHashPolicy.SAMPLED, 1 * 1024 * 1024, 
+            // Nota: hashWorkers pode ser aumentado para 16 ou 32 em máquinas potentes
+            return new ScanConfig(5000, 32, true, 200L * 1024 * 1024, LargeFileHashPolicy.SAMPLED, 1 * 1024 * 1024, 
                 List.of("**/.git/**", "**/node_modules/**", "**/AppData/**", "**/Keeply/**", "**/*.iso", "**/*.vdi"));
         }
     }
@@ -49,6 +50,8 @@ public final class Scanner {
 
     private static final HexFormat HEX = HexFormat.of();
     private static final Logger logger = LoggerFactory.getLogger(Scanner.class);
+    
+    // ThreadLocals para evitar alocação excessiva de memória em Virtual Threads
     private static final ThreadLocal<MessageDigest> SHA256 = ThreadLocal.withInitial(() -> {
         try { return MessageDigest.getInstance("SHA-256"); } catch (Exception e) { throw new RuntimeException(e); }
     });
@@ -57,14 +60,14 @@ public final class Scanner {
 
     // --- ENGINE PRINCIPAL ---
 
-        public static void runScan(
+    public static void runScan(
             Path root, 
             ScanConfig cfg, 
             Database.SimplePool pool, 
             ScanMetrics metrics, 
             AtomicBoolean cancel,
-            Consumer<String> uiLogger // NOVO: Permite enviar logs para a UI
-        ) throws Exception {
+            Consumer<String> uiLogger
+    ) throws Exception {
         
         var rootAbs = root.toAbsolutePath().normalize();
         metrics.running.set(true);
@@ -82,7 +85,7 @@ public final class Scanner {
             c.commit();
         }
 
-        // 2. Walk
+        // 2. Walk (Produtor de Metadados)
         uiLogger.accept(">> Fase 1: Mapeando arquivos no disco...");
         try (var writer = new DbWriter(pool, scanId, cfg.dbBatchSize(), metrics, uiLogger)) {
             walk(rootAbs, scanId, cfg, metrics, cancel, writer);
@@ -96,21 +99,20 @@ public final class Scanner {
         }
 
         // 3. Limpeza
-        uiLogger.accept(">> Fase 2: Sincronizando banco (Upsert + Cleaning)...");
+        uiLogger.accept(">> Fase 2: Sincronizando banco (Limpeza)...");
         try (Connection c = pool.borrow()) {
             int deleted = Database.deleteStaleFiles(c, scanId);
-            if (deleted > 0) uiLogger.accept(">> Removidos " + deleted + " arquivos que não existem mais.");
+            if (deleted > 0) uiLogger.accept(">> Removidos " + deleted + " arquivos obsoletos.");
             c.commit();
         }
 
-        // 4. Hash
+        // 4. Hash (Pipeline Paralelo Otimizado)
         if (cfg.computeHash()) {
-            uiLogger.accept("[SCAN] Calculando Hashes...");
-            processHashes(rootAbs, pool, cfg, metrics, cancel, scanId, uiLogger);
+            uiLogger.accept("[SCAN] Calculando Hashes (Workers: " + cfg.hashWorkers() + ")...");
+            processHashesOptimized(rootAbs, pool, cfg, metrics, cancel, scanId, uiLogger);
         }
 
-        // --- NOVO: GRAVAR HISTÓRICO (TIME LAPSE) ---
-        // Copia as mudanças desse scan para a tabela de histórico
+        // --- Histórico ---
         try (Connection c = pool.borrow()) {
             int hist = Database.snapshotToHistory(c, scanId);
             if (hist > 0) logger.info("[DB] Histórico: {} alterações registradas.", hist);
@@ -120,8 +122,7 @@ public final class Scanner {
         }
         
         uiLogger.accept("[SCAN] Finalizado.");
-
-        uiLogger.accept(">> FINALIZADO! Total de arquivos no inventário: " + metrics.filesSeen.sum());
+        uiLogger.accept(">> FINALIZADO! Total de arquivos: " + metrics.filesSeen.sum());
         metrics.running.set(false);
     }
 
@@ -166,37 +167,76 @@ public final class Scanner {
         });
     }
 
-    private static void processHashes(Path root, Database.SimplePool pool, ScanConfig cfg, ScanMetrics metrics, AtomicBoolean cancel, long scanId, Consumer<String> uiLogger) throws Exception {
+    /**
+     * Pipeline Otimizado: Dispatcher -> Workers (Semaphore) -> Queue -> DB Persister
+     */
+    private static void processHashesOptimized(Path root, Database.SimplePool pool, ScanConfig cfg, ScanMetrics metrics, AtomicBoolean cancel, long scanId, Consumer<String> uiLogger) throws Exception {
+        
+        // Fila de comunicação entre Workers (Hash) e Persister (Banco)
+        BlockingQueue<HashUpdate> updatesQueue = new LinkedBlockingQueue<>(10000);
+        // Semáforo para controlar estritamente o número de IOs paralelos
+        Semaphore concurrencyLimiter = new Semaphore(cfg.hashWorkers());
+        AtomicBoolean finishedProducing = new AtomicBoolean(false);
+
+        // 1. Thread PERSISTER (Consumidor Único para o SQLite)
+        Thread dbPersister = Thread.ofVirtual().name("hash-db-writer").start(() -> {
+            try (Connection c = pool.borrow()) {
+                var updateList = new ArrayList<HashUpdate>(1000);
+                while (!finishedProducing.get() || !updatesQueue.isEmpty()) {
+                    HashUpdate u = updatesQueue.poll(50, TimeUnit.MILLISECONDS);
+                    if (u != null) updateList.add(u);
+
+                    if (updateList.size() >= 1000 || (u == null && !updateList.isEmpty())) {
+                        Database.updateHashes(c, updateList);
+                        c.commit();
+                        updateList.clear();
+                    }
+                }
+            } catch (Exception e) {
+                logger.error("Erro no DB Persister", e);
+            }
+        });
+
+        // 2. DISPATCHER & WORKERS
         try (var exec = Executors.newVirtualThreadPerTaskExecutor()) {
             while (!cancel.get()) {
+                // Fetch em batches do banco para não carregar milhões de linhas na RAM
                 List<HashCandidate> batch;
                 try (Connection c = pool.borrow()) {
-                    batch = Database.fetchDirtyFiles(c, scanId, 2000);
+                    batch = Database.fetchDirtyFiles(c, scanId, 5000);
                     c.commit();
                 }
-                if (batch.isEmpty()) break;
+                
+                if (batch.isEmpty()) break; // Nada mais a fazer
 
-                // uiLogger.accept(">> Hash em lote de " + batch.size() + " arquivos...");
-
-                var futures = new ArrayList<Future<HashUpdate>>();
                 for (var item : batch) {
-                    futures.add(exec.submit(() -> computeHash(root, cfg, item, metrics)));
-                }
-
-                var updates = new ArrayList<HashUpdate>();
-                for (var f : futures) {
-                    try {
-                        var res = f.get();
-                        if (res != null) updates.add(res);
-                    } catch (Exception ignored) {}
-                }
-
-                try (Connection c = pool.borrow()) {
-                    Database.updateHashes(c, updates);
-                    c.commit();
+                    if (cancel.get()) break;
+                    
+                    // Bloqueia se já houver 'hashWorkers' tarefas rodando
+                    concurrencyLimiter.acquire();
+                    
+                    exec.submit(() -> {
+                        try {
+                            HashUpdate res = computeHash(root, cfg, item, metrics);
+                            if (res != null) {
+                                try {
+                                    updatesQueue.put(res);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+                        } finally {
+                            // Libera o slot para o próximo arquivo
+                            concurrencyLimiter.release();
+                        }
+                    });
                 }
             }
-        }
+        } // O try-with-resources espera todas as threads virtuais terminarem aqui
+
+        // Finalização
+        finishedProducing.set(true);
+        dbPersister.join(); // Espera o banco terminar de gravar o que sobrou
     }
 
     private static HashUpdate computeHash(Path root, ScanConfig cfg, HashCandidate item, ScanMetrics metrics) {
@@ -206,40 +246,65 @@ public final class Scanner {
                 return new HashUpdate(item.pathRel(), "SKIPPED_SIZE");
             }
 
-            var md = SHA256.get(); md.reset();
+            var md = SHA256.get(); 
+            md.reset();
 
+            // Hash Amostral (Rápido)
             if (cfg.largeFileHashPolicy() == LargeFileHashPolicy.SAMPLED && item.sizeBytes() > cfg.hashMaxBytes()) {
                 int chunk = Math.max(64 * 1024, cfg.sampledChunkBytes());
                 var buf = SAMPLE_BUFFER.get();
                 if (buf.length < chunk) buf = new byte[chunk];
+                
                 md.update(longToBytes(item.sizeBytes()));
                 try (var ch = FileChannel.open(absPath, StandardOpenOption.READ)) {
                     readAt(ch, 0, buf, chunk, md);
                     long pos = Math.max(0, ch.size() - chunk);
                     readAt(ch, pos, buf, chunk, md);
                 }
+                
+                String hex = HEX.formatHex(md.digest());
                 metrics.hashed.increment();
-                return new HashUpdate(item.pathRel(), HEX.formatHex(md.digest()));
+                return new HashUpdate(item.pathRel(), hex);
             }
 
+            // Hash Completo (Seguro)
             var buf = BUFFER.get();
             try (InputStream in = Files.newInputStream(absPath)) {
-                int n; while ((n = in.read(buf)) != -1) md.update(buf, 0, n);
+                int n; 
+                while ((n = in.read(buf)) != -1) {
+                    md.update(buf, 0, n);
+                }
             }
+            
+            String hex = HEX.formatHex(md.digest());
+            
+            // TODO: Integração BlobStore
+            // blobStore.store(absPath, hex); <-- Injetar aqui futuramente para backup
+            
             metrics.hashed.increment();
-            return new HashUpdate(item.pathRel(), HEX.formatHex(md.digest()));
+            return new HashUpdate(item.pathRel(), hex);
 
-        } catch (Exception e) { return null; }
+        } catch (Exception e) { 
+            return null; 
+        }
     }
 
     private static void readAt(FileChannel ch, long pos, byte[] buf, int len, MessageDigest md) throws IOException {
-        var bb = ByteBuffer.wrap(buf, 0, len); int read = 0;
-        while (bb.hasRemaining()) { int r = ch.read(bb, pos + read); if (r < 0) break; read += r; }
+        var bb = ByteBuffer.wrap(buf, 0, len); 
+        int read = 0;
+        while (bb.hasRemaining()) { 
+            int r = ch.read(bb, pos + read); 
+            if (r < 0) break; 
+            read += r; 
+        }
         if (read > 0) md.update(buf, 0, read);
     }
-    private static byte[] longToBytes(long v) { return new byte[] { (byte)(v >>> 56), (byte)(v >>> 48), (byte)(v >>> 40), (byte)(v >>> 32), (byte)(v >>> 24), (byte)(v >>> 16), (byte)(v >>>  8), (byte)(v) }; }
 
-    // --- WRITER ---
+    private static byte[] longToBytes(long v) { 
+        return new byte[] { (byte)(v >>> 56), (byte)(v >>> 48), (byte)(v >>> 40), (byte)(v >>> 32), (byte)(v >>> 24), (byte)(v >>> 16), (byte)(v >>> 8), (byte)(v) }; 
+    }
+
+    // --- WRITER (Fase de Walk) ---
     private static class DbWriter implements AutoCloseable {
         private final Database.SimplePool pool;
         private final long scanId;
@@ -281,7 +346,6 @@ public final class Scanner {
                         ps.addBatch(); pending++;
                         if (pending >= batchSize) {
                             ps.executeBatch(); c.commit(); metrics.dbBatches.increment();
-                            // logger.accept(">> Banco: " + metrics.filesSeen.sum() + " arquivos processados...");
                             pending = 0;
                         }
                     }

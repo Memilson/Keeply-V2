@@ -38,8 +38,7 @@ public final class Database {
         config.addDataSourceProperty("legacy", "0");
         config.addDataSourceProperty("kdf_iter", "64000");
 
-        // Transactions are manually committed by callers
-        config.setAutoCommit(false);
+        // Do not force autoCommit at datasource level; callers will set connection auto-commit as needed
 
         // Configurações vitais para SQLite
         config.setConnectionTestQuery("SELECT 1");
@@ -74,7 +73,9 @@ public final class Database {
 
         public Connection borrow() throws SQLException {
             createDataSource();
-            return dataSource.getConnection();
+            Connection c = dataSource.getConnection();
+            try { c.setAutoCommit(false); } catch (Exception ignored) {}
+            return c;
         }
 
         @Override public void close() {
@@ -104,7 +105,9 @@ public final class Database {
         // Ensure datasource is initialized (may have been shutdown earlier)
         init();
         if (dataSource == null) throw new SQLException("Datasource not initialized");
-        return dataSource.getConnection();
+        Connection c = dataSource.getConnection();
+        try { c.setAutoCommit(false); } catch (Exception ignored) {}
+        return c;
     }
 
     // --- SCHEMA ---
