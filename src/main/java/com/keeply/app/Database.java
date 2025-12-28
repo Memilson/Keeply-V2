@@ -44,8 +44,7 @@ public final class Database {
         // Configurações vitais para SQLite
         config.setConnectionTestQuery("SELECT 1");
         config.setMaximumPoolSize(10);
-        config.addDataSourceProperty("journal_mode", "WAL");
-        config.addDataSourceProperty("synchronous", "NORMAL");
+        config.setConnectionInitSql("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=10000;");
 
         dataSource = new HikariDataSource(config);
     }
@@ -185,16 +184,20 @@ public final class Database {
 
     public static int snapshotToHistory(Connection c, long scanId) throws SQLException {
         int count = 0;
-        try (var st = c.createStatement()) {
-            String sqlCopy = """
+        String sqlCopy = """
                 INSERT INTO file_history (scan_id, path_rel, hash_hex, size_bytes, status_event, created_at)
                 SELECT last_scan_id, path_rel, hash_hex, size_bytes, status, datetime('now')
                 FROM file_inventory
-                WHERE last_scan_id = """ + scanId + """
+                WHERE last_scan_id = ?
                   AND status IN ('NEW', 'HASHED', 'MODIFIED')
             """;
-            count = st.executeUpdate(sqlCopy);
-            st.execute("UPDATE file_inventory SET status='STABLE' WHERE last_scan_id = " + scanId);
+        String sqlUpdate = "UPDATE file_inventory SET status='STABLE' WHERE last_scan_id = ?";
+        try (var psCopy = c.prepareStatement(sqlCopy);
+             var psUpdate = c.prepareStatement(sqlUpdate)) {
+            psCopy.setLong(1, scanId);
+            count = psCopy.executeUpdate();
+            psUpdate.setLong(1, scanId);
+            psUpdate.executeUpdate();
         }
         return count;
     }

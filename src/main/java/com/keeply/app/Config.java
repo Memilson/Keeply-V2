@@ -4,10 +4,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Optional;
-import java.util.stream.Stream;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
+import io.github.cdimascio.dotenv.Dotenv;
 
 /**
  * Configuração Central do Keeply.
@@ -29,6 +27,7 @@ public final class Config {
     // O caminho e a chave são calculados estaticamente na inicialização da classe
     // Logger must be initialized before any static initializer that may use it
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Config.class);
+    private static final Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
 
     private static final String DB_FILENAME = resolveDbFileName();
     private static final Path DB_PATH = resolveDbPath(DB_FILENAME);
@@ -66,13 +65,19 @@ public final class Config {
 
     private static String resolveDbFileName() {
         // Tenta pegar do ambiente ou .env, se não, usa o padrão
-        return getEnvOrFile(ENV_DB_NAME).orElse(getEnvOrFile("DB_NAME").orElse(DEFAULT_DB_NAME));
+        String name = getEnvOrDotenv(ENV_DB_NAME);
+        if (name == null) {
+            name = getEnvOrDotenv("DB_NAME");
+        }
+        return name == null || name.isBlank() ? DEFAULT_DB_NAME : name.trim();
     }
 
     private static String resolveSecretKey() {
         // Tenta KEEPLY_SECRET_KEY, depois SECRET_KEY
-        String key = getEnvOrFile(ENV_KEY_PRIMARY)
-                .orElseGet(() -> getEnvOrFile(ENV_KEY_SECONDARY).orElse(null));
+        String key = getEnvOrDotenv(ENV_KEY_PRIMARY);
+        if (key == null || key.isBlank()) {
+            key = getEnvOrDotenv(ENV_KEY_SECONDARY);
+        }
 
         if (key == null || key.isBlank()) {
             throw new IllegalStateException(
@@ -84,47 +89,21 @@ public final class Config {
 
     /**
      * Tenta obter o valor de uma variável de ambiente.
-     * Se não existir, tenta ler do arquivo .env local.
+     * Se não existir, tenta ler do arquivo .env local via java-dotenv.
      */
-    private static Optional<String> getEnvOrFile(String key) {
+    private static String getEnvOrDotenv(String key) {
         // 1. Tenta Variável de Ambiente do SO
         String envVal = System.getenv(key);
         if (envVal != null && !envVal.isBlank()) {
-            return Optional.of(envVal.trim());
+            return envVal.trim();
         }
 
         // 2. Tenta ler do arquivo .env
-        return readFromDotEnv(key);
-    }
-
-    /**
-     * Lê a chave do arquivo .env no diretório atual de forma eficiente (Stream).
-     */
-    private static Optional<String> readFromDotEnv(String key) {
-        Path envFile = Paths.get(".env");
-        if (!Files.exists(envFile)) return Optional.empty();
-
-        try (Stream<String> lines = Files.lines(envFile)) {
-            return lines
-                .map(String::trim)
-                .filter(line -> !line.startsWith("#") && !line.isBlank()) // Ignora comentários e vazios
-                .filter(line -> line.toUpperCase().startsWith(key.toUpperCase() + "=")) // Case-insensitive para a chave
-                .findFirst()
-                .map(line -> {
-                    String[] parts = line.split("=", 2);
-                    if (parts.length < 2) return null;
-                    String value = parts[1].trim();
-                    // Remove aspas se houver (ex: KEY="valor")
-                    if (value.startsWith("\"") && value.endsWith("\"") && value.length() >= 2) {
-                        return value.substring(1, value.length() - 1);
-                    }
-                    return value;
-                });
-        } catch (IOException e) {
-            // Log discreto, não queremos travar a aplicação se o .env estiver ilegível
-            logger.warn("Não foi possível ler o arquivo .env: {}", e.getMessage());
-            return Optional.empty();
+        String fileVal = dotenv.get(key);
+        if (fileVal == null || fileVal.isBlank()) {
+            return null;
         }
+        return fileVal.trim();
     }
 
     /**
