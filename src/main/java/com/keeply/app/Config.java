@@ -27,14 +27,15 @@ public final class Config {
     private static final String ENV_KEY_SECONDARY = "SECRET_KEY";
 
     // O caminho e a chave são calculados estaticamente na inicialização da classe
+    // Logger must be initialized before any static initializer that may use it
+    private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Config.class);
+
     private static final String DB_FILENAME = resolveDbFileName();
     private static final Path DB_PATH = resolveDbPath(DB_FILENAME);
     private static final String SECRET_KEY = resolveSecretKey();
 
     // Construtor privado para impedir instanciação (Utility Class)
     private Config() {}
-
-    private static final Logger logger = LoggerFactory.getLogger(Config.class);
 
     /**
      * Retorna a URL de Conexão JDBC.

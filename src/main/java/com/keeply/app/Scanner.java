@@ -57,14 +57,14 @@ public final class Scanner {
 
     // --- ENGINE PRINCIPAL ---
 
-    public static void runScan(
+        public static void runScan(
             Path root, 
             ScanConfig cfg, 
             Database.SimplePool pool, 
             ScanMetrics metrics, 
             AtomicBoolean cancel,
-            Consumer<String> logger // NOVO: Permite enviar logs para a UI
-    ) throws Exception {
+            Consumer<String> uiLogger // NOVO: Permite enviar logs para a UI
+        ) throws Exception {
         
         var rootAbs = root.toAbsolutePath().normalize();
         metrics.running.set(true);
@@ -83,30 +83,30 @@ public final class Scanner {
         }
 
         // 2. Walk
-        logger.accept(">> Fase 1: Mapeando arquivos no disco...");
-        try (var writer = new DbWriter(pool, scanId, cfg.dbBatchSize(), metrics, logger)) {
+        uiLogger.accept(">> Fase 1: Mapeando arquivos no disco...");
+        try (var writer = new DbWriter(pool, scanId, cfg.dbBatchSize(), metrics, uiLogger)) {
             walk(rootAbs, scanId, cfg, metrics, cancel, writer);
             writer.flush();
             writer.waitFinish();
         }
 
         if (cancel.get()) {
-            logger.accept(">> Cancelado pelo usuário.");
+            uiLogger.accept(">> Cancelado pelo usuário.");
             return;
         }
 
         // 3. Limpeza
-        logger.accept(">> Fase 2: Sincronizando banco (Upsert + Cleaning)...");
+        uiLogger.accept(">> Fase 2: Sincronizando banco (Upsert + Cleaning)...");
         try (Connection c = pool.borrow()) {
             int deleted = Database.deleteStaleFiles(c, scanId);
-            if (deleted > 0) logger.accept(">> Removidos " + deleted + " arquivos que não existem mais.");
+            if (deleted > 0) uiLogger.accept(">> Removidos " + deleted + " arquivos que não existem mais.");
             c.commit();
         }
 
         // 4. Hash
         if (cfg.computeHash()) {
-            logger.accept("[SCAN] Calculando Hashes...");
-            processHashes(rootAbs, pool, cfg, metrics, cancel, scanId, logger);
+            uiLogger.accept("[SCAN] Calculando Hashes...");
+            processHashes(rootAbs, pool, cfg, metrics, cancel, scanId, uiLogger);
         }
 
         // --- NOVO: GRAVAR HISTÓRICO (TIME LAPSE) ---
@@ -119,9 +119,9 @@ public final class Scanner {
             c.commit();
         }
         
-        logger.accept("[SCAN] Finalizado.");
+        uiLogger.accept("[SCAN] Finalizado.");
 
-        logger.accept(">> FINALIZADO! Total de arquivos no inventário: " + metrics.filesSeen.sum());
+        uiLogger.accept(">> FINALIZADO! Total de arquivos no inventário: " + metrics.filesSeen.sum());
         metrics.running.set(false);
     }
 
@@ -166,7 +166,7 @@ public final class Scanner {
         });
     }
 
-    private static void processHashes(Path root, Database.SimplePool pool, ScanConfig cfg, ScanMetrics metrics, AtomicBoolean cancel, long scanId, Consumer<String> logger) throws Exception {
+    private static void processHashes(Path root, Database.SimplePool pool, ScanConfig cfg, ScanMetrics metrics, AtomicBoolean cancel, long scanId, Consumer<String> uiLogger) throws Exception {
         try (var exec = Executors.newVirtualThreadPerTaskExecutor()) {
             while (!cancel.get()) {
                 List<HashCandidate> batch;
@@ -176,7 +176,7 @@ public final class Scanner {
                 }
                 if (batch.isEmpty()) break;
 
-                // logger.accept(">> Hash em lote de " + batch.size() + " arquivos...");
+                // uiLogger.accept(">> Hash em lote de " + batch.size() + " arquivos...");
 
                 var futures = new ArrayList<Future<HashUpdate>>();
                 for (var item : batch) {
@@ -248,11 +248,11 @@ public final class Scanner {
         private final BlockingQueue<FileSeen> queue = new ArrayBlockingQueue<>(10000);
         private final Thread worker;
         @SuppressWarnings("unused")
-        private final Consumer<String> logger;
+        private final Consumer<String> uiLogger;
         private volatile boolean finished = false;
 
-        DbWriter(Database.SimplePool pool, long scanId, int batchSize, ScanMetrics metrics, Consumer<String> logger) {
-            this.pool = pool; this.scanId = scanId; this.batchSize = batchSize; this.metrics = metrics; this.logger = logger;
+        DbWriter(Database.SimplePool pool, long scanId, int batchSize, ScanMetrics metrics, Consumer<String> uiLogger) {
+            this.pool = pool; this.scanId = scanId; this.batchSize = batchSize; this.metrics = metrics; this.uiLogger = uiLogger;
             this.worker = Thread.ofVirtual().name("sqlite-writer").start(this::run);
         }
 
@@ -287,7 +287,7 @@ public final class Scanner {
                     }
                     if (pending > 0) { ps.executeBatch(); c.commit(); metrics.dbBatches.increment(); }
                 }
-            } catch (Exception e) { logger.error("DbWriter error", e); }
+            } catch (Exception e) { Scanner.logger.error("DbWriter error", e); }
         }
     }
 }

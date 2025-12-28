@@ -11,6 +11,8 @@ import javafx.application.Platform;
 import javafx.util.Duration;
 
 import java.sql.Connection;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -146,20 +148,56 @@ public final class ScanController {
     }
 
     private void performWipeLogic() throws Exception {
+        Path dbPath = Config.getDbFilePath();
+        if (dbPath == null) {
+            log(">> ERRO: Caminho do banco não resolvido.");
+            return;
+        }
+
+        log(">> Encerrando conexões e removendo arquivo de banco...");
+        try {
+            // Shutdown shared pool to release file handles
+            Database.shutdown();
+
+            // Try physical deletion (WAL/SHM then main)
+            Files.createDirectories(dbPath.getParent());
+            Path wal = Path.of(dbPath.toString() + "-wal");
+            Path shm = Path.of(dbPath.toString() + "-shm");
+            try { if (Files.deleteIfExists(wal)) log(">> Removido (WAL): " + wal); } catch (Exception ignored) {}
+            try { if (Files.deleteIfExists(shm)) log(">> Removido (SHM): " + shm); } catch (Exception ignored) {}
+            if (Files.deleteIfExists(dbPath)) {
+                log(">> Banco removido. Um novo arquivo será criado no próximo scan.");
+                // re-init datasource for future operations
+                Database.init();
+                return;
+            }
+
+            // If we reach here, deletion didn't remove main file; fallback to wiping tables
+            throw new Exception("Não foi possível remover arquivo principal");
+
+        } catch (Exception e) {
+            log(">> Falha ao apagar arquivo (" + safeMsg(e) + "). Limpando tabelas como fallback.");
+            wipeTablesFallback();
+        }
+    }
+
+    // Fallback para o caso do arquivo estar travado por outro processo
+    private void wipeTablesFallback() throws Exception {
+        // Re-init datasource in case it was shutdown earlier so we can obtain a connection
+        Database.init();
         try (Connection conn = Database.openSingleConnection()) {
             conn.setAutoCommit(false);
-            Database.ensureSchema(conn); // garante tabelas antes de operar em bancos antigos
+            Database.ensureSchema(conn);
             try (var stmt = conn.createStatement()) {
                 stmt.execute("PRAGMA busy_timeout = 5000");
-                
+
                 log(">> Apagando tabelas...");
-                // Ordem correta para evitar erro de Foreign Key
                 stmt.execute("DELETE FROM scan_issues");
                 stmt.execute("DELETE FROM file_inventory");
                 stmt.execute("DELETE FROM scans");
-                
+
                 conn.commit();
-                
+
                 log(">> Compactando arquivo (VACUUM)...");
                 conn.setAutoCommit(true);
                 stmt.execute("VACUUM");

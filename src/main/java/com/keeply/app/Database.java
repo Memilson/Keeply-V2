@@ -26,6 +26,11 @@ public final class Database {
     private static HikariDataSource dataSource;
 
     static {
+        createDataSource();
+    }
+
+    private static synchronized void createDataSource() {
+        if (dataSource != null) return;
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl(Config.getDbUrl());
         config.addDataSourceProperty("cipher", "sqlcipher");
@@ -45,6 +50,23 @@ public final class Database {
         dataSource = new HikariDataSource(config);
     }
 
+    /**
+     * Close and clear the shared datasource. Call before deleting the DB file.
+     */
+    public static synchronized void shutdown() {
+        if (dataSource != null) {
+            try { dataSource.close(); } catch (Exception ignored) {}
+            dataSource = null;
+        }
+    }
+
+    /**
+     * Ensure the datasource is initialized (lazy init after shutdown).
+     */
+    public static synchronized void init() {
+        if (dataSource == null) createDataSource();
+    }
+
     public static final class SimplePool implements AutoCloseable {
         // kept for API compatibility with existing code; uses shared Hikari datasource
         public SimplePool(String jdbcUrl, int poolSize) {
@@ -52,6 +74,7 @@ public final class Database {
         }
 
         public Connection borrow() throws SQLException {
+            createDataSource();
             return dataSource.getConnection();
         }
 
@@ -79,6 +102,9 @@ public final class Database {
     }
 
     public static Connection openSingleConnection() throws SQLException {
+        // Ensure datasource is initialized (may have been shutdown earlier)
+        init();
+        if (dataSource == null) throw new SQLException("Datasource not initialized");
         return dataSource.getConnection();
     }
 
