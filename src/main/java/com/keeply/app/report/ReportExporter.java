@@ -6,6 +6,8 @@ import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.font.PDFont;
+import org.apache.pdfbox.pdmodel.font.PDType0Font;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.graphics.image.LosslessFactory;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
@@ -18,6 +20,7 @@ import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -26,6 +29,9 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class ReportExporter {
+
+    private static final String FONT_REGULAR = "/fonts/NotoSans-Regular.ttf";
+    private static final String FONT_BOLD = "/fonts/NotoSans-Bold.ttf";
 
     // Keeply palette
     private static final Color COL_HEADER_BG = new Color(24, 24, 27);
@@ -56,7 +62,8 @@ public final class ReportExporter {
         BufferedImage chartTypes = buildTypeChart(topTypes);
 
         try (PDDocument doc = new PDDocument()) {
-            try (PdfCursor cursor = new PdfCursor(doc)) {
+            PdfFonts fonts = loadFonts(doc);
+            try (PdfCursor cursor = new PdfCursor(doc, fonts)) {
                 drawKeeplyHeader(cursor, "Relatorio de Inventario", scanInfo);
                 cursor.moveDown(30);
 
@@ -96,7 +103,7 @@ public final class ReportExporter {
                 drawSectionTitle(cursor, "Maiores Arquivos (Top 20)");
                 drawSmartFileTable(cursor, topFiles);
             }
-            addPageNumbers(doc);
+            addPageNumbers(doc, fonts);
             doc.save(file);
         }
     }
@@ -135,23 +142,24 @@ public final class ReportExporter {
         cs.addRect(0, cursor.pageHeight - 92, cursor.pageWidth, 2);
         cs.fill();
         cs.beginText();
-        cs.setFont(PDType1Font.HELVETICA_BOLD, 14);
+        cs.setFont(cursor.fonts.bold, 14);
         cs.setNonStrokingColor(COL_ACCENT);
         cs.newLineAtOffset(40, cursor.pageHeight - 35);
-        cs.showText("KEEPLY");
+        cs.showText(pdfText(cursor, "KEEPLY"));
         cs.endText();
         cs.beginText();
-        cs.setFont(PDType1Font.HELVETICA_BOLD, 24);
+        cs.setFont(cursor.fonts.bold, 24);
         cs.setNonStrokingColor(Color.WHITE);
         cs.newLineAtOffset(40, cursor.pageHeight - 65);
-        cs.showText(title);
+        cs.showText(pdfText(cursor, title));
         cs.endText();
-        float subW = PDType1Font.HELVETICA.getStringWidth(subtitle) / 1000 * 10;
+        String safeSubtitle = pdfText(cursor, subtitle);
+        float subW = textWidth(cursor.fonts.regular, 10, safeSubtitle);
         cs.beginText();
-        cs.setFont(PDType1Font.HELVETICA, 10);
+        cs.setFont(cursor.fonts.regular, 10);
         cs.setNonStrokingColor(new Color(180, 180, 180));
         cs.newLineAtOffset(cursor.pageWidth - 40 - subW, cursor.pageHeight - 35);
-        cs.showText(subtitle);
+        cs.showText(safeSubtitle);
         cs.endText();
         cursor.y = cursor.pageHeight - 120;
     }
@@ -167,16 +175,16 @@ public final class ReportExporter {
     private static void drawStatItem(PdfCursor cursor, float x, float y, String label, String value) throws IOException {
         PDPageContentStream cs = cursor.stream;
         cs.beginText();
-        cs.setFont(PDType1Font.HELVETICA, 9);
+        cs.setFont(cursor.fonts.regular, 9);
         cs.setNonStrokingColor(COL_TEXT_MUTED);
         cs.newLineAtOffset(x, y + 10);
-        cs.showText(label.toUpperCase(Locale.ROOT));
+        cs.showText(pdfText(cursor, label.toUpperCase(Locale.ROOT)));
         cs.endText();
         cs.beginText();
-        cs.setFont(PDType1Font.HELVETICA_BOLD, 14);
+        cs.setFont(cursor.fonts.bold, 14);
         cs.setNonStrokingColor(COL_TEXT_MAIN);
         cs.newLineAtOffset(x, y - 5);
-        cs.showText(pdfSafe(value));
+        cs.showText(pdfText(cursor, value));
         cs.endText();
     }
 
@@ -195,9 +203,9 @@ public final class ReportExporter {
         PDPageContentStream cs = cursor.stream;
         cs.setNonStrokingColor(COL_HEADER_BG);
         cs.beginText();
-        cs.setFont(PDType1Font.HELVETICA_BOLD, 12);
+        cs.setFont(cursor.fonts.bold, 12);
         cs.newLineAtOffset(40, cursor.y);
-        cs.showText(title.toUpperCase(Locale.ROOT));
+        cs.showText(pdfText(cursor, title.toUpperCase(Locale.ROOT)));
         cs.endText();
         cs.setStrokingColor(new Color(230, 230, 230));
         cs.setLineWidth(1);
@@ -256,22 +264,22 @@ public final class ReportExporter {
     private static void drawTypeHeader(PdfCursor cursor) throws IOException {
         PDPageContentStream cs = cursor.stream;
         cs.setNonStrokingColor(COL_TEXT_MUTED);
-        cs.setFont(PDType1Font.HELVETICA_BOLD, 8);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y); cs.showText("EXT"); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(160, cursor.y); cs.showText("COUNT"); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(255, cursor.y); cs.showText("SIZE"); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(340, cursor.y); cs.showText("PCT"); cs.endText();
+        cs.setFont(cursor.fonts.bold, 8);
+        cs.beginText(); cs.newLineAtOffset(45, cursor.y); cs.showText(pdfText(cursor, "EXT")); cs.endText();
+        cs.beginText(); cs.newLineAtOffset(160, cursor.y); cs.showText(pdfText(cursor, "COUNT")); cs.endText();
+        cs.beginText(); cs.newLineAtOffset(255, cursor.y); cs.showText(pdfText(cursor, "SIZE")); cs.endText();
+        cs.beginText(); cs.newLineAtOffset(340, cursor.y); cs.showText(pdfText(cursor, "PCT")); cs.endText();
     }
 
     private static void drawTypeRow(PdfCursor cursor, TypeStat stat, long totalBytes) throws IOException {
         PDPageContentStream cs = cursor.stream;
         String pct = totalBytes > 0 ? String.format(Locale.US, "%.1f%%", (stat.bytes() * 100.0) / totalBytes) : "0.0%";
         cs.setNonStrokingColor(COL_TEXT_MAIN);
-        cs.setFont(PDType1Font.HELVETICA, 9);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y - 10); cs.showText(stat.ext()); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(160, cursor.y - 10); cs.showText(Long.toString(stat.count())); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(255, cursor.y - 10); cs.showText(humanSize(stat.bytes())); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(340, cursor.y - 10); cs.showText(pct); cs.endText();
+        cs.setFont(cursor.fonts.regular, 9);
+        cs.beginText(); cs.newLineAtOffset(45, cursor.y - 10); cs.showText(pdfText(cursor, stat.ext())); cs.endText();
+        cs.beginText(); cs.newLineAtOffset(160, cursor.y - 10); cs.showText(pdfText(cursor, Long.toString(stat.count()))); cs.endText();
+        cs.beginText(); cs.newLineAtOffset(255, cursor.y - 10); cs.showText(pdfText(cursor, humanSize(stat.bytes()))); cs.endText();
+        cs.beginText(); cs.newLineAtOffset(340, cursor.y - 10); cs.showText(pdfText(cursor, pct)); cs.endText();
     }
 
     private static void drawFolderTable(PdfCursor cursor, List<FolderStat> folders) throws IOException {
@@ -295,51 +303,51 @@ public final class ReportExporter {
     private static void drawFolderHeader(PdfCursor cursor) throws IOException {
         PDPageContentStream cs = cursor.stream;
         cs.setNonStrokingColor(COL_TEXT_MUTED);
-        cs.setFont(PDType1Font.HELVETICA_BOLD, 8);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y); cs.showText("FOLDER"); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(330, cursor.y); cs.showText("FILES"); cs.endText();
+        cs.setFont(cursor.fonts.bold, 8);
+        cs.beginText(); cs.newLineAtOffset(45, cursor.y); cs.showText(pdfText(cursor, "FOLDER")); cs.endText();
+        cs.beginText(); cs.newLineAtOffset(330, cursor.y); cs.showText(pdfText(cursor, "FILES")); cs.endText();
         String sizeLbl = "SIZE";
-        float w = PDType1Font.HELVETICA_BOLD.getStringWidth(sizeLbl) / 1000 * 8;
-        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y); cs.showText(sizeLbl); cs.endText();
+        float w = textWidth(cursor.fonts.bold, 8, sizeLbl);
+        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y); cs.showText(pdfText(cursor, sizeLbl)); cs.endText();
     }
 
     private static void drawFolderRow(PdfCursor cursor, FolderStat stat) throws IOException {
         PDPageContentStream cs = cursor.stream;
         cs.setNonStrokingColor(COL_TEXT_MAIN);
-        cs.setFont(PDType1Font.HELVETICA, 9);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y - 10); cs.showText(pdfSafe(shortenPath(stat.folder(), 60))); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(330, cursor.y - 10); cs.showText(Long.toString(stat.count())); cs.endText();
+        cs.setFont(cursor.fonts.regular, 9);
+        cs.beginText(); cs.newLineAtOffset(45, cursor.y - 10); cs.showText(pdfText(cursor, shortenPath(stat.folder(), 60))); cs.endText();
+        cs.beginText(); cs.newLineAtOffset(330, cursor.y - 10); cs.showText(pdfText(cursor, Long.toString(stat.count()))); cs.endText();
         String size = humanSize(stat.bytes());
-        float w = PDType1Font.HELVETICA.getStringWidth(size) / 1000 * 9;
-        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y - 10); cs.showText(size); cs.endText();
+        float w = textWidth(cursor.fonts.regular, 9, size);
+        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y - 10); cs.showText(pdfText(cursor, size)); cs.endText();
     }
 
     private static void drawSmartHeader(PdfCursor cursor) throws IOException {
         PDPageContentStream cs = cursor.stream;
         cs.setNonStrokingColor(COL_TEXT_MUTED);
-        cs.setFont(PDType1Font.HELVETICA_BOLD, 8);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y); cs.showText("#"); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(70, cursor.y); cs.showText("FILE / LOCATION"); cs.endText();
+        cs.setFont(cursor.fonts.bold, 8);
+        cs.beginText(); cs.newLineAtOffset(45, cursor.y); cs.showText(pdfText(cursor, "#")); cs.endText();
+        cs.beginText(); cs.newLineAtOffset(70, cursor.y); cs.showText(pdfText(cursor, "FILE / LOCATION")); cs.endText();
         String sizeLbl = "SIZE";
-        float w = PDType1Font.HELVETICA_BOLD.getStringWidth(sizeLbl) / 1000 * 8;
-        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y); cs.showText(sizeLbl); cs.endText();
+        float w = textWidth(cursor.fonts.bold, 8, sizeLbl);
+        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y); cs.showText(pdfText(cursor, sizeLbl)); cs.endText();
     }
 
     private static void drawDoubleLineRow(PdfCursor cursor, String index, String name, String path, String size) throws IOException {
         PDPageContentStream cs = cursor.stream;
         cs.setNonStrokingColor(COL_TEXT_MUTED);
-        cs.setFont(PDType1Font.HELVETICA, 8);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y - 12); cs.showText(index); cs.endText();
+        cs.setFont(cursor.fonts.regular, 8);
+        cs.beginText(); cs.newLineAtOffset(45, cursor.y - 12); cs.showText(pdfText(cursor, index)); cs.endText();
         cs.setNonStrokingColor(COL_TEXT_MAIN);
-        cs.setFont(PDType1Font.HELVETICA_BOLD, 10);
-        cs.beginText(); cs.newLineAtOffset(70, cursor.y - 5); cs.showText(pdfSafe(shortenPath(name, 55))); cs.endText();
+        cs.setFont(cursor.fonts.bold, 10);
+        cs.beginText(); cs.newLineAtOffset(70, cursor.y - 5); cs.showText(pdfText(cursor, shortenPath(name, 55))); cs.endText();
         cs.setNonStrokingColor(new Color(120, 120, 120));
-        cs.setFont(PDType1Font.HELVETICA, 8);
-        cs.beginText(); cs.newLineAtOffset(70, cursor.y - 16); cs.showText(pdfSafe(shortenPath(path, 75))); cs.endText();
+        cs.setFont(cursor.fonts.regular, 8);
+        cs.beginText(); cs.newLineAtOffset(70, cursor.y - 16); cs.showText(pdfText(cursor, shortenPath(path, 75))); cs.endText();
         cs.setNonStrokingColor(COL_TEXT_MAIN);
-        cs.setFont(PDType1Font.HELVETICA, 9);
-        float w = PDType1Font.HELVETICA.getStringWidth(size) / 1000 * 9;
-        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y - 12); cs.showText(size); cs.endText();
+        cs.setFont(cursor.fonts.regular, 9);
+        float w = textWidth(cursor.fonts.regular, 9, size);
+        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y - 12); cs.showText(pdfText(cursor, size)); cs.endText();
     }
 
     private static void drawImageCentered(PdfCursor cursor, BufferedImage img, float height) throws IOException {
@@ -351,16 +359,16 @@ public final class ReportExporter {
         cursor.y -= height;
     }
 
-    private static void addPageNumbers(PDDocument doc) throws IOException {
+    private static void addPageNumbers(PDDocument doc, PdfFonts fonts) throws IOException {
         int total = doc.getNumberOfPages();
         for (int i = 0; i < total; i++) {
             PDPage page = doc.getPage(i);
             try (PDPageContentStream content = new PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
-                content.beginText();
-                content.setFont(PDType1Font.HELVETICA, 9);
-                content.setNonStrokingColor(COL_TEXT_MUTED);
                 String text = (i + 1) + " / " + total;
-                float w = PDType1Font.HELVETICA.getStringWidth(text) / 1000 * 9;
+                float w = textWidth(fonts.regular, 9, text);
+                content.beginText();
+                content.setFont(fonts.regular, 9);
+                content.setNonStrokingColor(COL_TEXT_MUTED);
                 content.newLineAtOffset((page.getMediaBox().getWidth() - w) / 2, 20);
                 content.showText(text);
                 content.endText();
@@ -372,14 +380,16 @@ public final class ReportExporter {
 
     private static class PdfCursor implements AutoCloseable {
         final PDDocument doc;
+        final PdfFonts fonts;
         PDPage page;
         PDPageContentStream stream;
         float pageWidth;
         float pageHeight;
         float y;
 
-        PdfCursor(PDDocument doc) throws IOException {
+        PdfCursor(PDDocument doc, PdfFonts fonts) throws IOException {
             this.doc = doc;
+            this.fonts = fonts;
             newPage();
         }
 
@@ -411,6 +421,32 @@ public final class ReportExporter {
     }
 
     // --- UTILS ---
+
+    private static PdfFonts loadFonts(PDDocument doc) {
+        PDFont regular = null;
+        PDFont bold = null;
+        try (InputStream regularStream = ReportExporter.class.getResourceAsStream(FONT_REGULAR);
+             InputStream boldStream = ReportExporter.class.getResourceAsStream(FONT_BOLD)) {
+            if (regularStream != null) {
+                regular = PDType0Font.load(doc, regularStream, true);
+            }
+            if (boldStream != null) {
+                bold = PDType0Font.load(doc, boldStream, true);
+            }
+        } catch (IOException ignored) {
+        }
+        if (regular == null && bold != null) regular = bold;
+        if (regular != null && bold == null) bold = regular;
+        if (regular != null && bold != null) {
+            return new PdfFonts(regular, bold, true);
+        }
+        return new PdfFonts(PDType1Font.HELVETICA, PDType1Font.HELVETICA_BOLD, false);
+    }
+
+    private static float textWidth(PDFont font, float size, String text) throws IOException {
+        if (text == null || text.isEmpty()) return 0f;
+        return font.getStringWidth(text) / 1000f * size;
+    }
 
     private static List<TypeStat> computeTypeStats(List<InventoryRow> rows) {
         Map<String, long[]> stats = new HashMap<>();
@@ -507,8 +543,14 @@ public final class ReportExporter {
         return "Snapshot #" + scan.scanId() + " | " + finished;
     }
 
-    private static String pdfSafe(String value) {
+    private static String pdfText(PdfCursor cursor, String value) {
         if (value == null) return "";
+        String cleaned = value.replace("\r", " ").replace("\n", " ");
+        if (cursor.fonts.unicode) return cleaned;
+        return stripNonAscii(cleaned);
+    }
+
+    private static String stripNonAscii(String value) {
         StringBuilder sb = new StringBuilder();
         for (char c : value.toCharArray()) {
             if (c > 127) sb.append('?'); else sb.append(c);
@@ -519,4 +561,6 @@ public final class ReportExporter {
     private record StatItem(String label, String value) {}
     private record TypeStat(String ext, long bytes, long count) {}
     private record FolderStat(String folder, long bytes, long count) {}
+    private record PdfFonts(PDFont regular, PDFont bold, boolean unicode) {}
 }
+

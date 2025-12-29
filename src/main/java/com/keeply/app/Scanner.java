@@ -66,7 +66,7 @@ public final class Scanner {
         }
         // 2. Walk & Metadata Check (validação por metadados e SQL)
         uiLogger.accept(">> Fase 1: Validando metadados (Tamanho/Data/Nome)...");
-        try (var writer = new DbWriter(pool, scanId, cfg.dbBatchSize(), metrics)) {
+        try (var writer = new DbWriter(pool, scanId, rootAbs.toString(), cfg.dbBatchSize(), metrics)) {
             walk(rootAbs, scanId, cfg, metrics, cancel, writer);
             writer.flush();
             writer.waitFinish();
@@ -87,7 +87,7 @@ public final class Scanner {
         // 3. Limpeza (Detecta arquivos deletados)
         uiLogger.accept(">> Fase 2: Sincronizando banco (Limpeza)...");
         try (Connection c = pool.borrow()) {
-            int deleted = Database.deleteStaleFiles(c, scanId);
+            int deleted = Database.deleteStaleFiles(c, scanId, rootAbs.toString());
             if (deleted > 0) uiLogger.accept(">> Removidos " + deleted + " arquivos que não existem mais.");
             c.commit();
         }
@@ -166,14 +166,19 @@ public final class Scanner {
     private static class DbWriter implements AutoCloseable {
         private final Database.SimplePool pool;
         private final long scanId;
+        private final String rootPath;
         private final int batchSize;
         private final ScanMetrics metrics;
         private final BlockingQueue<FileSeen> queue = new ArrayBlockingQueue<>(10000);
         private final Thread worker;
         private volatile boolean finished = false;
 
-        DbWriter(Database.SimplePool pool, long scanId, int batchSize, ScanMetrics metrics) {
-            this.pool = pool; this.scanId = scanId; this.batchSize = batchSize; this.metrics = metrics;
+        DbWriter(Database.SimplePool pool, long scanId, String rootPath, int batchSize, ScanMetrics metrics) {
+            this.pool = pool;
+            this.scanId = scanId;
+            this.rootPath = rootPath;
+            this.batchSize = batchSize;
+            this.metrics = metrics;
             this.worker = Thread.ofVirtual().name("sqlite-writer").start(this::run);
         }
 
@@ -196,15 +201,15 @@ public final class Scanner {
                 // Se size != old.size OR mtime != old.mtime -> MODIFIED
                 // Senão -> mantém o status atual (ex: STABLE)
                 var sql = """
-                    INSERT INTO file_inventory (path_rel, name, size_bytes, modified_millis, created_millis, last_scan_id, status)
-                    VALUES (?, ?, ?, ?, ?, ?, 'NEW')
-                    ON CONFLICT(path_rel) DO UPDATE SET
+                    INSERT INTO file_inventory (root_path, path_rel, name, size_bytes, modified_millis, created_millis, last_scan_id, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'NEW')
+                    ON CONFLICT(root_path, path_rel) DO UPDATE SET
                         last_scan_id = excluded.last_scan_id,
-                        status = CASE 
-                                    WHEN size_bytes != excluded.size_bytes OR modified_millis != excluded.modified_millis THEN 'MODIFIED' 
-                                    ELSE status 
+                        status = CASE
+                                    WHEN size_bytes != excluded.size_bytes OR modified_millis != excluded.modified_millis THEN 'MODIFIED'
+                                    ELSE status
                                  END,
-                        size_bytes = excluded.size_bytes, 
+                        size_bytes = excluded.size_bytes,
                         modified_millis = excluded.modified_millis
                 """;
                 try (var ps = c.prepareStatement(sql)) {
@@ -218,12 +223,13 @@ public final class Scanner {
                         queue.drainTo(drainList, batchSize - 1);
                         
                         for (FileSeen item : drainList) {
-                            ps.setString(1, item.pathRel()); 
-                            ps.setString(2, item.name()); 
-                            ps.setLong(3, item.size());
-                            ps.setLong(4, item.mtime()); 
-                            ps.setLong(5, item.ctime()); 
-                            ps.setLong(6, scanId);
+                            ps.setString(1, rootPath);
+                            ps.setString(2, item.pathRel());
+                            ps.setString(3, item.name());
+                            ps.setLong(4, item.size());
+                            ps.setLong(5, item.mtime());
+                            ps.setLong(6, item.ctime());
+                            ps.setLong(7, scanId);
                             ps.addBatch();
                             pending++;
                         }
