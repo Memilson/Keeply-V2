@@ -305,9 +305,9 @@ public final class ScanScreen {
 
     public boolean confirmWipe() {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
-        alert.setTitle("Delete Database");
-        alert.setHeaderText("Wipe All Data?");
-        alert.setContentText("This will permanently delete all scan history and metrics.\nThis action cannot be undone.");
+        alert.setTitle("Apagar Banco de Dados");
+        alert.setHeaderText("Apagar todos os dados? Esta ação é irreversível");
+        alert.setContentText("Isto removerá permanentemente todo o histórico de scans e métricas.\nNão será possível recuperar os dados após a confirmação.");
         
         // Estilizando o Alert (Opcional, mas recomendado para consistência)
         DialogPane dialogPane = alert.getDialogPane();

@@ -188,6 +188,12 @@ public final class ScanController {
                 stmt.execute("DELETE FROM scan_issues");
                 stmt.execute("DELETE FROM file_inventory");
                 stmt.execute("DELETE FROM scans");
+                // Reset AUTOINCREMENT counters
+                try {
+                    stmt.execute("DELETE FROM sqlite_sequence");
+                } catch (Exception ignored) {
+                    // sqlite_sequence may not exist on some schemas; ignore
+                }
                 conn.commit();
                 
                 log(">> Compactando arquivo (VACUUM)...");
@@ -196,6 +202,7 @@ public final class ScanController {
             }
         }
     }
+
 
     // --- CONFIGURAÇÃO (Otimizada) ---
     private Scanner.ScanConfig buildScanConfig() {

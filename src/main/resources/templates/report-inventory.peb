@@ -1,5 +1,6 @@
-<!doctype html>
-<html lang="pt-BR">
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="pt-BR">
 <head>
   <meta charset="utf-8"/>
   <style>
@@ -7,7 +8,7 @@
       margin: 18mm 16mm 18mm 16mm;
       size: {{ o.pageSize }} {% if o.landscape %}landscape{% else %}portrait{% endif %};
       @bottom-center {
-        content: "Página " counter(page) " / " counter(pages);
+        content: "Pagina " counter(page) " / " counter(pages);
         font-size: 10px;
         color: {{ o.theme.textMuted }};
       }
@@ -102,7 +103,7 @@
 <body>
   <div class="header">
     <div class="brand">KEEPLY</div>
-    <div class="title">Relatório de Inventário</div>
+    <div class="title">Relatorio de Inventario</div>
     <div class="subtitle">
       <div>Gerado em: <b>{{ fmt.now() }}</b></div>
       <div>
@@ -111,8 +112,8 @@
         {% else %}
           Snapshot: <b>-</b>
         {% endif %}
-        &nbsp;|&nbsp;
-        Finalizado: <b>{{ m.summary.finishedAt ?: "-" }}</b>
+        &#160;|&#160;
+        Finalizado: <b>{{ m.summary.finishedAt | default("-") }}</b>
       </div>
     </div>
   </div>
@@ -135,13 +136,13 @@
   </div>
 
   <div class="chips">
-    <span class="chip">NEW: <b>{{ fmt.intN(m.statusCounts["NEW"] ?: 0) }}</b></span>
-    <span class="chip">MODIFIED: <b>{{ fmt.intN(m.statusCounts["MODIFIED"] ?: 0) }}</b></span>
-    <span class="chip">STABLE: <b>{{ fmt.intN(m.statusCounts["STABLE"] ?: 0) }}</b></span>
-    <span class="chip">OTHER: <b>{{ fmt.intN(m.statusCounts["OTHER"] ?: 0) }}</b></span>
+    <span class="chip">NEW: <b>{{ fmt.intN(m.statusCounts["NEW"] | default(0)) }}</b></span>
+    <span class="chip">MODIFIED: <b>{{ fmt.intN(m.statusCounts["MODIFIED"] | default(0)) }}</b></span>
+    <span class="chip">STABLE: <b>{{ fmt.intN(m.statusCounts["STABLE"] | default(0)) }}</b></span>
+    <span class="chip">OTHER: <b>{{ fmt.intN(m.statusCounts["OTHER"] | default(0)) }}</b></span>
   </div>
 
-  <h2>Visão geral</h2>
+  <h2>Visao geral</h2>
   <div class="rule"></div>
 
   <div class="row">
@@ -151,17 +152,17 @@
         {% if c.typesBarPngBase64 %}
           <img style="width: 100%; height: auto;" src="data:image/png;base64,{{ c.typesBarPngBase64 }}" />
         {% else %}
-          <div class="muted">Sem dados para gráfico.</div>
+          <div class="muted">Sem dados para grafico.</div>
         {% endif %}
       </div>
     </div>
     <div class="col">
       <div class="chartbox">
-        <div class="k" style="margin-bottom: 8px;">Status (distribuição)</div>
+        <div class="k" style="margin-bottom: 8px;">Status (distribuicao)</div>
         {% if c.statusPiePngBase64 %}
           <img style="width: 100%; height: auto;" src="data:image/png;base64,{{ c.statusPiePngBase64 }}" />
         {% else %}
-          <div class="muted">Sem dados para gráfico.</div>
+          <div class="muted">Sem dados para grafico.</div>
         {% endif %}
       </div>
     </div>

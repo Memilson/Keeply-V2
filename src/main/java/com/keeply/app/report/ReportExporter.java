@@ -1,4 +1,4 @@
-﻿package com.keeply.app.report;
+package com.keeply.app.report;
 
 import com.keeply.app.Database.InventoryRow;
 import com.keeply.app.Database.ScanSummary;
@@ -25,24 +25,26 @@ public final class ReportExporter {
 
     private static final Logger log = LoggerFactory.getLogger(ReportExporter.class);
 
-    private static final String TEMPLATE_PATH = "templates/report-inventory.peb";
+    private static final String TEMPLATE_PATH = "report-inventory.peb";
     private static final String FONT_REGULAR = "/fonts/NotoSans-Regular.ttf";
     private static final String FONT_BOLD = "/fonts/NotoSans-Bold.ttf";
 
-    private ReportExporter() {}
+    private ReportExporter() {
+    }
 
     public static void exportPdf(List<InventoryRow> rows, File file, ScanSummary scan) throws IOException {
         exportPdf(rows, file, scan, ReportOptions.load());
     }
 
-    public static void exportPdf(List<InventoryRow> rows, File file, ScanSummary scan, ReportOptions opts) throws IOException {
+    public static void exportPdf(List<InventoryRow> rows, File file, ScanSummary scan, ReportOptions opts)
+            throws IOException {
         requireNonNull(file, "file");
         requireNonNull(opts, "opts");
         var safeRows = (rows == null) ? List.<InventoryRow>of() : rows;
 
         if (file.getParentFile() != null) {
             // cria diretório se não existir (robustez)
-            //noinspection ResultOfMethodCallIgnored
+            // noinspection ResultOfMethodCallIgnored
             file.getParentFile().mkdirs();
         }
 
@@ -67,10 +69,12 @@ public final class ReportExporter {
 
     // -------------------- HTML rendering (Pebble) --------------------
 
-    private static String renderHtml(ReportModel model, ReportCharts.Charts charts, ReportOptions opts) throws IOException {
+    private static String renderHtml(ReportModel model, ReportCharts.Charts charts, ReportOptions opts)
+            throws IOException {
         var loader = new ClasspathLoader();
-        loader.setCharset(StandardCharsets.UTF_8);
-        loader.setPrefix(""); // resources root
+        loader.setCharset("UTF-8");
+        // set prefix to the templates folder to avoid ambiguity across classloaders
+        loader.setPrefix("templates");
         var engine = new PebbleEngine.Builder()
                 .loader(loader)
                 .autoEscaping(true)
@@ -97,18 +101,25 @@ public final class ReportExporter {
             var builder = new PdfRendererBuilder();
             builder.useFastMode();
             builder.toStream(out);
+            // Sanitize leading characters that may break XML parsing in
+            // underlying transformer (BOM or stray whitespace/newlines).
+            int firstTag = html.indexOf('<');
+            if (firstTag > 0) {
+                log.warn("Trimming {} leading chars from HTML before PDF render", firstTag);
+                html = html.substring(firstTag);
+            }
+            // Also remove leading BOM if present
+            if (html.startsWith("\uFEFF")) html = html.substring(1);
+
             builder.withHtmlContent(html, null);
 
             // Fonts (se tiver no resources)
             registerFontIfPresent(builder, FONT_REGULAR, "Noto Sans", 400);
             registerFontIfPresent(builder, FONT_BOLD, "Noto Sans", 700);
 
-            // Page size
-            builder.useDefaultPageSize(
-                    opts.pageWidthPoints(),
-                    opts.pageHeightPoints(),
-                    opts.landscape()
-            );
+                // Page size (using defaults from HTML/CSS); explicit units caused
+                // incompatibility with some OpenHTMLToPDF versions, so we rely
+                // on the HTML/CSS @page or builder defaults instead.
 
             builder.run();
         } catch (Exception e) {
@@ -116,7 +127,8 @@ public final class ReportExporter {
         }
     }
 
-    private static void registerFontIfPresent(PdfRendererBuilder builder, String resourcePath, String family, int weight) {
+    private static void registerFontIfPresent(PdfRendererBuilder builder, String resourcePath, String family,
+            int weight) {
         var is = ReportExporter.class.getResourceAsStream(resourcePath);
         if (is == null) {
             log.warn("Font not found in resources: {}", resourcePath);
@@ -135,8 +147,7 @@ public final class ReportExporter {
             int topFolders,
             boolean landscape,
             String pageSize, // "LETTER" | "A4"
-            Theme theme
-    ) {
+            Theme theme) {
         public static ReportOptions load() {
             Config cfg = ConfigFactory.load(); // application.conf / reference.conf
             var locale = Locale.forLanguageTag(get(cfg, "keeply.report.locale", "pt-BR"));
@@ -154,8 +165,7 @@ public final class ReportExporter {
                     get(cfg, "keeply.report.theme.accent", "#06B6D4"),
                     get(cfg, "keeply.report.theme.textMain", "#1E1E1E"),
                     get(cfg, "keeply.report.theme.textMuted", "#646464"),
-                    get(cfg, "keeply.report.theme.rowAlt", "#F8FAFC")
-            );
+                    get(cfg, "keeply.report.theme.rowAlt", "#F8FAFC"));
 
             return new ReportOptions(locale, zoneId, topFiles, topTypes, topFolders, landscape, pageSize, theme);
         }
@@ -183,22 +193,31 @@ public final class ReportExporter {
             String accent,
             String textMain,
             String textMuted,
-            String rowAlt
-    ) {}
+            String rowAlt) {
+    }
 
     private static String get(Config cfg, String path, String def) {
-        try { return cfg.hasPath(path) ? cfg.getString(path) : def; }
-        catch (Exception ignored) { return def; }
+        try {
+            return cfg.hasPath(path) ? cfg.getString(path) : def;
+        } catch (Exception ignored) {
+            return def;
+        }
     }
 
     private static int getInt(Config cfg, String path, int def) {
-        try { return cfg.hasPath(path) ? cfg.getInt(path) : def; }
-        catch (Exception ignored) { return def; }
+        try {
+            return cfg.hasPath(path) ? cfg.getInt(path) : def;
+        } catch (Exception ignored) {
+            return def;
+        }
     }
 
     private static boolean getBool(Config cfg, String path, boolean def) {
-        try { return cfg.hasPath(path) ? cfg.getBoolean(path) : def; }
-        catch (Exception ignored) { return def; }
+        try {
+            return cfg.hasPath(path) ? cfg.getBoolean(path) : def;
+        } catch (Exception ignored) {
+            return def;
+        }
     }
 
     // -------------------- Template helper --------------------
@@ -223,7 +242,8 @@ public final class ReportExporter {
         }
 
         public String abbreviateMiddle(String s, int max) {
-            if (s == null) return "";
+            if (s == null)
+                return "";
             // “não reinventar roda” (commons-lang3)
             return StringUtils.abbreviateMiddle(s, "…", Math.max(8, max));
         }
