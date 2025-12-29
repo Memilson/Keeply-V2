@@ -37,6 +37,7 @@ public final class Scanner {
     public record FileSeen(long scanId, String pathRel, String name, long size, long mtime, long ctime) {}
     public record HashCandidate(long ignoredId, String pathRel, long sizeBytes) {} 
     public record HashUpdate(String pathRel, String hashHex) {}
+    public record HashResult(HashUpdate update, Database.ScanIssue issue) {}
 
     public static final class ScanMetrics {
         public final LongAdder filesSeen = new LongAdder();
@@ -174,6 +175,7 @@ public final class Scanner {
         
         // Fila de comunicação entre Workers (Hash) e Persister (Banco)
         BlockingQueue<HashUpdate> updatesQueue = new LinkedBlockingQueue<>(10000);
+        BlockingQueue<Database.ScanIssue> issuesQueue = new LinkedBlockingQueue<>(2000);
         // Semáforo para controlar estritamente o número de IOs paralelos
         Semaphore concurrencyLimiter = new Semaphore(cfg.hashWorkers());
         AtomicBoolean finishedProducing = new AtomicBoolean(false);
@@ -182,14 +184,25 @@ public final class Scanner {
         Thread dbPersister = Thread.ofVirtual().name("hash-db-writer").start(() -> {
             try (Connection c = pool.borrow()) {
                 var updateList = new ArrayList<HashUpdate>(1000);
-                while (!finishedProducing.get() || !updatesQueue.isEmpty()) {
+                var issueList = new ArrayList<Database.ScanIssue>(200);
+                while (!finishedProducing.get() || !updatesQueue.isEmpty() || !issuesQueue.isEmpty()) {
                     HashUpdate u = updatesQueue.poll(50, TimeUnit.MILLISECONDS);
                     if (u != null) updateList.add(u);
+                    Database.ScanIssue issue = issuesQueue.poll();
+                    if (issue != null) issueList.add(issue);
 
-                    if (updateList.size() >= 1000 || (u == null && !updateList.isEmpty())) {
-                        Database.updateHashes(c, updateList);
+                    boolean ready = updateList.size() >= 1000 || issueList.size() >= 200;
+                    boolean flush = (u == null && issue == null) && (!updateList.isEmpty() || !issueList.isEmpty());
+                    if (ready || flush) {
+                        if (!updateList.isEmpty()) {
+                            Database.updateHashes(c, updateList);
+                        }
+                        if (!issueList.isEmpty()) {
+                            Database.insertScanIssues(c, scanId, issueList);
+                        }
                         c.commit();
                         updateList.clear();
+                        issueList.clear();
                     }
                 }
             } catch (Exception e) {
@@ -217,10 +230,17 @@ public final class Scanner {
                     
                     exec.submit(() -> {
                         try {
-                            HashUpdate res = computeHash(root, cfg, item, metrics);
-                            if (res != null) {
+                            HashResult res = computeHash(root, cfg, item, metrics);
+                            if (res != null && res.update() != null) {
                                 try {
-                                    updatesQueue.put(res);
+                                    updatesQueue.put(res.update());
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+                            if (res != null && res.issue() != null) {
+                                try {
+                                    issuesQueue.put(res.issue());
                                 } catch (InterruptedException e) {
                                     Thread.currentThread().interrupt();
                                 }
@@ -239,11 +259,11 @@ public final class Scanner {
         dbPersister.join(); // Espera o banco terminar de gravar o que sobrou
     }
 
-    private static HashUpdate computeHash(Path root, ScanConfig cfg, HashCandidate item, ScanMetrics metrics) {
+    private static HashResult computeHash(Path root, ScanConfig cfg, HashCandidate item, ScanMetrics metrics) {
         try {
             var absPath = root.resolve(item.pathRel());
             if (cfg.largeFileHashPolicy() == LargeFileHashPolicy.SKIP && item.sizeBytes() > cfg.hashMaxBytes()) {
-                return new HashUpdate(item.pathRel(), "SKIPPED_SIZE");
+                return new HashResult(new HashUpdate(item.pathRel(), "SKIPPED_SIZE"), null);
             }
 
             var md = SHA256.get(); 
@@ -264,7 +284,7 @@ public final class Scanner {
                 
                 String hex = HEX.formatHex(md.digest());
                 metrics.hashed.increment();
-                return new HashUpdate(item.pathRel(), hex);
+                return new HashResult(new HashUpdate(item.pathRel(), hex), null);
             }
 
             // Hash Completo (Seguro)
@@ -282,10 +302,11 @@ public final class Scanner {
             // blobStore.store(absPath, hex); <-- Injetar aqui futuramente para backup
             
             metrics.hashed.increment();
-            return new HashUpdate(item.pathRel(), hex);
+            return new HashResult(new HashUpdate(item.pathRel(), hex), null);
 
         } catch (Exception e) { 
-            return null; 
+            String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            return new HashResult(null, new Database.ScanIssue(item.pathRel(), "Hash error: " + message));
         }
     }
 
