@@ -1,4 +1,6 @@
-﻿package com.keeply.app.view;
+package com.keeply.app.view;
+
+import com.keeply.app.Config;
 
 import com.keeply.app.view.KeeplyTemplate.ScanModel;
 import com.keeply.app.view.KeeplyTemplate.Theme;
@@ -46,7 +48,7 @@ public final class ScanScreen {
     }
 
     private void configureControls() {
-        pathField.setText(System.getProperty("user.home"));
+        pathField.setText(Config.getLastPath());
         pathField.setPromptText("Select directory to scan...");
         
         btnStop.setDisable(true);
@@ -261,9 +263,16 @@ public final class ScanScreen {
 
     private void chooseDirectory() {
         DirectoryChooser dc = new DirectoryChooser();
+        File initial = new File(Config.getLastPath());
+        if (initial.exists() && initial.isDirectory()) {
+            dc.setInitialDirectory(initial);
+        }
         dc.setTitle("Select Target Folder");
         File f = dc.showDialog(stage);
-        if (f != null) pathField.setText(f.getAbsolutePath());
+        if (f != null) {
+            pathField.setText(f.getAbsolutePath());
+            Config.saveLastPath(f.getAbsolutePath());
+        }
     }
 
     public Button getScanButton() { return btnScan; }

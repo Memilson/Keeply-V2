@@ -1,87 +1,117 @@
-﻿package com.keeply.app;
+package com.keeply.app;
 
-import com.keeply.app.controller.ScanController;
 import com.keeply.app.controller.InventoryController;
-import com.keeply.app.view.KeeplyTemplate;
-import com.keeply.app.view.KeeplyTemplate.ScanModel;
+import com.keeply.app.controller.ScanController;
 import com.keeply.app.view.InventoryScreen;
+import com.keeply.app.view.KeeplyTemplate;
 import com.keeply.app.view.ScanScreen;
+import io.github.cdimascio.dotenv.Dotenv;
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.geometry.Rectangle2D;
 import javafx.scene.Scene;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
+import javafx.scene.image.Image;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
 import javafx.stage.StageStyle;
 
+import java.io.InputStream;
+import java.util.Objects;
+
 public class Main extends Application {
+
+    private static final double WIDTH = 540;
+    private static final double HEIGHT = 780;
+    private static final double SCREEN_MARGIN = 12;
+
+    public static void main(String[] args) {
+        try {
+            Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
+            System.setProperty("DB_URL", Objects.requireNonNullElse(dotenv.get("DB_URL"), "jdbc:sqlite:keeply.db"));
+        } catch (Exception e) {
+            System.setProperty("DB_URL", "jdbc:sqlite:keeply.db");
+        }
+        launch(args);
+    }
 
     @Override
     public void start(Stage stage) {
+        // 1. Inicializa o Banco
+        Database.init();
+
+        // 2. Inicializa o Modelo e Telas (Arquitetura V2)
+        KeeplyTemplate.ScanModel scanModel = new KeeplyTemplate.ScanModel();
+        
+        ScanScreen scanView = new ScanScreen(stage, scanModel);
+        InventoryScreen inventoryView = new InventoryScreen();
+        
+        // 3. Inicializa Controladores
+        new ScanController(scanView, scanModel);
+        new InventoryController(inventoryView);
+
+        // 4. Monta o Layout
+        KeeplyTemplate layout = new KeeplyTemplate(stage);
+        TabPane tabPane = buildTabs(layout, scanView, inventoryView);
+        layout.setContent(tabPane);
+
+        // 5. Configura Janela
         stage.initStyle(StageStyle.UNDECORATED);
+        stage.setTitle("Keeply V2");
+        
+        Scene scene = new Scene(layout.root(), WIDTH, HEIGHT);
+        try {
+            scene.getStylesheets().add(Objects.requireNonNull(getClass().getResource("/styles.css")).toExternalForm());
+        } catch (Exception e) {
+            System.err.println(">> AVISO: styles.css não encontrado.");
+        }
 
-        double W = 540, H = 780;
+        try (InputStream icon = getClass().getResourceAsStream("/icon.png")) {
+            if (icon != null) stage.getIcons().add(new Image(icon));
+        } catch (Exception ignored) {}
 
-        ScanModel model = new ScanModel();
-
-        KeeplyTemplate shell = new KeeplyTemplate(stage);
-        ScanScreen scan = new ScanScreen(stage, model);
-        InventoryScreen inventory = new InventoryScreen();
-
-        TabPane tabs = buildTabs(shell, scan, inventory);
-
-        shell.setTitle("Scanner");
-        shell.setContent(tabs);
-        shell.setFooter(scan.footer());
-
-        new ScanController(scan, model);
-        new InventoryController(inventory);
-
-        Scene scene = new Scene(shell.root(), W, H);
-        // Load application stylesheet
-        scene.getStylesheets().add(getClass().getResource("/styles.css").toExternalForm());
         stage.setScene(scene);
         stage.setResizable(false);
 
-        Rectangle2D vb = Screen.getPrimary().getVisualBounds();
-        double margin = 12;
-        stage.setX(vb.getMaxX() - W - margin);
-        stage.setY(vb.getMaxY() - H - margin);
+        // Posiciona no canto inferior direito
+        Rectangle2D bounds = Screen.getPrimary().getVisualBounds();
+        stage.setX(bounds.getMaxX() - WIDTH - SCREEN_MARGIN);
+        stage.setY(bounds.getMaxY() - HEIGHT - SCREEN_MARGIN);
+
+        // Fecha banco ao sair
+        stage.setOnCloseRequest(e -> {
+            Database.shutdown();
+            Platform.exit();
+            System.exit(0);
+        });
 
         stage.show();
     }
 
-    private TabPane buildTabs(KeeplyTemplate shell, ScanScreen scan, InventoryScreen inventory) {
+    private TabPane buildTabs(KeeplyTemplate layout, ScanScreen scan, InventoryScreen inventory) {
         TabPane tabs = new TabPane();
         tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
-        tabs.setTabMinWidth(140);
-        tabs.setTabMaxWidth(260);
-        tabs.setStyle("""
-            -fx-background-color: transparent;
-            -fx-padding: 0 0 8 0;
-            -fx-tab-max-height: 38px;
-        """);
+        tabs.setStyle("-fx-background-color: transparent; -fx-padding: 0;");
 
-        Tab scanTab = new Tab("Scanner", scan.content());
-        Tab inventoryTab = new Tab("Inventário", inventory.content());
-        tabs.getTabs().addAll(scanTab, inventoryTab);
+        Tab tScan = new Tab("SCANNER", scan.content());
+        Tab tInv = new Tab("INVENTARIO", inventory.content());
 
-        tabs.getSelectionModel().selectedItemProperty().addListener((obs, oldTab, newTab) -> {
-            if (newTab == inventoryTab) {
-                shell.setTitle("Inventário");
-                shell.setFooter(null);
-            } else {
-                shell.setTitle("Scanner");
-                shell.setFooter(scan.footer());
+        tabs.getTabs().addAll(tScan, tInv);
+
+        layout.setTitle("Scanner");
+        layout.setFooter(scan.footer());
+
+        tabs.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
+            if (newVal == tScan) {
+                layout.setTitle("Scanner");
+                layout.setFooter(scan.footer());
+            } else if (newVal == tInv) {
+                layout.setTitle("Inventario");
+                layout.setFooter(null);
             }
         });
 
         return tabs;
     }
-
-    public static void main(String[] args) {
-        launch(args);
-    }
 }
-

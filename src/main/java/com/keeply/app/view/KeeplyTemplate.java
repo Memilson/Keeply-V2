@@ -1,4 +1,4 @@
-﻿package com.keeply.app.view;
+package com.keeply.app.view;
 
 import javafx.application.Platform;
 import javafx.beans.property.SimpleStringProperty;

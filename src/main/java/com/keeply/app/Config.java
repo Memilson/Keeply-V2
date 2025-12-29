@@ -1,9 +1,10 @@
-﻿package com.keeply.app;
+package com.keeply.app;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.prefs.Preferences;
 
 import io.github.cdimascio.dotenv.Dotenv;
 
@@ -28,6 +29,8 @@ public final class Config {
     // Logger must be initialized before any static initializer that may use it
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Config.class);
     private static final Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
+
+    private static final Preferences prefs = Preferences.userNodeForPackage(Main.class);
 
     private static final String DB_FILENAME = resolveDbFileName();
     private static final Path DB_PATH = resolveDbPath(DB_FILENAME);
@@ -60,6 +63,14 @@ public final class Config {
     // Métodos de compatibilidade
     public static String getDbUser() { return ""; }
     public static String getDbPass() { return ""; }
+
+    public static void saveLastPath(String path) {
+        prefs.put("last_scan_path", path);
+    }
+
+    public static String getLastPath() {
+        return prefs.get("last_scan_path", System.getProperty("user.home"));
+    }
 
     // --- Lógica de Resolução ---
 

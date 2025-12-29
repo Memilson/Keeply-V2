@@ -1,4 +1,4 @@
-﻿package com.keeply.app.controller;
+package com.keeply.app.controller;
 
 import com.keeply.app.Config;
 import com.keeply.app.Database;
@@ -81,7 +81,8 @@ public final class ScanController {
                 model.reset();
                 view.setScanningState(true);
             });
-            // Cria a configuração simplificada (somente metadados)
+
+            // Cria a configuração simplificada (sem hash)
             var config = buildScanConfig();
 
             // Inicia a tarefa
@@ -208,7 +209,8 @@ public final class ScanController {
             "**/ntuser.dat*", "**/Cookies/**", "**/$Recycle.Bin/**",
             "**/System Volume Information/**", "**/Windows/**"
         ));
-        // Note: removemos parâmetros antigos, pois o novo Scanner usa apenas metadados
+
+        // Note: removemos os parâmetros de HashWorker, pois o novo Scanner não usa
         return new Scanner.ScanConfig(
                 defaults.dbBatchSize(),
                 List.copyOf(excludes)
@@ -235,7 +237,8 @@ public final class ScanController {
         double seconds = Math.max(1.0, elapsed);
         
         long scanned = m.filesSeen.sum();
-        // UI simplificada sem métricas de validação
+        
+        // UI simplificada sem métricas de Hash
         model.filesScannedProperty.set("%,d".formatted(scanned));
         model.rateProperty.set("%.0f files/s".formatted(scanned / seconds));
         model.dbBatchesProperty.set(Long.toString(m.dbBatches.sum()));
@@ -249,7 +252,7 @@ public final class ScanController {
     private final class ScannerTask implements Runnable {
         private final String rootPath;
         private final Scanner.ScanConfig config;
-        private final AtomicBoolean running = new AtomicBoolean(true);
+        private final AtomicBoolean running = new AtomicBoolean(false);
         private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
         private Database.SimplePool pool;
 
@@ -268,6 +271,8 @@ public final class ScanController {
         @Override
         public void run() {
             var metrics = new Scanner.ScanMetrics();
+            running.set(true);
+            cancelRequested.set(false);
             metrics.running.set(true);
             ui(() -> startUiUpdater(metrics));
 
@@ -310,6 +315,3 @@ public final class ScanController {
         return (t.getMessage() != null) ? t.getMessage() : t.getClass().getSimpleName();
     }
 }
-
-
-

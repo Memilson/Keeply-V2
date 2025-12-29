@@ -1,4 +1,4 @@
-﻿package com.keeply.app;
+package com.keeply.app;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -16,7 +16,7 @@ import org.slf4j.LoggerFactory;
 
 public final class Scanner {
 
-    private Scanner() {}
+    Scanner() {}
     // Configuração simplificada (somente metadados)
     public record ScanConfig(int dbBatchSize, List<String> excludeGlobs) {
         public static ScanConfig defaults() {

@@ -1,17 +1,29 @@
-﻿package com.keeply.app.controller;
+package com.keeply.app.controller;
 
 import com.keeply.app.Database;
+import com.keeply.app.Config;
+import com.keeply.app.report.ReportExporter;
 // IMPORTANTE: Importando as classes estáticas dentro de Database
 import com.keeply.app.Database.InventoryRow;
 import com.keeply.app.Database.ScanSummary;
 import com.keeply.app.Database.CapacityReport;
 import com.keeply.app.view.InventoryScreen;
 import javafx.application.Platform;
+import javafx.stage.FileChooser;
+import javafx.stage.Window;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.io.File;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -30,11 +42,14 @@ public final class InventoryController {
     }
 
     private static final Logger logger = LoggerFactory.getLogger(InventoryController.class);
+    private static final DateTimeFormatter EXPORT_TS = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     private void wire() {
         view.refreshButton().setOnAction(e -> refresh());
         view.expandButton().setOnAction(e -> view.expandAll());
         view.collapseButton().setOnAction(e -> view.collapseAll());
+        view.exportCsvItem().setOnAction(e -> exportCsv());
+        view.exportPdfItem().setOnAction(e -> exportPdf());
         view.searchField().textProperty().addListener((obs, oldVal, newVal) -> applyFilter(newVal));
 
         view.scanSelector().valueProperty().addListener((obs, oldScan, newScan) -> {
@@ -127,6 +142,86 @@ public final class InventoryController {
                 
         view.renderTree(filtered, currentScanData);
         if (!filtered.isEmpty()) view.expandAll();
+    }
+
+
+    private void exportCsv() {
+        File file = chooseExportFile("CSV", ".csv", "inventario");
+        if (file == null) return;
+        exportToCsv(allRows, file);
+    }
+
+    private void exportPdf() {
+        File file = chooseExportFile("PDF", ".pdf", "relatorio");
+        if (file == null) return;
+        try {
+            ReportExporter.exportPdf(allRows, file, currentScanData);
+        } catch (Exception e) {
+            logger.error("Erro ao exportar PDF", e);
+        }
+    }
+
+    private File chooseExportFile(String label, String extension, String baseName) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Exportar " + label);
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(label + " (*" + extension + ")", "*" + extension));
+        String stamp = LocalDateTime.now().format(EXPORT_TS);
+        chooser.setInitialFileName(baseName + "-" + stamp + extension);
+        File initialDir = new File(Config.getLastPath());
+        if (initialDir.exists() && initialDir.isDirectory()) {
+            chooser.setInitialDirectory(initialDir);
+        }
+        Window window = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
+        File file = chooser.showSaveDialog(window);
+        if (file == null) return null;
+        file = ensureExtension(file, extension);
+        if (file.getParentFile() != null) {
+            Config.saveLastPath(file.getParentFile().getAbsolutePath());
+        }
+        return file;
+    }
+
+    private static File ensureExtension(File file, String extension) {
+        String name = file.getName();
+        if (!name.toLowerCase().endsWith(extension)) {
+            return new File(file.getParentFile(), name + extension);
+        }
+        return file;
+    }
+
+    public void exportToCsv(List<InventoryRow> rows, File file) {
+        if (rows == null || file == null) {
+            logger.warn("Export cancelado: dados ou arquivo ausente.");
+            return;
+        }
+        try (var writer = new PrintWriter(file, StandardCharsets.UTF_8)) {
+            writer.println("Caminho,Nome,Tamanho (Bytes),Estado,Criado Em,Modificado Em");
+            for (var row : rows) {
+                String line = String.format("%s,%s,%d,%s,%s,%s",
+                    csvEscape(row.pathRel()),
+                    csvEscape(row.name()),
+                    row.sizeBytes(),
+                    csvEscape(row.status()),
+                    csvEscape(formatInstant(row.createdMillis())),
+                    csvEscape(formatInstant(row.modifiedMillis())));
+                writer.println(line);
+            }
+        } catch (IOException e) {
+            logger.error("Erro ao exportar", e);
+        }
+    }
+
+    private static String formatInstant(long millis) {
+        if (millis <= 0) return "";
+        return DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+                .format(LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault()));
+    }
+
+    private static String csvEscape(String value) {
+        if (value == null) return "\"\"";
+        String cleaned = value.replace("\"", "\"\"");
+        cleaned = cleaned.replace("\r", " ").replace("\n", " ");
+        return "\"" + cleaned + "\"";
     }
 
     private void loadDialogHistory(String pathRel) {
