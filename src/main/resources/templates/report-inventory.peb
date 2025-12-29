@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"/>
+  <style>
+    @page {
+      margin: 18mm 16mm 18mm 16mm;
+      size: {{ o.pageSize }} {% if o.landscape %}landscape{% else %}portrait{% endif %};
+      @bottom-center {
+        content: "Página " counter(page) " / " counter(pages);
+        font-size: 10px;
+        color: {{ o.theme.textMuted }};
+      }
+    }
+
+    * { box-sizing: border-box; }
+    body { font-family: "Noto Sans", Arial, sans-serif; color: {{ o.theme.textMain }}; margin: 0; }
+    .header {
+      background: {{ o.theme.headerBg }};
+      color: white;
+      padding: 18px 22px;
+      border-bottom: 3px solid {{ o.theme.accent }};
+      border-radius: 10px;
+    }
+    .brand { font-weight: 700; letter-spacing: 0.14em; color: {{ o.theme.accent }}; font-size: 12px; }
+    .title { font-weight: 800; font-size: 26px; margin: 6px 0 0 0; }
+    .subtitle { color: #C7C7C7; font-size: 11px; margin-top: 8px; display: flex; justify-content: space-between; gap: 10px; }
+    .muted { color: {{ o.theme.textMuted }}; }
+
+    .grid {
+      display: table;
+      width: 100%;
+      border-spacing: 12px;
+      margin-top: 14px;
+    }
+    .card {
+      display: table-cell;
+      padding: 14px 14px;
+      border: 1px solid #E9E9EE;
+      border-radius: 12px;
+      background: #FFF;
+      vertical-align: top;
+    }
+    .k { font-size: 10px; letter-spacing: 0.12em; font-weight: 700; color: {{ o.theme.textMuted }}; }
+    .v { font-size: 18px; font-weight: 800; margin-top: 6px; }
+
+    .chips { margin-top: 12px; }
+    .chip {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid #E9E9EE;
+      margin-right: 8px;
+      font-size: 11px;
+      background: #FFF;
+    }
+    .chip b { color: {{ o.theme.textMain }}; }
+
+    h2 {
+      margin: 18px 0 8px 0;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: {{ o.theme.headerBg }};
+    }
+    .rule { height: 1px; background: #E9E9EE; margin-bottom: 10px; }
+
+    .row { display: table; width: 100%; border-spacing: 12px; }
+    .col { display: table-cell; vertical-align: top; width: 50%; }
+
+    .chartbox {
+      border: 1px solid #E9E9EE;
+      border-radius: 12px;
+      padding: 12px;
+      background: #FFF;
+    }
+
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      font-size: 10px;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      color: {{ o.theme.textMuted }};
+      padding: 8px 10px;
+      border-bottom: 1px solid #E9E9EE;
+    }
+    td {
+      padding: 9px 10px;
+      border-bottom: 1px solid #F1F1F5;
+      font-size: 11px;
+      vertical-align: top;
+    }
+    tr:nth-child(even) td { background: {{ o.theme.rowAlt }}; }
+
+    .right { text-align: right; }
+    .file-name { font-weight: 700; font-size: 12px; }
+    .file-path { font-size: 10px; color: {{ o.theme.textMuted }}; margin-top: 2px; }
+  </style>
+</head>
+
+<body>
+  <div class="header">
+    <div class="brand">KEEPLY</div>
+    <div class="title">Relatório de Inventário</div>
+    <div class="subtitle">
+      <div>Gerado em: <b>{{ fmt.now() }}</b></div>
+      <div>
+        {% if m.summary.scanId is not null %}
+          Snapshot: <b>#{{ m.summary.scanId }}</b>
+        {% else %}
+          Snapshot: <b>-</b>
+        {% endif %}
+        &nbsp;|&nbsp;
+        Finalizado: <b>{{ m.summary.finishedAt ?: "-" }}</b>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="k">TOTAL FILES</div>
+      <div class="v">{{ fmt.intN(m.summary.totalFiles) }}</div>
+    </div>
+    <div class="card">
+      <div class="k">TOTAL SIZE</div>
+      <div class="v">{{ fmt.bytes(m.summary.totalBytes) }}</div>
+    </div>
+    <div class="card">
+      <div class="k">SCAN ROOT</div>
+      <div class="v" style="font-size: 13px;">
+        {{ fmt.abbreviateMiddle(m.summary.rootPath, 46) }}
+      </div>
+    </div>
+  </div>
+
+  <div class="chips">
+    <span class="chip">NEW: <b>{{ fmt.intN(m.statusCounts["NEW"] ?: 0) }}</b></span>
+    <span class="chip">MODIFIED: <b>{{ fmt.intN(m.statusCounts["MODIFIED"] ?: 0) }}</b></span>
+    <span class="chip">STABLE: <b>{{ fmt.intN(m.statusCounts["STABLE"] ?: 0) }}</b></span>
+    <span class="chip">OTHER: <b>{{ fmt.intN(m.statusCounts["OTHER"] ?: 0) }}</b></span>
+  </div>
+
+  <h2>Visão geral</h2>
+  <div class="rule"></div>
+
+  <div class="row">
+    <div class="col">
+      <div class="chartbox">
+        <div class="k" style="margin-bottom: 8px;">Tipos de arquivo (Top {{ o.topTypes }} por tamanho)</div>
+        {% if c.typesBarPngBase64 %}
+          <img style="width: 100%; height: auto;" src="data:image/png;base64,{{ c.typesBarPngBase64 }}" />
+        {% else %}
+          <div class="muted">Sem dados para gráfico.</div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="col">
+      <div class="chartbox">
+        <div class="k" style="margin-bottom: 8px;">Status (distribuição)</div>
+        {% if c.statusPiePngBase64 %}
+          <img style="width: 100%; height: auto;" src="data:image/png;base64,{{ c.statusPiePngBase64 }}" />
+        {% else %}
+          <div class="muted">Sem dados para gráfico.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <h2>Tipos de arquivo</h2>
+  <div class="rule"></div>
+  <table>
+    <thead>
+      <tr>
+        <th>Ext</th>
+        <th class="right">Count</th>
+        <th class="right">Size</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in m.topTypes %}
+      <tr>
+        <td>{{ t.ext }}</td>
+        <td class="right">{{ fmt.intN(t.count) }}</td>
+        <td class="right">{{ fmt.bytes(t.bytes) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Pastas com maior tamanho</h2>
+  <div class="rule"></div>
+  <table>
+    <thead>
+      <tr>
+        <th>Pasta</th>
+        <th class="right">Files</th>
+        <th class="right">Size</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in m.topFolders %}
+      <tr>
+        <td>{{ fmt.abbreviateMiddle(f.folder, 80) }}</td>
+        <td class="right">{{ fmt.intN(f.count) }}</td>
+        <td class="right">{{ fmt.bytes(f.bytes) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Maiores arquivos</h2>
+  <div class="rule"></div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Arquivo</th>
+        <th class="right">Size</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in m.topFiles %}
+      <tr>
+        <td class="muted">{{ loop.index }}</td>
+        <td>
+          <div class="file-name">{{ fmt.abbreviateMiddle(f.name, 72) }}</div>
+          <div class="file-path">{{ fmt.abbreviateMiddle(f.pathRel, 120) }}</div>
+        </td>
+        <td class="right">{{ fmt.bytes(f.sizeBytes) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

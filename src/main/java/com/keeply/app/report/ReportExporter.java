@@ -1,566 +1,235 @@
-package com.keeply.app.report;
+﻿package com.keeply.app.report;
 
 import com.keeply.app.Database.InventoryRow;
 import com.keeply.app.Database.ScanSummary;
-import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.pdmodel.PDPage;
-import org.apache.pdfbox.pdmodel.PDPageContentStream;
-import org.apache.pdfbox.pdmodel.common.PDRectangle;
-import org.apache.pdfbox.pdmodel.font.PDFont;
-import org.apache.pdfbox.pdmodel.font.PDType0Font;
-import org.apache.pdfbox.pdmodel.font.PDType1Font;
-import org.apache.pdfbox.pdmodel.graphics.image.LosslessFactory;
-import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
-import org.knowm.xchart.BitmapEncoder;
-import org.knowm.xchart.CategoryChart;
-import org.knowm.xchart.CategoryChartBuilder;
-import org.knowm.xchart.style.Styler;
+import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
+import com.typesafe.config.Config;
+import com.typesafe.config.ConfigFactory;
+import io.pebbletemplates.pebble.PebbleEngine;
+import io.pebbletemplates.pebble.loader.ClasspathLoader;
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.awt.Color;
-import java.awt.image.BufferedImage;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+
+import static java.util.Objects.requireNonNull;
 
 public final class ReportExporter {
 
+    private static final Logger log = LoggerFactory.getLogger(ReportExporter.class);
+
+    private static final String TEMPLATE_PATH = "templates/report-inventory.peb";
     private static final String FONT_REGULAR = "/fonts/NotoSans-Regular.ttf";
     private static final String FONT_BOLD = "/fonts/NotoSans-Bold.ttf";
-
-    // Keeply palette
-    private static final Color COL_HEADER_BG = new Color(24, 24, 27);
-    private static final Color COL_ACCENT = new Color(6, 182, 212);
-    private static final Color COL_TEXT_MAIN = new Color(30, 30, 30);
-    private static final Color COL_TEXT_MUTED = new Color(100, 100, 100);
-    private static final Color COL_ROW_ALT = new Color(248, 250, 252);
 
     private ReportExporter() {}
 
     public static void exportPdf(List<InventoryRow> rows, File file, ScanSummary scan) throws IOException {
-        List<InventoryRow> safeRows = (rows == null) ? List.of() : rows;
-        long totalBytes = safeRows.stream().mapToLong(InventoryRow::sizeBytes).sum();
+        exportPdf(rows, file, scan, ReportOptions.load());
+    }
 
-        String rootPath = resolveRootPath(safeRows, scan);
-        String scanInfo = formatScanInfo(scan);
+    public static void exportPdf(List<InventoryRow> rows, File file, ScanSummary scan, ReportOptions opts) throws IOException {
+        requireNonNull(file, "file");
+        requireNonNull(opts, "opts");
+        var safeRows = (rows == null) ? List.<InventoryRow>of() : rows;
 
-        List<InventoryRow> topFiles = safeRows.stream()
-                .sorted(Comparator.comparingLong(InventoryRow::sizeBytes).reversed())
-                .limit(20)
-                .toList();
+        if (file.getParentFile() != null) {
+            // cria diretório se não existir (robustez)
+            //noinspection ResultOfMethodCallIgnored
+            file.getParentFile().mkdirs();
+        }
 
-        List<TypeStat> typeStats = computeTypeStats(safeRows);
-        List<TypeStat> topTypes = typeStats.size() > 12 ? typeStats.subList(0, 12) : typeStats;
-        List<FolderStat> topFolders = computeTopFolders(safeRows, 12);
-        Map<String, Long> statusCounts = computeStatusCounts(safeRows);
+        // AWT headless (evita crash em servidor/VM sem GUI)
+        System.setProperty("java.awt.headless", "true");
 
-        BufferedImage chartTypes = buildTypeChart(topTypes);
+        var model = ReportModel.from(safeRows, scan, opts);
 
-        try (PDDocument doc = new PDDocument()) {
-            PdfFonts fonts = loadFonts(doc);
-            try (PdfCursor cursor = new PdfCursor(doc, fonts)) {
-                drawKeeplyHeader(cursor, "Relatorio de Inventario", scanInfo);
-                cursor.moveDown(30);
+        // Charts -> base64 PNG (pra template)
+        var charts = ReportCharts.build(model, opts);
 
-                drawSummaryCards(cursor, rootPath, safeRows.size(), totalBytes);
-                if (!statusCounts.isEmpty()) {
-                    cursor.moveDown(20);
-                    drawStatRow(cursor, List.of(
-                            new StatItem("NEW", Long.toString(statusCounts.getOrDefault("NEW", 0L))),
-                            new StatItem("MODIFIED", Long.toString(statusCounts.getOrDefault("MODIFIED", 0L))),
-                            new StatItem("STABLE", Long.toString(statusCounts.getOrDefault("STABLE", 0L))),
-                            new StatItem("OTHER", Long.toString(statusCounts.getOrDefault("OTHER", 0L)))
-                    ));
-                }
-                cursor.moveDown(30);
+        // Render HTML via template
+        var html = renderHtml(model, charts, opts);
 
-                if (chartTypes != null) {
-                    cursor.checkPageBreak(250);
-                    drawSectionTitle(cursor, "Tipos de Arquivo (Top 12 por tamanho)");
-                    drawImageCentered(cursor, chartTypes, 220);
-                    cursor.moveDown(20);
-                }
+        // HTML -> PDF
+        try (var out = new BufferedOutputStream(new FileOutputStream(file))) {
+            renderPdf(html, out, opts);
+        }
 
-                if (!topTypes.isEmpty()) {
-                    cursor.checkPageBreak(140);
-                    drawTypeTable(cursor, topTypes, totalBytes);
-                    cursor.moveDown(20);
-                }
+        log.info("Report PDF exported: {}", file.getAbsolutePath());
+    }
 
-                if (!topFolders.isEmpty()) {
-                    cursor.checkPageBreak(140);
-                    drawSectionTitle(cursor, "Pastas com maior tamanho (Top 12)");
-                    drawFolderTable(cursor, topFolders);
-                    cursor.moveDown(20);
-                }
+    // -------------------- HTML rendering (Pebble) --------------------
 
-                cursor.checkPageBreak(100);
-                drawSectionTitle(cursor, "Maiores Arquivos (Top 20)");
-                drawSmartFileTable(cursor, topFiles);
-            }
-            addPageNumbers(doc, fonts);
-            doc.save(file);
+    private static String renderHtml(ReportModel model, ReportCharts.Charts charts, ReportOptions opts) throws IOException {
+        var loader = new ClasspathLoader();
+        loader.setCharset(StandardCharsets.UTF_8);
+        loader.setPrefix(""); // resources root
+        var engine = new PebbleEngine.Builder()
+                .loader(loader)
+                .autoEscaping(true)
+                .build();
+
+        var template = engine.getTemplate(TEMPLATE_PATH);
+
+        var ctx = new HashMap<String, Object>();
+        ctx.put("m", model);
+        ctx.put("c", charts);
+        ctx.put("o", opts);
+        ctx.put("fmt", new TemplateFormatters(opts));
+
+        try (var sw = new StringWriter(32_768)) {
+            template.evaluate(sw, ctx, Locale.ROOT);
+            return sw.toString();
         }
     }
 
-    // --- CHARTS ---
+    // -------------------- PDF rendering (OpenHTMLtoPDF) --------------------
 
-    private static BufferedImage buildTypeChart(List<TypeStat> types) {
-        if (types.isEmpty()) return null;
+    private static void renderPdf(String html, OutputStream out, ReportOptions opts) throws IOException {
+        try {
+            var builder = new PdfRendererBuilder();
+            builder.useFastMode();
+            builder.toStream(out);
+            builder.withHtmlContent(html, null);
 
-        CategoryChart chart = new CategoryChartBuilder().width(600).height(350).title("").build();
-        chart.getStyler().setLegendVisible(false);
-        chart.getStyler().setPlotGridLinesVisible(false);
-        chart.getStyler().setChartBackgroundColor(Color.WHITE);
-        chart.getStyler().setSeriesColors(new Color[]{ COL_ACCENT });
-        chart.getStyler().setAvailableSpaceFill(0.6);
-        chart.getStyler().setLegendPosition(Styler.LegendPosition.OutsideE);
+            // Fonts (se tiver no resources)
+            registerFontIfPresent(builder, FONT_REGULAR, "Noto Sans", 400);
+            registerFontIfPresent(builder, FONT_BOLD, "Noto Sans", 700);
 
-        List<String> xData = new ArrayList<>();
-        List<Double> yData = new ArrayList<>();
-        for (TypeStat stat : types) {
-            xData.add(stat.ext());
-            yData.add(stat.bytes() / 1024.0 / 1024.0);
-        }
-        chart.addSeries("MB", xData, yData);
-        return BitmapEncoder.getBufferedImage(chart);
-    }
+            // Page size
+            builder.useDefaultPageSize(
+                    opts.pageWidthPoints(),
+                    opts.pageHeightPoints(),
+                    opts.landscape()
+            );
 
-    // --- PDF LAYOUT ---
-
-    private static void drawKeeplyHeader(PdfCursor cursor, String title, String subtitle) throws IOException {
-        PDPageContentStream cs = cursor.stream;
-        cs.setNonStrokingColor(COL_HEADER_BG);
-        cs.addRect(0, cursor.pageHeight - 90, cursor.pageWidth, 90);
-        cs.fill();
-        cs.setNonStrokingColor(COL_ACCENT);
-        cs.addRect(0, cursor.pageHeight - 92, cursor.pageWidth, 2);
-        cs.fill();
-        cs.beginText();
-        cs.setFont(cursor.fonts.bold, 14);
-        cs.setNonStrokingColor(COL_ACCENT);
-        cs.newLineAtOffset(40, cursor.pageHeight - 35);
-        cs.showText(pdfText(cursor, "KEEPLY"));
-        cs.endText();
-        cs.beginText();
-        cs.setFont(cursor.fonts.bold, 24);
-        cs.setNonStrokingColor(Color.WHITE);
-        cs.newLineAtOffset(40, cursor.pageHeight - 65);
-        cs.showText(pdfText(cursor, title));
-        cs.endText();
-        String safeSubtitle = pdfText(cursor, subtitle);
-        float subW = textWidth(cursor.fonts.regular, 10, safeSubtitle);
-        cs.beginText();
-        cs.setFont(cursor.fonts.regular, 10);
-        cs.setNonStrokingColor(new Color(180, 180, 180));
-        cs.newLineAtOffset(cursor.pageWidth - 40 - subW, cursor.pageHeight - 35);
-        cs.showText(safeSubtitle);
-        cs.endText();
-        cursor.y = cursor.pageHeight - 120;
-    }
-
-    private static void drawSummaryCards(PdfCursor cursor, String root, int count, long bytes) throws IOException {
-        drawStatRow(cursor, List.of(
-                new StatItem("Total Files", String.format("%,d", count)),
-                new StatItem("Total Size", humanSize(bytes)),
-                new StatItem("Scan Root", shortenPath(root, 25))
-        ));
-    }
-
-    private static void drawStatItem(PdfCursor cursor, float x, float y, String label, String value) throws IOException {
-        PDPageContentStream cs = cursor.stream;
-        cs.beginText();
-        cs.setFont(cursor.fonts.regular, 9);
-        cs.setNonStrokingColor(COL_TEXT_MUTED);
-        cs.newLineAtOffset(x, y + 10);
-        cs.showText(pdfText(cursor, label.toUpperCase(Locale.ROOT)));
-        cs.endText();
-        cs.beginText();
-        cs.setFont(cursor.fonts.bold, 14);
-        cs.setNonStrokingColor(COL_TEXT_MAIN);
-        cs.newLineAtOffset(x, y - 5);
-        cs.showText(pdfText(cursor, value));
-        cs.endText();
-    }
-
-    private static void drawStatRow(PdfCursor cursor, List<StatItem> items) throws IOException {
-        if (items == null || items.isEmpty()) return;
-        float colW = (cursor.pageWidth - 80) / items.size();
-        float y = cursor.y;
-        for (int i = 0; i < items.size(); i++) {
-            StatItem item = items.get(i);
-            drawStatItem(cursor, 40 + colW * i, y, item.label(), item.value());
-        }
-        cursor.y -= 30;
-    }
-
-    private static void drawSectionTitle(PdfCursor cursor, String title) throws IOException {
-        PDPageContentStream cs = cursor.stream;
-        cs.setNonStrokingColor(COL_HEADER_BG);
-        cs.beginText();
-        cs.setFont(cursor.fonts.bold, 12);
-        cs.newLineAtOffset(40, cursor.y);
-        cs.showText(pdfText(cursor, title.toUpperCase(Locale.ROOT)));
-        cs.endText();
-        cs.setStrokingColor(new Color(230, 230, 230));
-        cs.setLineWidth(1);
-        cs.moveTo(40, cursor.y - 8);
-        cs.lineTo(cursor.pageWidth - 40, cursor.y - 8);
-        cs.stroke();
-        cursor.moveDown(25);
-    }
-
-    private static void drawSmartFileTable(PdfCursor cursor, List<InventoryRow> rows) throws IOException {
-        float rowH = 35;
-        drawSmartHeader(cursor);
-        cursor.moveDown(20);
-        int i = 1;
-        for (InventoryRow row : rows) {
-            cursor.checkPageBreak(rowH);
-            if (i % 2 == 0) {
-                cursor.stream.setNonStrokingColor(COL_ROW_ALT);
-                cursor.stream.addRect(40, cursor.y - rowH + 8, cursor.pageWidth - 80, rowH);
-                cursor.stream.fill();
-            }
-            String fullPath = row.pathRel();
-            String name = row.name();
-            String pathOnly = "/";
-            if (fullPath != null && name != null && fullPath.endsWith(name)) {
-                if (fullPath.length() > name.length()) {
-                    pathOnly = fullPath.substring(0, fullPath.length() - name.length());
-                    if (pathOnly.endsWith("/") || pathOnly.endsWith("\\")) {
-                        pathOnly = pathOnly.substring(0, pathOnly.length() - 1);
-                    }
-                }
-            }
-            drawDoubleLineRow(cursor, String.valueOf(i++), name, pathOnly, humanSize(row.sizeBytes()));
-            cursor.moveDown(rowH);
+            builder.run();
+        } catch (Exception e) {
+            throw new IOException("Failed to render PDF (OpenHTMLtoPDF)", e);
         }
     }
 
-    private static void drawTypeTable(PdfCursor cursor, List<TypeStat> types, long totalBytes) throws IOException {
-        float rowH = 16;
-        drawTypeHeader(cursor);
-        cursor.moveDown(15);
-        int i = 0;
-        for (TypeStat stat : types) {
-            cursor.checkPageBreak(rowH);
-            if (i % 2 == 1) {
-                cursor.stream.setNonStrokingColor(COL_ROW_ALT);
-                cursor.stream.addRect(40, cursor.y - rowH + 6, cursor.pageWidth - 80, rowH);
-                cursor.stream.fill();
-            }
-            drawTypeRow(cursor, stat, totalBytes);
-            cursor.moveDown(rowH);
-            i++;
+    private static void registerFontIfPresent(PdfRendererBuilder builder, String resourcePath, String family, int weight) {
+        var is = ReportExporter.class.getResourceAsStream(resourcePath);
+        if (is == null) {
+            log.warn("Font not found in resources: {}", resourcePath);
+            return;
+        }
+        builder.useFont(() -> is, family, weight, PdfRendererBuilder.FontStyle.NORMAL, true);
+    }
+
+    // -------------------- Options --------------------
+
+    public record ReportOptions(
+            Locale locale,
+            ZoneId zoneId,
+            int topFiles,
+            int topTypes,
+            int topFolders,
+            boolean landscape,
+            String pageSize, // "LETTER" | "A4"
+            Theme theme
+    ) {
+        public static ReportOptions load() {
+            Config cfg = ConfigFactory.load(); // application.conf / reference.conf
+            var locale = Locale.forLanguageTag(get(cfg, "keeply.report.locale", "pt-BR"));
+            var zoneId = ZoneId.of(get(cfg, "keeply.report.zoneId", "America/Sao_Paulo"));
+
+            int topFiles = getInt(cfg, "keeply.report.topFiles", 20);
+            int topTypes = getInt(cfg, "keeply.report.topTypes", 12);
+            int topFolders = getInt(cfg, "keeply.report.topFolders", 12);
+
+            var pageSize = get(cfg, "keeply.report.pageSize", "LETTER").toUpperCase(Locale.ROOT);
+            var landscape = getBool(cfg, "keeply.report.landscape", false);
+
+            var theme = new Theme(
+                    get(cfg, "keeply.report.theme.headerBg", "#18181B"),
+                    get(cfg, "keeply.report.theme.accent", "#06B6D4"),
+                    get(cfg, "keeply.report.theme.textMain", "#1E1E1E"),
+                    get(cfg, "keeply.report.theme.textMuted", "#646464"),
+                    get(cfg, "keeply.report.theme.rowAlt", "#F8FAFC")
+            );
+
+            return new ReportOptions(locale, zoneId, topFiles, topTypes, topFolders, landscape, pageSize, theme);
+        }
+
+        public float pageWidthPoints() {
+            // 1 point = 1/72 inch
+            return switch (pageSize) {
+                case "A4" -> landscape ? 841.89f : 595.28f;
+                case "LETTER" -> landscape ? 792f : 612f;
+                default -> landscape ? 792f : 612f;
+            };
+        }
+
+        public float pageHeightPoints() {
+            return switch (pageSize) {
+                case "A4" -> landscape ? 595.28f : 841.89f;
+                case "LETTER" -> landscape ? 612f : 792f;
+                default -> landscape ? 612f : 792f;
+            };
         }
     }
 
-    private static void drawTypeHeader(PdfCursor cursor) throws IOException {
-        PDPageContentStream cs = cursor.stream;
-        cs.setNonStrokingColor(COL_TEXT_MUTED);
-        cs.setFont(cursor.fonts.bold, 8);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y); cs.showText(pdfText(cursor, "EXT")); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(160, cursor.y); cs.showText(pdfText(cursor, "COUNT")); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(255, cursor.y); cs.showText(pdfText(cursor, "SIZE")); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(340, cursor.y); cs.showText(pdfText(cursor, "PCT")); cs.endText();
+    public record Theme(
+            String headerBg,
+            String accent,
+            String textMain,
+            String textMuted,
+            String rowAlt
+    ) {}
+
+    private static String get(Config cfg, String path, String def) {
+        try { return cfg.hasPath(path) ? cfg.getString(path) : def; }
+        catch (Exception ignored) { return def; }
     }
 
-    private static void drawTypeRow(PdfCursor cursor, TypeStat stat, long totalBytes) throws IOException {
-        PDPageContentStream cs = cursor.stream;
-        String pct = totalBytes > 0 ? String.format(Locale.US, "%.1f%%", (stat.bytes() * 100.0) / totalBytes) : "0.0%";
-        cs.setNonStrokingColor(COL_TEXT_MAIN);
-        cs.setFont(cursor.fonts.regular, 9);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y - 10); cs.showText(pdfText(cursor, stat.ext())); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(160, cursor.y - 10); cs.showText(pdfText(cursor, Long.toString(stat.count()))); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(255, cursor.y - 10); cs.showText(pdfText(cursor, humanSize(stat.bytes()))); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(340, cursor.y - 10); cs.showText(pdfText(cursor, pct)); cs.endText();
+    private static int getInt(Config cfg, String path, int def) {
+        try { return cfg.hasPath(path) ? cfg.getInt(path) : def; }
+        catch (Exception ignored) { return def; }
     }
 
-    private static void drawFolderTable(PdfCursor cursor, List<FolderStat> folders) throws IOException {
-        float rowH = 16;
-        drawFolderHeader(cursor);
-        cursor.moveDown(15);
-        int i = 0;
-        for (FolderStat stat : folders) {
-            cursor.checkPageBreak(rowH);
-            if (i % 2 == 1) {
-                cursor.stream.setNonStrokingColor(COL_ROW_ALT);
-                cursor.stream.addRect(40, cursor.y - rowH + 6, cursor.pageWidth - 80, rowH);
-                cursor.stream.fill();
-            }
-            drawFolderRow(cursor, stat);
-            cursor.moveDown(rowH);
-            i++;
-        }
+    private static boolean getBool(Config cfg, String path, boolean def) {
+        try { return cfg.hasPath(path) ? cfg.getBoolean(path) : def; }
+        catch (Exception ignored) { return def; }
     }
 
-    private static void drawFolderHeader(PdfCursor cursor) throws IOException {
-        PDPageContentStream cs = cursor.stream;
-        cs.setNonStrokingColor(COL_TEXT_MUTED);
-        cs.setFont(cursor.fonts.bold, 8);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y); cs.showText(pdfText(cursor, "FOLDER")); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(330, cursor.y); cs.showText(pdfText(cursor, "FILES")); cs.endText();
-        String sizeLbl = "SIZE";
-        float w = textWidth(cursor.fonts.bold, 8, sizeLbl);
-        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y); cs.showText(pdfText(cursor, sizeLbl)); cs.endText();
-    }
+    // -------------------- Template helper --------------------
 
-    private static void drawFolderRow(PdfCursor cursor, FolderStat stat) throws IOException {
-        PDPageContentStream cs = cursor.stream;
-        cs.setNonStrokingColor(COL_TEXT_MAIN);
-        cs.setFont(cursor.fonts.regular, 9);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y - 10); cs.showText(pdfText(cursor, shortenPath(stat.folder(), 60))); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(330, cursor.y - 10); cs.showText(pdfText(cursor, Long.toString(stat.count()))); cs.endText();
-        String size = humanSize(stat.bytes());
-        float w = textWidth(cursor.fonts.regular, 9, size);
-        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y - 10); cs.showText(pdfText(cursor, size)); cs.endText();
-    }
+    public static final class TemplateFormatters {
+        private final ReportOptions opts;
+        private final DateTimeFormatter dtf;
 
-    private static void drawSmartHeader(PdfCursor cursor) throws IOException {
-        PDPageContentStream cs = cursor.stream;
-        cs.setNonStrokingColor(COL_TEXT_MUTED);
-        cs.setFont(cursor.fonts.bold, 8);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y); cs.showText(pdfText(cursor, "#")); cs.endText();
-        cs.beginText(); cs.newLineAtOffset(70, cursor.y); cs.showText(pdfText(cursor, "FILE / LOCATION")); cs.endText();
-        String sizeLbl = "SIZE";
-        float w = textWidth(cursor.fonts.bold, 8, sizeLbl);
-        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y); cs.showText(pdfText(cursor, sizeLbl)); cs.endText();
-    }
-
-    private static void drawDoubleLineRow(PdfCursor cursor, String index, String name, String path, String size) throws IOException {
-        PDPageContentStream cs = cursor.stream;
-        cs.setNonStrokingColor(COL_TEXT_MUTED);
-        cs.setFont(cursor.fonts.regular, 8);
-        cs.beginText(); cs.newLineAtOffset(45, cursor.y - 12); cs.showText(pdfText(cursor, index)); cs.endText();
-        cs.setNonStrokingColor(COL_TEXT_MAIN);
-        cs.setFont(cursor.fonts.bold, 10);
-        cs.beginText(); cs.newLineAtOffset(70, cursor.y - 5); cs.showText(pdfText(cursor, shortenPath(name, 55))); cs.endText();
-        cs.setNonStrokingColor(new Color(120, 120, 120));
-        cs.setFont(cursor.fonts.regular, 8);
-        cs.beginText(); cs.newLineAtOffset(70, cursor.y - 16); cs.showText(pdfText(cursor, shortenPath(path, 75))); cs.endText();
-        cs.setNonStrokingColor(COL_TEXT_MAIN);
-        cs.setFont(cursor.fonts.regular, 9);
-        float w = textWidth(cursor.fonts.regular, 9, size);
-        cs.beginText(); cs.newLineAtOffset(cursor.pageWidth - 45 - w, cursor.y - 12); cs.showText(pdfText(cursor, size)); cs.endText();
-    }
-
-    private static void drawImageCentered(PdfCursor cursor, BufferedImage img, float height) throws IOException {
-        PDImageXObject pdImage = LosslessFactory.createFromImage(cursor.doc, img);
-        float scale = height / img.getHeight();
-        float width = img.getWidth() * scale;
-        float x = (cursor.pageWidth - width) / 2;
-        cursor.stream.drawImage(pdImage, x, cursor.y - height, width, height);
-        cursor.y -= height;
-    }
-
-    private static void addPageNumbers(PDDocument doc, PdfFonts fonts) throws IOException {
-        int total = doc.getNumberOfPages();
-        for (int i = 0; i < total; i++) {
-            PDPage page = doc.getPage(i);
-            try (PDPageContentStream content = new PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
-                String text = (i + 1) + " / " + total;
-                float w = textWidth(fonts.regular, 9, text);
-                content.beginText();
-                content.setFont(fonts.regular, 9);
-                content.setNonStrokingColor(COL_TEXT_MUTED);
-                content.newLineAtOffset((page.getMediaBox().getWidth() - w) / 2, 20);
-                content.showText(text);
-                content.endText();
-            }
-        }
-    }
-
-    // --- CURSOR ---
-
-    private static class PdfCursor implements AutoCloseable {
-        final PDDocument doc;
-        final PdfFonts fonts;
-        PDPage page;
-        PDPageContentStream stream;
-        float pageWidth;
-        float pageHeight;
-        float y;
-
-        PdfCursor(PDDocument doc, PdfFonts fonts) throws IOException {
-            this.doc = doc;
-            this.fonts = fonts;
-            newPage();
+        TemplateFormatters(ReportOptions opts) {
+            this.opts = opts;
+            this.dtf = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss", opts.locale());
         }
 
-        void newPage() throws IOException {
-            if (stream != null) stream.close();
-            this.page = new PDPage(PDRectangle.LETTER);
-            this.doc.addPage(page);
-            this.stream = new PDPageContentStream(doc, page);
-            this.pageWidth = page.getMediaBox().getWidth();
-            this.pageHeight = page.getMediaBox().getHeight();
-            this.y = pageHeight;
+        public String bytes(long b) {
+            // “não reinventar roda” (commons-io)
+            return FileUtils.byteCountToDisplaySize(b);
         }
 
-        void moveDown(float amount) {
-            y -= amount;
+        public String intN(long n) {
+            var nf = java.text.NumberFormat.getIntegerInstance(opts.locale());
+            return nf.format(n);
         }
 
-        void checkPageBreak(float needed) throws IOException {
-            if (y - needed < 50) {
-                newPage();
-                y -= 50;
-            }
+        public String abbreviateMiddle(String s, int max) {
+            if (s == null) return "";
+            // “não reinventar roda” (commons-lang3)
+            return StringUtils.abbreviateMiddle(s, "…", Math.max(8, max));
         }
 
-        @Override
-        public void close() throws IOException {
-            if (stream != null) stream.close();
+        public String now() {
+            return ZonedDateTime.now(opts.zoneId()).format(dtf);
         }
     }
-
-    // --- UTILS ---
-
-    private static PdfFonts loadFonts(PDDocument doc) {
-        PDFont regular = null;
-        PDFont bold = null;
-        try (InputStream regularStream = ReportExporter.class.getResourceAsStream(FONT_REGULAR);
-             InputStream boldStream = ReportExporter.class.getResourceAsStream(FONT_BOLD)) {
-            if (regularStream != null) {
-                regular = PDType0Font.load(doc, regularStream, true);
-            }
-            if (boldStream != null) {
-                bold = PDType0Font.load(doc, boldStream, true);
-            }
-        } catch (IOException ignored) {
-        }
-        if (regular == null && bold != null) regular = bold;
-        if (regular != null && bold == null) bold = regular;
-        if (regular != null && bold != null) {
-            return new PdfFonts(regular, bold, true);
-        }
-        return new PdfFonts(PDType1Font.HELVETICA, PDType1Font.HELVETICA_BOLD, false);
-    }
-
-    private static float textWidth(PDFont font, float size, String text) throws IOException {
-        if (text == null || text.isEmpty()) return 0f;
-        return font.getStringWidth(text) / 1000f * size;
-    }
-
-    private static List<TypeStat> computeTypeStats(List<InventoryRow> rows) {
-        Map<String, long[]> stats = new HashMap<>();
-        for (InventoryRow r : rows) {
-            String ext = extensionOf(r);
-            long[] agg = stats.computeIfAbsent(ext, k -> new long[2]);
-            agg[0] += r.sizeBytes();
-            agg[1] += 1;
-        }
-        List<TypeStat> list = new ArrayList<>();
-        for (Map.Entry<String, long[]> entry : stats.entrySet()) {
-            long[] agg = entry.getValue();
-            list.add(new TypeStat(entry.getKey(), agg[0], agg[1]));
-        }
-        list.sort(Comparator.comparingLong(TypeStat::bytes).reversed());
-        return list;
-    }
-
-    private static List<FolderStat> computeTopFolders(List<InventoryRow> rows, int limit) {
-        Map<String, long[]> stats = new HashMap<>();
-        for (InventoryRow row : rows) {
-            String folder = extractFolder(row.pathRel());
-            long[] agg = stats.computeIfAbsent(folder, k -> new long[2]);
-            agg[0] += row.sizeBytes();
-            agg[1] += 1;
-        }
-        List<FolderStat> list = new ArrayList<>();
-        for (Map.Entry<String, long[]> entry : stats.entrySet()) {
-            long[] agg = entry.getValue();
-            list.add(new FolderStat(entry.getKey(), agg[0], agg[1]));
-        }
-        list.sort(Comparator.comparingLong(FolderStat::bytes).reversed());
-        if (list.size() > limit) return list.subList(0, limit);
-        return list;
-    }
-
-    private static Map<String, Long> computeStatusCounts(List<InventoryRow> rows) {
-        Map<String, Long> counts = new HashMap<>();
-        for (InventoryRow row : rows) {
-            String status = normalizeStatus(row.status());
-            counts.merge(status, 1L, Long::sum);
-        }
-        return counts;
-    }
-
-    private static String resolveRootPath(List<InventoryRow> rows, ScanSummary scan) {
-        if (scan != null && scan.rootPath() != null) return scan.rootPath();
-        return rows.isEmpty() ? "-" : rows.get(0).rootPath();
-    }
-
-    private static String humanSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        int exp = (int) (Math.log(bytes) / Math.log(1024));
-        String pre = "KMGTPE".charAt(exp - 1) + "";
-        return String.format(Locale.US, "%.1f %sB", bytes / Math.pow(1024, exp), pre);
-    }
-
-    private static String shortenPath(String path, int max) {
-        if (path == null) return "";
-        if (path.length() <= max) return path;
-        return "..." + path.substring(path.length() - (max - 3));
-    }
-
-    private static String extensionOf(InventoryRow row) {
-        String name = row.name();
-        if (name == null || name.isBlank()) name = row.pathRel();
-        if (name == null || name.isBlank()) return "NO_EXT";
-        int idx = name.lastIndexOf('.');
-        if (idx <= 0 || idx >= name.length() - 1) return "NO_EXT";
-        return "." + name.substring(idx + 1).toUpperCase(Locale.ROOT);
-    }
-
-    private static String extractFolder(String pathRel) {
-        if (pathRel == null || pathRel.isBlank()) return "<root>";
-        String normalized = pathRel.replace('\\', '/');
-        int idx = normalized.lastIndexOf('/');
-        if (idx <= 0) return "<root>";
-        String folder = normalized.substring(0, idx);
-        if (folder.isBlank()) return "<root>";
-        return folder;
-    }
-
-    private static String normalizeStatus(String status) {
-        if (status == null) return "OTHER";
-        String norm = status.trim().toUpperCase(Locale.ROOT);
-        if (norm.isEmpty()) return "OTHER";
-        if ("NEW".equals(norm) || "MODIFIED".equals(norm) || "STABLE".equals(norm)) return norm;
-        return "OTHER";
-    }
-
-    private static String formatScanInfo(ScanSummary scan) {
-        if (scan == null) return "Export Manual";
-        String finished = scan.finishedAt() == null ? "-" : scan.finishedAt();
-        return "Snapshot #" + scan.scanId() + " | " + finished;
-    }
-
-    private static String pdfText(PdfCursor cursor, String value) {
-        if (value == null) return "";
-        String cleaned = value.replace("\r", " ").replace("\n", " ");
-        if (cursor.fonts.unicode) return cleaned;
-        return stripNonAscii(cleaned);
-    }
-
-    private static String stripNonAscii(String value) {
-        StringBuilder sb = new StringBuilder();
-        for (char c : value.toCharArray()) {
-            if (c > 127) sb.append('?'); else sb.append(c);
-        }
-        return sb.toString();
-    }
-
-    private record StatItem(String label, String value) {}
-    private record TypeStat(String ext, long bytes, long count) {}
-    private record FolderStat(String folder, long bytes, long count) {}
-    private record PdfFonts(PDFont regular, PDFont bold, boolean unicode) {}
 }
-
