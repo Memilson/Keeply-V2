@@ -80,6 +80,7 @@ public final class InventoryController {
                         this.allRows = rows;
                         this.currentScanData = lastScan;
                         view.renderTree(rows, lastScan);
+                        view.renderLargest(rows);
                     }
                 });
             } catch (Exception e) {
@@ -103,6 +104,7 @@ public final class InventoryController {
                 Platform.runLater(() -> {
                     view.showLoading(false);
                     view.renderTree(snapshotRows, scan);
+                    view.renderLargest(snapshotRows);
                     applyFilter(view.searchField().getText());
                 });
             } catch (Exception e) {

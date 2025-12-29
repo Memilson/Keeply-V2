@@ -21,6 +21,7 @@ public final class InventoryScreen {
 
     private static final String ICON_FOLDER = "M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z";
     private static final String ICON_FILE = "M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z";
+    private static final int TOP_LIMIT = 50;
 
     // Tema interno
     private static final class Theme {
@@ -43,12 +44,16 @@ public final class InventoryScreen {
     private final Label errorLabel = new Label();
     private final ProgressIndicator loading = new ProgressIndicator();
     private final TreeTableView<FileNode> tree = new TreeTableView<>();
+    private final TabPane dataTabs = new TabPane();
+    private final TableView<FileSizeRow> largestFilesTable = new TableView<>();
+    private final TableView<FolderSizeRow> largestFoldersTable = new TableView<>();
 
     private Consumer<String> onFileSelected;
     private Consumer<String> onShowHistory;
 
     public Node content() {
         configureTree();
+        configureLargestTables();
 
         VBox layout = new VBox(10);
         layout.setPadding(new Insets(10));
@@ -87,11 +92,17 @@ public final class InventoryScreen {
 
         toolbar.getChildren().addAll(cbScans, txtSearch, spacer, btnCollapse, btnExpand, btnRefresh);
 
-        // Tree Area
-        StackPane treeWrapper = new StackPane(tree, loading);
+        Tab treeTab = new Tab("Inventário", tree);
+        Tab filesTab = new Tab("Maiores arquivos", largestFilesTable);
+        Tab foldersTab = new Tab("Maiores pastas", largestFoldersTable);
+        dataTabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
+        dataTabs.getTabs().setAll(treeTab, filesTab, foldersTab);
+
+        // Data Area
+        StackPane dataWrapper = new StackPane(dataTabs, loading);
         loading.setVisible(false);
         loading.setMaxSize(40,40);
-        VBox.setVgrow(treeWrapper, Priority.ALWAYS);
+        VBox.setVgrow(dataWrapper, Priority.ALWAYS);
 
         // Error Banner
         errorLabel.setPadding(new Insets(8));
@@ -99,7 +110,7 @@ public final class InventoryScreen {
         errorLabel.setVisible(false);
         errorLabel.setManaged(false);
 
-        layout.getChildren().addAll(headerText, toolbar, errorLabel, treeWrapper);
+        layout.getChildren().addAll(headerText, toolbar, errorLabel, dataWrapper);
         return layout;
     }
 
@@ -290,6 +301,72 @@ public final class InventoryScreen {
         });
     }
 
+    private void configureLargestTables() {
+        largestFilesTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+        largestFilesTable.setPlaceholder(new Label("Sem dados."));
+
+        TableColumn<FileSizeRow, String> fName = new TableColumn<>("Arquivo");
+        fName.setCellValueFactory(p -> new SimpleStringProperty(p.getValue().name()));
+
+        TableColumn<FileSizeRow, String> fPath = new TableColumn<>("Caminho");
+        fPath.setCellValueFactory(p -> new SimpleStringProperty(p.getValue().path()));
+
+        TableColumn<FileSizeRow, String> fSize = new TableColumn<>("Tamanho");
+        fSize.setCellValueFactory(p -> new SimpleStringProperty(humanSize(p.getValue().sizeBytes())));
+        fSize.setStyle("-fx-alignment: CENTER-RIGHT;");
+
+        largestFilesTable.getColumns().setAll(List.of(fName, fPath, fSize));
+
+        largestFoldersTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+        largestFoldersTable.setPlaceholder(new Label("Sem dados."));
+
+        TableColumn<FolderSizeRow, String> dPath = new TableColumn<>("Pasta");
+        dPath.setCellValueFactory(p -> new SimpleStringProperty(p.getValue().path()));
+
+        TableColumn<FolderSizeRow, String> dSize = new TableColumn<>("Tamanho");
+        dSize.setCellValueFactory(p -> new SimpleStringProperty(humanSize(p.getValue().sizeBytes())));
+        dSize.setStyle("-fx-alignment: CENTER-RIGHT;");
+
+        largestFoldersTable.getColumns().setAll(List.of(dPath, dSize));
+    }
+
+    public void renderLargest(List<InventoryRow> rows) {
+        largestFilesTable.getItems().clear();
+        largestFoldersTable.getItems().clear();
+        if (rows == null || rows.isEmpty()) return;
+
+        var fileRows = rows.stream()
+                .sorted(Comparator.comparingLong(InventoryRow::sizeBytes).reversed()
+                        .thenComparing(InventoryRow::pathRel, String.CASE_INSENSITIVE_ORDER))
+                .limit(TOP_LIMIT)
+                .map(r -> new FileSizeRow(r.name(), r.pathRel(), r.sizeBytes()))
+                .toList();
+        largestFilesTable.getItems().setAll(fileRows);
+
+        Map<String, Long> folderSizes = new HashMap<>();
+        for (InventoryRow row : rows) {
+            String path = row.pathRel();
+            if (path == null || path.isBlank()) continue;
+            int lastSlash = path.lastIndexOf('/');
+            if (lastSlash <= 0) continue;
+            String dir = path.substring(0, lastSlash);
+            while (!dir.isEmpty()) {
+                folderSizes.merge(dir, row.sizeBytes(), Long::sum);
+                int slash = dir.lastIndexOf('/');
+                if (slash < 0) break;
+                dir = dir.substring(0, slash);
+            }
+        }
+
+        var folderRows = folderSizes.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey(String.CASE_INSENSITIVE_ORDER)))
+                .limit(TOP_LIMIT)
+                .map(e -> new FolderSizeRow(e.getKey(), e.getValue()))
+                .toList();
+        largestFoldersTable.getItems().setAll(folderRows);
+    }
+
     public void renderTree(List<InventoryRow> rows, ScanSummary scan) {
         if (rows == null || rows.isEmpty()) { tree.setRoot(null); tree.setPlaceholder(new Label("Sem dados.")); return; }
         String rootLabel = (scan != null) ? scan.rootPath() : "Root";
@@ -363,7 +440,7 @@ public final class InventoryScreen {
     
     public void showLoading(boolean value) {
         loading.setVisible(value);
-        tree.setDisable(value);
+        dataTabs.setDisable(value);
         btnRefresh.setDisable(value);
         cbScans.setDisable(value);
     }
@@ -391,6 +468,8 @@ public final class InventoryScreen {
 
     // Records
     public record FileNode(String name, String path, boolean directory, long sizeBytes, String status, long modifiedMillis) {}
+    public record FileSizeRow(String name, String path, long sizeBytes) {}
+    public record FolderSizeRow(String path, long sizeBytes) {}
     
     public record HistoryRow(long scanId, String rootPath, String startedAt, String finishedAt, long sizeBytes, String status, String createdAt, long growthBytes) {
         public String growthLabel() {
