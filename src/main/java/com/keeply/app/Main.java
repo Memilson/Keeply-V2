@@ -1,4 +1,4 @@
-package com.keeply.app;
+﻿package com.keeply.app;
 
 import com.keeply.app.controller.ScanController;
 import com.keeply.app.controller.InventoryController;
@@ -84,3 +84,4 @@ public class Main extends Application {
         launch(args);
     }
 }
+

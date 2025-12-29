@@ -1,4 +1,4 @@
-package com.keeply.app.view;
+﻿package com.keeply.app.view;
 
 import com.keeply.app.view.KeeplyTemplate.ScanModel;
 import com.keeply.app.view.KeeplyTemplate.Theme;
@@ -166,7 +166,7 @@ public final class ScanScreen {
 
         grid.add(createStatCard("FILES SCANNED", model.filesScannedProperty, Color.web(Theme.ACCENT)), 0, 0);
         grid.add(createStatCard("THROUGHPUT (MB/s)", model.mbPerSecProperty, Color.web("#8B5CF6")), 1, 0);
-        grid.add(createStatCard("HASH RATE", model.rateProperty, Color.web("#F59E0B")), 0, 1);
+        grid.add(createStatCard("SCAN RATE", model.rateProperty, Color.web("#F59E0B")), 0, 1);
         grid.add(createStatCard("ERRORS", model.errorsProperty, Color.web(Theme.DANGER)), 1, 1);
 
         ColumnConstraints col = new ColumnConstraints();
@@ -308,3 +308,5 @@ public final class ScanScreen {
         return res.isPresent() && res.get() == ButtonType.OK;
     }
 }
+
+

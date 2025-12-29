@@ -1,4 +1,4 @@
-package com.keeply.app.controller;
+﻿package com.keeply.app.controller;
 
 import com.keeply.app.Database;
 // IMPORTANTE: Importando as classes estáticas dentro de Database
@@ -11,6 +11,7 @@ import javafx.application.Platform;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -51,7 +52,9 @@ public final class InventoryController {
     private void refresh() {
         view.showLoading(true);
         Thread.ofVirtual().name("keeply-refresh").start(() -> {
-            try (var conn = Database.openSingleConnection()) {
+            Connection conn = null;
+            try {
+                conn = Database.openSingleConnection();
                 Database.ensureSchema(conn);
                 var rows = Database.fetchInventory(conn);
                 var lastScan = Database.fetchLastScan(conn);
@@ -82,6 +85,8 @@ public final class InventoryController {
             } catch (Exception e) {
                 logger.error("Erro ao atualizar inventário", e);
                 Platform.runLater(() -> { view.showLoading(false); view.showError("Erro: " + e.getMessage()); });
+            } finally {
+                Database.safeClose(conn);
             }
         });
     }
@@ -89,7 +94,9 @@ public final class InventoryController {
     private void loadSnapshot(ScanSummary scan) {
         view.showLoading(true);
         Thread.ofVirtual().name("keeply-snapshot").start(() -> {
-            try (var conn = Database.openSingleConnection()) {
+            Connection conn = null;
+            try {
+                conn = Database.openSingleConnection();
                 var snapshotRows = Database.fetchSnapshotFiles(conn, scan.scanId());
                 this.allRows = snapshotRows;
                 this.currentScanData = scan;
@@ -101,6 +108,8 @@ public final class InventoryController {
             } catch (Exception e) {
                 logger.error("Erro ao carregar snapshot", e);
                 Platform.runLater(() -> { view.showLoading(false); view.showError("Erro Snapshot: " + e.getMessage()); });
+            } finally {
+                Database.safeClose(conn);
             }
         });
     }
@@ -121,10 +130,16 @@ public final class InventoryController {
     private void loadDialogHistory(String pathRel) {
         if (pathRel == null) return;
         Thread.ofVirtual().start(() -> {
-            try (var conn = Database.openSingleConnection()) {
+            Connection conn = null;
+            try {
+                conn = Database.openSingleConnection();
                 var rows = Database.fetchFileHistory(conn, pathRel);
                 Platform.runLater(() -> view.showHistoryDialog(rows, pathRel));
-            } catch (Exception e) { logger.error("Erro ao carregar histórico", e); }
+            } catch (Exception e) {
+                logger.error("Erro ao carregar histórico", e);
+            } finally {
+                Database.safeClose(conn);
+            }
         });
     }
 
@@ -142,7 +157,6 @@ public final class InventoryController {
         logger.info("==================================");
     }
     
-    private static String safeMsg(Throwable t) {
-        return (t.getMessage() != null) ? t.getMessage() : t.getClass().getSimpleName();
-    }
 }
+
+

@@ -1,4 +1,4 @@
-package com.keeply.app;
+﻿package com.keeply.app;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -17,10 +17,7 @@ import org.slf4j.LoggerFactory;
 public final class Scanner {
 
     private Scanner() {}
-
-    public enum FileStatus { SEEN, NEW, MODIFIED, SYNCED }
-
-    // Configuração simplificada (sem hash params)
+    // Configuração simplificada (somente metadados)
     public record ScanConfig(int dbBatchSize, List<String> excludeGlobs) {
         public static ScanConfig defaults() {
             return new ScanConfig(10000, 
@@ -55,7 +52,6 @@ public final class Scanner {
         
         var rootAbs = root.toAbsolutePath().normalize();
         metrics.running.set(true);
-        cancel.set(false);
 
         // 1. Setup DB
         try (Connection c = pool.borrow()) {
@@ -68,8 +64,7 @@ public final class Scanner {
             scanId = Database.startScanLog(c, rootAbs.toString());
             c.commit();
         }
-
-        // 2. Walk & Metadata Check (O "Hash" foi substituído por validação SQL)
+        // 2. Walk & Metadata Check (validação por metadados e SQL)
         uiLogger.accept(">> Fase 1: Validando metadados (Tamanho/Data/Nome)...");
         try (var writer = new DbWriter(pool, scanId, cfg.dbBatchSize(), metrics)) {
             walk(rootAbs, scanId, cfg, metrics, cancel, writer);
@@ -78,7 +73,14 @@ public final class Scanner {
         }
 
         if (cancel.get()) {
+            try (Connection c = pool.borrow()) {
+                Database.cancelScanLog(c, scanId);
+                c.commit();
+            } catch (Exception e) {
+                logger.error("Falha ao marcar scan como cancelado", e);
+            }
             uiLogger.accept(">> Cancelado pelo usuário.");
+            metrics.running.set(false);
             return;
         }
 
@@ -89,9 +91,7 @@ public final class Scanner {
             if (deleted > 0) uiLogger.accept(">> Removidos " + deleted + " arquivos que não existem mais.");
             c.commit();
         }
-
-        // Nota: A Fase de Hash foi removida. A validação ocorreu inteiramente na inserção do banco.
-
+        // Nota: a validação ocorre inteiramente na inserção do banco.
         // 4. Histórico (Time Lapse)
         try (Connection c = pool.borrow()) {
             // Agora copiamos para o histórico baseados apenas na flag MODIFIED/NEW definida pelos metadados
@@ -141,7 +141,7 @@ public final class Scanner {
                     String relString = relativePath.toString().replace('\\', '/');
                     
                     // Aqui está a mágica: Enviamos os metadados. 
-                    // O DbWriter vai comparar (SQL) se 'size' ou 'mtime' mudaram vs o histórico.
+                    // O DbWriter compara (SQL) se 'size' ou 'mtime' mudaram vs o histórico.
                     writer.add(new FileSeen(
                         scanId, 
                         relString, 
@@ -162,7 +162,6 @@ public final class Scanner {
             }
         });
     }
-
     // --- WRITER (Validação via SQL) ---
     private static class DbWriter implements AutoCloseable {
         private final Database.SimplePool pool;
@@ -192,10 +191,10 @@ public final class Scanner {
 
         private void run() {
             try (Connection c = pool.borrow()) {
-                // ESTA É A VALIDAÇÃO DE "HASH LÓGICO":
+                // Validação por metadados:
                 // Se o arquivo já existe (ON CONFLICT path_rel), verificamos se mudou.
                 // Se size != old.size OR mtime != old.mtime -> MODIFIED
-                // Senão -> Mantém o status atual (ex: SYNCED)
+                // Senão -> mantém o status atual (ex: STABLE)
                 var sql = """
                     INSERT INTO file_inventory (path_rel, name, size_bytes, modified_millis, created_millis, last_scan_id, status)
                     VALUES (?, ?, ?, ?, ?, ?, 'NEW')
@@ -243,3 +242,7 @@ public final class Scanner {
         }
     }
 }
+
+
+
+

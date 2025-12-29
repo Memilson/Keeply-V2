@@ -1,0 +1,5 @@
+Fase Atual (Feito): Scanner Metadata-Only (Rápido, robusto, recupera de falhas).
+
+Fase 2 (BlobStorage): Implementar o armazenamento físico dos arquivos (cópia real). Sem isso, o scanner apenas "olha", não guarda. <-- Eu iria para aqui primeiro.
+
+Fase 3 (Watcher): Adicionar a classe acima (FileWatcherService) para rodar após o Scan inicial terminar, dando a sensação de "Tempo Real" ao utilizador.

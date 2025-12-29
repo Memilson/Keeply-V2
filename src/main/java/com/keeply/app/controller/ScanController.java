@@ -1,4 +1,4 @@
-package com.keeply.app.controller;
+﻿package com.keeply.app.controller;
 
 import com.keeply.app.Config;
 import com.keeply.app.Database;
@@ -81,8 +81,7 @@ public final class ScanController {
                 model.reset();
                 view.setScanningState(true);
             });
-
-            // Cria a configuração simplificada (sem hash)
+            // Cria a configuração simplificada (somente metadados)
             var config = buildScanConfig();
 
             // Inicia a tarefa
@@ -209,8 +208,7 @@ public final class ScanController {
             "**/ntuser.dat*", "**/Cookies/**", "**/$Recycle.Bin/**",
             "**/System Volume Information/**", "**/Windows/**"
         ));
-
-        // Note: removemos os parâmetros de HashWorker, pois o novo Scanner não usa
+        // Note: removemos parâmetros antigos, pois o novo Scanner usa apenas metadados
         return new Scanner.ScanConfig(
                 defaults.dbBatchSize(),
                 List.copyOf(excludes)
@@ -237,8 +235,7 @@ public final class ScanController {
         double seconds = Math.max(1.0, elapsed);
         
         long scanned = m.filesSeen.sum();
-        
-        // UI simplificada sem métricas de Hash
+        // UI simplificada sem métricas de validação
         model.filesScannedProperty.set("%,d".formatted(scanned));
         model.rateProperty.set("%.0f files/s".formatted(scanned / seconds));
         model.dbBatchesProperty.set(Long.toString(m.dbBatches.sum()));
@@ -253,6 +250,7 @@ public final class ScanController {
         private final String rootPath;
         private final Scanner.ScanConfig config;
         private final AtomicBoolean running = new AtomicBoolean(true);
+        private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
         private Database.SimplePool pool;
 
         ScannerTask(String rootPath, Scanner.ScanConfig config) {
@@ -263,7 +261,7 @@ public final class ScanController {
         public boolean isRunning() { return running.get(); }
         
         public void cancel() { 
-            running.set(false);
+            cancelRequested.set(true);
             if (scanThread != null) scanThread.interrupt();
         }
 
@@ -284,7 +282,7 @@ public final class ScanController {
                 }
 
                 log(">> Iniciando motor de metadados...");
-                Scanner.runScan(java.nio.file.Path.of(rootPath), config, pool, metrics, running, ScanController.this::log);
+                Scanner.runScan(java.nio.file.Path.of(rootPath), config, pool, metrics, cancelRequested, ScanController.this::log);
 
             } catch (InterruptedException ie) {
                 log(">> Operação interrompida.");
@@ -312,3 +310,6 @@ public final class ScanController {
         return (t.getMessage() != null) ? t.getMessage() : t.getClass().getSimpleName();
     }
 }
+
+
+

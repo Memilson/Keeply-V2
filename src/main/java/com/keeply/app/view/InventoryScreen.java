@@ -1,4 +1,4 @@
-package com.keeply.app.view;
+﻿package com.keeply.app.view;
 
 import com.keeply.app.Database.FileHistoryRow;
 import com.keeply.app.Database.InventoryRow;
@@ -24,13 +24,10 @@ public final class InventoryScreen {
 
     // Tema interno
     private static final class Theme {
-        static final String BG_PRIMARY = "#FAFAFA";
         static final String BG_SECONDARY = "#F4F4F5";
         static final String TEXT_MAIN = "#18181B";
         static final String TEXT_MUTED = "#71717A";
-        static final String TEXT_INVERT = "#FFFFFF";
         static final String ACCENT = "#06B6D4";
-        static final String BORDER = "#E4E4E7";
         static final String DANGER = "#EF4444";
         static final String SUCCESS = "#10B981";
         static final String WARN = "#F59E0B";
@@ -81,9 +78,9 @@ public final class InventoryScreen {
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        styleButton(btnCollapse, Theme.BG_SECONDARY, Theme.TEXT_MAIN);
-        styleButton(btnExpand, Theme.BG_SECONDARY, Theme.TEXT_MAIN);
-        styleButton(btnRefresh, Theme.ACCENT, Theme.TEXT_INVERT);
+        styleButton(btnCollapse, Theme.BG_SECONDARY);
+        styleButton(btnExpand, Theme.BG_SECONDARY);
+        styleButton(btnRefresh, Theme.ACCENT);
         btnCollapse.setMinWidth(80);
         btnExpand.setMinWidth(80);
         btnRefresh.setMinWidth(100);
@@ -117,11 +114,10 @@ public final class InventoryScreen {
         TableView<HistoryRow> timelineTable = createBaseHistoryTable();
         List<HistoryRow> uiRows = new ArrayList<>();
         for(FileHistoryRow r : rows) {
-            uiRows.add(new HistoryRow(r.scanId(), r.rootPath(), r.startedAt(), r.finishedAt(), r.hashHex(), r.sizeBytes(), r.statusEvent(), r.createdAt(), 0));
+            uiRows.add(new HistoryRow(r.scanId(), r.rootPath(), r.startedAt(), r.finishedAt(), r.sizeBytes(), r.statusEvent(), r.createdAt(), 0));
         }
         timelineTable.getItems().setAll(uiRows);
         Tab tabTimeline = new Tab("Timeline", timelineTable);
-
         // Aba 2: Crescimento (Cálculo de Delta)
         TableView<HistoryRow> growthTable = createGrowthTable();
         List<FileHistoryRow> chronoOrder = new ArrayList<>(rows);
@@ -133,7 +129,7 @@ public final class InventoryScreen {
         
         for (FileHistoryRow r : chronoOrder) {
             long delta = first ? 0 : r.sizeBytes() - prevSize;
-            growthRows.add(new HistoryRow(r.scanId(), r.rootPath(), r.startedAt(), r.finishedAt(), r.hashHex(), r.sizeBytes(), r.statusEvent(), r.createdAt(), delta));
+            growthRows.add(new HistoryRow(r.scanId(), r.rootPath(), r.startedAt(), r.finishedAt(), r.sizeBytes(), r.statusEvent(), r.createdAt(), delta));
             prevSize = r.sizeBytes();
             first = false;
         }
@@ -146,9 +142,8 @@ public final class InventoryScreen {
         detailsPane.setHgap(10); detailsPane.setVgap(8); detailsPane.setPadding(new Insets(15));
         var latest = rows.isEmpty() ? null : rows.get(0);
         addDetailRow(detailsPane, 0, "Arquivo:", pathRel);
-        addDetailRow(detailsPane, 1, "Último Hash:", latest != null ? latest.hashHex() : "-");
-        addDetailRow(detailsPane, 2, "Tamanho Atual:", latest != null ? humanSize(latest.sizeBytes()) : "-");
-        addDetailRow(detailsPane, 3, "Último Evento:", latest != null ? latest.statusEvent() : "-");
+        addDetailRow(detailsPane, 1, "Tamanho Atual:", latest != null ? humanSize(latest.sizeBytes()) : "-");
+        addDetailRow(detailsPane, 2, "Último Evento:", latest != null ? latest.statusEvent() : "-");
         Tab tabDetails = new Tab("Detalhes", detailsPane);
 
         tabs.getTabs().addAll(tabTimeline, tabGrowth, tabDetails);
@@ -206,7 +201,6 @@ public final class InventoryScreen {
 
         TableColumn<HistoryRow, String> cSize = new TableColumn<>("Tamanho");
         cSize.setCellValueFactory(p -> new SimpleStringProperty(humanSize(p.getValue().sizeBytes())));
-
         TableColumn<HistoryRow, String> cDelta = new TableColumn<>("Variação");
         cDelta.setCellValueFactory(p -> new SimpleStringProperty(p.getValue().growthLabel()));
         cDelta.setCellFactory(c -> new TableCell<>() {
@@ -247,8 +241,9 @@ public final class InventoryScreen {
             @Override protected void updateItem(String item, boolean e) {
                 super.updateItem(item, e);
                 if (e || item == null) { setGraphic(null); setText(null); return; }
-                FileNode n = getTreeTableRow().getItem();
-                if (n==null) return;
+                TreeItem<FileNode> treeItem = (getTreeTableView() != null) ? getTreeTableView().getTreeItem(getIndex()) : null;
+                FileNode n = (treeItem != null) ? treeItem.getValue() : null;
+                if (n == null) return;
                 SVGPath icon = new SVGPath();
                 icon.setContent(n.directory ? ICON_FOLDER : ICON_FILE);
                 icon.setFill(Color.web(n.directory ? Theme.WARN : Theme.TEXT_MUTED));
@@ -298,7 +293,7 @@ public final class InventoryScreen {
     public void renderTree(List<InventoryRow> rows, ScanSummary scan) {
         if (rows == null || rows.isEmpty()) { tree.setRoot(null); tree.setPlaceholder(new Label("Sem dados.")); return; }
         String rootLabel = (scan != null) ? scan.rootPath() : "Root";
-        TreeItem<FileNode> root = new TreeItem<>(new FileNode(rootLabel, "", true, 0, "", "", 0));
+        TreeItem<FileNode> root = new TreeItem<>(new FileNode(rootLabel, "", true, 0, "", 0));
         root.setExpanded(true);
         Map<String, TreeItem<FileNode>> cache = new HashMap<>();
         cache.put("", root);
@@ -311,16 +306,17 @@ public final class InventoryScreen {
                 current = current.isEmpty() ? parts[i] : current + "/" + parts[i];
                 TreeItem<FileNode> node = cache.get(current);
                 if (node == null) {
-                    node = new TreeItem<>(new FileNode(parts[i], current, true, 0, "", "", 0));
+                    node = new TreeItem<>(new FileNode(parts[i], current, true, 0, "", 0));
                     cache.put(current, node);
-                    addOrdered(parent.getChildren(), node);
+                    parent.getChildren().add(node);
                 }
                 parent = node;
             }
             String name = parts[parts.length-1];
-            TreeItem<FileNode> item = new TreeItem<>(new FileNode(name, row.pathRel(), false, row.sizeBytes(), row.status(), row.hashHex(), row.modifiedMillis()));
-            addOrdered(parent.getChildren(), item);
+            TreeItem<FileNode> item = new TreeItem<>(new FileNode(name, row.pathRel(), false, row.sizeBytes(), row.status(), row.modifiedMillis()));
+            parent.getChildren().add(item);
         }
+        sortTree(root);
         tree.setRoot(root);
         metaLabel.setText(scan != null ? "Scan #" + scan.scanId() + " (" + scan.finishedAt() + ") | " + rows.size() + " itens" : "");
     }
@@ -343,13 +339,17 @@ public final class InventoryScreen {
         }
     }
 
-    private void addOrdered(List<TreeItem<FileNode>> l, TreeItem<FileNode> c) {
-        l.add(c);
-        l.sort((a,b) -> {
+    private void sortTree(TreeItem<FileNode> item) {
+        if (item == null || item.isLeaf()) return;
+        var children = item.getChildren();
+        children.sort((a,b) -> {
             if (a.getValue().directory && !b.getValue().directory) return -1;
             if (!a.getValue().directory && b.getValue().directory) return 1;
             return a.getValue().name.compareToIgnoreCase(b.getValue().name);
         });
+        for (TreeItem<FileNode> child : children) {
+            sortTree(child);
+        }
     }
 
     // Getters & Setters
@@ -376,7 +376,7 @@ public final class InventoryScreen {
 
     // Utils
     private void styleField(Control c) { c.getStyleClass().add("field-default"); }
-    private void styleButton(Button b, String bg, String fg) {
+    private void styleButton(Button b, String bg) {
         // map known accents to style classes
         if ("#06B6D4".equalsIgnoreCase(bg)) b.getStyleClass().add("button-action");
         else b.getStyleClass().add("button-secondary");
@@ -390,9 +390,9 @@ public final class InventoryScreen {
     private String formatDate(String dt) { return (dt != null && dt.length() > 16) ? dt.substring(0, 16) : dt; }
 
     // Records
-    public record FileNode(String name, String path, boolean directory, long sizeBytes, String status, String hash, long modifiedMillis) {}
+    public record FileNode(String name, String path, boolean directory, long sizeBytes, String status, long modifiedMillis) {}
     
-    public record HistoryRow(long scanId, String rootPath, String startedAt, String finishedAt, String hash, long sizeBytes, String status, String createdAt, long growthBytes) {
+    public record HistoryRow(long scanId, String rootPath, String startedAt, String finishedAt, long sizeBytes, String status, String createdAt, long growthBytes) {
         public String growthLabel() {
             if (growthBytes == 0) return "-";
             double mb = growthBytes / 1024.0 / 1024.0;
@@ -408,3 +408,5 @@ public final class InventoryScreen {
         }
     }
 }
+
+
