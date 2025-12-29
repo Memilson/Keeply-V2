@@ -8,15 +8,11 @@ import java.util.Properties;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
-import com.keeply.app.Scanner.HashCandidate;
-import com.keeply.app.Scanner.HashUpdate;
-
 public final class Database {
 
     private Database() {}
 
     // --- RECORDS (Modelos de Dados) ---
-    // Devem ser 'public' para serem vistos pelos Controllers
     public record InventoryRow(String rootPath, String pathRel, String name, long sizeBytes, long modifiedMillis, long createdMillis, String status, String hashHex) {}
     public record ScanSummary(long scanId, String rootPath, String startedAt, String finishedAt) {}
     public record FileHistoryRow(long scanId, String rootPath, String startedAt, String finishedAt, String hashHex, long sizeBytes, String statusEvent, String createdAt) {}
@@ -39,19 +35,14 @@ public final class Database {
         config.addDataSourceProperty("legacy", "0");
         config.addDataSourceProperty("kdf_iter", "64000");
 
-        // Do not force autoCommit at datasource level; callers will set connection auto-commit as needed
-
-        // Configurações vitais para SQLite
         config.setConnectionTestQuery("SELECT 1");
         config.setMaximumPoolSize(10);
+        // WAL e Synchronous NORMAL são essenciais para velocidade de escrita do DbWriter
         config.setConnectionInitSql("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=10000;");
 
         dataSource = new HikariDataSource(config);
     }
 
-    /**
-     * Close and clear the shared datasource. Call before deleting the DB file.
-     */
     public static synchronized void shutdown() {
         if (dataSource != null) {
             try { dataSource.close(); } catch (Exception ignored) {}
@@ -59,17 +50,13 @@ public final class Database {
         }
     }
 
-    /**
-     * Ensure the datasource is initialized (lazy init after shutdown).
-     */
     public static synchronized void init() {
         if (dataSource == null) createDataSource();
     }
 
     public static final class SimplePool implements AutoCloseable {
-        // kept for API compatibility with existing code; uses shared Hikari datasource
         public SimplePool(String jdbcUrl, int poolSize) {
-            // constructor parameters are ignored — singleton datasource already configured
+            // Pool size gerido pelo Hikari globalmente
         }
 
         public Connection borrow() throws SQLException {
@@ -79,31 +66,10 @@ public final class Database {
             return c;
         }
 
-        @Override public void close() {
-            // no-op: datasource is application-wide singleton
-        }
-    }
-
-    private static Connection openEncryptedPhysical(String url) throws SQLException {
-        try { Class.forName("org.sqlite.JDBC"); } catch (ClassNotFoundException ignored) {}
-        var props = new Properties();
-        props.setProperty("cipher", "sqlcipher");
-        props.setProperty("key", Config.getSecretKey());
-        props.setProperty("legacy", "0");
-        props.setProperty("kdf_iter", "64000");
-
-        var c = DriverManager.getConnection(url, props);
-        try (var st = c.createStatement()) {
-            st.execute("PRAGMA journal_mode=WAL;");
-            st.execute("PRAGMA synchronous=NORMAL;");
-            st.execute("PRAGMA busy_timeout=10000;");
-        }
-        c.setAutoCommit(false);
-        return c;
+        @Override public void close() { }
     }
 
     public static Connection openSingleConnection() throws SQLException {
-        // Ensure datasource is initialized (may have been shutdown earlier)
         init();
         if (dataSource == null) throw new SQLException("Datasource not initialized");
         Connection c = dataSource.getConnection();
@@ -118,6 +84,7 @@ public final class Database {
 
             st.execute("CREATE TABLE IF NOT EXISTS scans (scan_id INTEGER PRIMARY KEY AUTOINCREMENT, root_path TEXT, started_at TEXT, finished_at TEXT, total_usage INTEGER)");
             
+            // Note: hash_hex mantido para compatibilidade, mas será NULL na maioria dos casos agora
             st.execute("""
                 CREATE TABLE IF NOT EXISTS file_inventory (
                     path_rel TEXT PRIMARY KEY, name TEXT, size_bytes INTEGER, modified_millis INTEGER, created_millis INTEGER,
@@ -158,7 +125,8 @@ public final class Database {
         }
     }
 
-    // --- CORE LOGIC ---
+    // --- CORE LOGIC (Removido fetchDirtyFiles/updateHashes) ---
+    
     public static int deleteStaleFiles(Connection c, long currentScanId) throws SQLException {
         try (var ps = c.prepareStatement("DELETE FROM file_inventory WHERE last_scan_id < ?")) {
             ps.setLong(1, currentScanId);
@@ -166,44 +134,13 @@ public final class Database {
         }
     }
 
-    public static List<HashCandidate> fetchDirtyFiles(Connection c, long scanId, int limit) throws SQLException {
-        var out = new ArrayList<HashCandidate>();
-        try (var ps = c.prepareStatement("SELECT path_rel, size_bytes FROM file_inventory WHERE last_scan_id = ? AND (status = 'NEW' OR status = 'MODIFIED' OR hash_hex IS NULL) LIMIT ?")) {
-            ps.setLong(1, scanId); ps.setInt(2, limit);
-            try (var rs = ps.executeQuery()) { while (rs.next()) out.add(new HashCandidate(0, rs.getString(1), rs.getLong(2))); }
-        }
-        return out;
-    }
-
-    public static void updateHashes(Connection c, List<HashUpdate> updates) throws SQLException {
-        try (var ps = c.prepareStatement("""
-            UPDATE file_inventory
-            SET hash_hex=?,
-                status=CASE WHEN ? = 'SKIPPED_SIZE' THEN 'SKIPPED' ELSE 'HASHED' END
-            WHERE path_rel=?
-        """)) {
-            for (var u : updates) {
-                ps.setString(1, u.hashHex());
-                ps.setString(2, u.hashHex());
-                ps.setString(3, u.pathRel());
-                ps.addBatch();
-            }
-            ps.executeBatch();
-        }
-    }
-
+    // Apenas para erros de permissão ou IO no Walk
     public static void insertScanIssues(Connection c, long scanId, List<ScanIssue> issues) throws SQLException {
-        try (var ps = c.prepareStatement("INSERT INTO scan_issues (scan_id, path, message, created_at) VALUES (?, ?, ?, datetime('now'))")) {
-            for (var issue : issues) {
-                ps.setLong(1, scanId);
-                ps.setString(2, issue.pathRel());
-                ps.setString(3, issue.message());
-                ps.addBatch();
-            }
-            ps.executeBatch();
-        }
+        // Query removida: O Scanner novo não usa batch de issues ainda, mas se usar no futuro, reativamos.
+        // O código do Scanner Metadata-Only não está chamando isso, mas mantemos para compatibilidade.
     }
 
+    // Copia o estado atual (NEW/MODIFIED) para o histórico
     public static int snapshotToHistory(Connection c, long scanId) throws SQLException {
         int count = 0;
         String sqlCopy = """
@@ -213,6 +150,7 @@ public final class Database {
                 WHERE last_scan_id = ?
                   AND status IN ('NEW', 'HASHED', 'MODIFIED')
             """;
+        // Marca como STABLE após copiar para o histórico
         String sqlUpdate = "UPDATE file_inventory SET status='STABLE' WHERE last_scan_id = ?";
         try (var psCopy = c.prepareStatement(sqlCopy);
              var psUpdate = c.prepareStatement(sqlUpdate)) {
@@ -224,7 +162,7 @@ public final class Database {
         return count;
     }
 
-    // --- FETCH DATA ---
+    // --- FETCH DATA (Relatórios e UI) ---
     public static List<InventoryRow> fetchInventory(Connection c) throws SQLException {
         ensureSchema(c);
         var out = new ArrayList<InventoryRow>();
@@ -243,6 +181,7 @@ public final class Database {
     public static List<InventoryRow> fetchSnapshotFiles(Connection c, long targetScanId) throws SQLException {
         ensureSchema(c);
         var out = new ArrayList<InventoryRow>();
+        // Pega a versão do arquivo naquele ponto do tempo (scan_id)
         var sql = """
             WITH LatestState AS (
                 SELECT path_rel, MAX(scan_id) as max_scan

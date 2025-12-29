@@ -10,9 +10,9 @@ import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.util.Duration;
 
-import java.sql.Connection;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -30,13 +30,13 @@ public final class ScanController {
     private volatile Thread scanThread;
     private volatile Timeline uiUpdater;
 
+    private static final Logger logger = LoggerFactory.getLogger(ScanController.class);
+
     public ScanController(ScanScreen view, ScanModel model) {
         this.view = view;
         this.model = model;
         wireEvents();
     }
-
-    private static final Logger logger = LoggerFactory.getLogger(ScanController.class);
 
     private void wireEvents() {
         view.getScanButton().setOnAction(e -> startScan());
@@ -52,7 +52,6 @@ public final class ScanController {
         else Platform.runLater(r);
     }
 
-    // Este método é passado para o Scanner para atualizar a UI
     private void log(String msg) {
         ui(() -> view.appendLog(msg));
     }
@@ -83,12 +82,13 @@ public final class ScanController {
                 view.setScanningState(true);
             });
 
-            // Cria a configuração com os filtros
+            // Cria a configuração simplificada (sem hash)
             var config = buildScanConfig();
 
             // Inicia a tarefa
             currentTask = new ScannerTask(pathText, config);
             
+            // Thread Virtual para orquestrar o scan
             scanThread = Thread.ofVirtual()
                     .name("keeply-scan-main")
                     .start(currentTask);
@@ -123,7 +123,7 @@ public final class ScanController {
         Thread.ofVirtual().name("keeply-db-wipe").start(() -> {
             log("!!! INICIANDO WIPE (LIMPEZA) !!!");
             try {
-                requestStopAndWait(5, TimeUnit.SECONDS); // Garante que o scan parou
+                requestStopAndWait(5, TimeUnit.SECONDS); 
                 performWipeLogic();
                 log(">> SUCESSO: Banco de dados limpo e otimizado.");
             } catch (Exception e) {
@@ -156,48 +156,40 @@ public final class ScanController {
 
         log(">> Encerrando conexões e removendo arquivo de banco...");
         try {
-            // Shutdown shared pool to release file handles
             Database.shutdown();
 
-            // Try physical deletion (WAL/SHM then main)
             Files.createDirectories(dbPath.getParent());
             Path wal = Path.of(dbPath.toString() + "-wal");
             Path shm = Path.of(dbPath.toString() + "-shm");
-            try { if (Files.deleteIfExists(wal)) log(">> Removido (WAL): " + wal); } catch (Exception ignored) {}
-            try { if (Files.deleteIfExists(shm)) log(">> Removido (SHM): " + shm); } catch (Exception ignored) {}
+            try { Files.deleteIfExists(wal); } catch (Exception ignored) {}
+            try { Files.deleteIfExists(shm); } catch (Exception ignored) {}
+            
             if (Files.deleteIfExists(dbPath)) {
                 log(">> Banco removido. Um novo arquivo será criado no próximo scan.");
-                // re-init datasource for future operations
                 Database.init();
                 return;
             }
-
-            // If we reach here, deletion didn't remove main file; fallback to wiping tables
             throw new Exception("Não foi possível remover arquivo principal");
 
         } catch (Exception e) {
-            log(">> Falha ao apagar arquivo (" + safeMsg(e) + "). Limpando tabelas como fallback.");
+            log(">> Falha ao apagar arquivo. Limpando tabelas como fallback.");
             wipeTablesFallback();
         }
     }
 
-    // Fallback para o caso do arquivo estar travado por outro processo
     private void wipeTablesFallback() throws Exception {
-        // Re-init datasource in case it was shutdown earlier so we can obtain a connection
         Database.init();
         try (Connection conn = Database.openSingleConnection()) {
             conn.setAutoCommit(false);
             Database.ensureSchema(conn);
             try (var stmt = conn.createStatement()) {
                 stmt.execute("PRAGMA busy_timeout = 5000");
-
                 log(">> Apagando tabelas...");
                 stmt.execute("DELETE FROM scan_issues");
                 stmt.execute("DELETE FROM file_inventory");
                 stmt.execute("DELETE FROM scans");
-
                 conn.commit();
-
+                
                 log(">> Compactando arquivo (VACUUM)...");
                 conn.setAutoCommit(true);
                 stmt.execute("VACUUM");
@@ -205,40 +197,30 @@ public final class ScanController {
         }
     }
 
+    // --- CONFIGURAÇÃO (Otimizada) ---
     private Scanner.ScanConfig buildScanConfig() {
         var defaults = Scanner.ScanConfig.defaults();
         
-        // Exclusões de segurança e lixo
         var excludes = new ArrayList<>(defaults.excludeGlobs());
-        excludes.add("**/Keeply/**");
-        excludes.add("**/*.keeply*");
-        excludes.add("**/AppData/Local/Temp/**");
-        excludes.add("**/AppData/Local/Microsoft/**");
-        excludes.add("**/ntuser.dat*");
-        excludes.add("**/Cookies/**");
-        excludes.add("**/$Recycle.Bin/**");
-        excludes.add("**/System Volume Information/**");
-        excludes.add("**/Windows/**"); // Opcional: evita scanear o sistema operacional
+        // Adiciona exclusões de sistema
+        excludes.addAll(List.of(
+            "**/Keeply/**", "**/*.keeply*", 
+            "**/AppData/Local/Temp/**", "**/AppData/Local/Microsoft/**",
+            "**/ntuser.dat*", "**/Cookies/**", "**/$Recycle.Bin/**",
+            "**/System Volume Information/**", "**/Windows/**"
+        ));
 
+        // Note: removemos os parâmetros de HashWorker, pois o novo Scanner não usa
         return new Scanner.ScanConfig(
                 defaults.dbBatchSize(),
-                defaults.hashWorkers(),
-                true, 
-                defaults.hashMaxBytes(),
-                defaults.largeFileHashPolicy(),
-                defaults.sampledChunkBytes(),
                 List.copyOf(excludes)
         );
-    }
-
-    private int dbPoolSizeFor(Scanner.ScanConfig cfg) {
-        return Math.max(4, cfg.hashWorkers() + 2);
     }
 
     // --- UI UPDATER ---
     private void startUiUpdater(Scanner.ScanMetrics metrics) {
         stopUiUpdater();
-        uiUpdater = new Timeline(new KeyFrame(Duration.millis(500), evt -> updateModel(metrics)));
+        uiUpdater = new Timeline(new KeyFrame(Duration.millis(250), evt -> updateModel(metrics)));
         uiUpdater.setCycleCount(Timeline.INDEFINITE);
         uiUpdater.play();
     }
@@ -255,13 +237,15 @@ public final class ScanController {
         double seconds = Math.max(1.0, elapsed);
         
         long scanned = m.filesSeen.sum();
-        long hashed = m.hashed.sum();
         
+        // UI simplificada sem métricas de Hash
         model.filesScannedProperty.set("%,d".formatted(scanned));
         model.rateProperty.set("%.0f files/s".formatted(scanned / seconds));
         model.dbBatchesProperty.set(Long.toString(m.dbBatches.sum()));
         model.errorsProperty.set(Long.toString(m.walkErrors.sum()));
-        model.mbPerSecProperty.set(hashed > 0 ? "Hashing..." : "Scanning..."); 
+        
+        // Feedback visual de atividade
+        model.mbPerSecProperty.set(m.running.get() ? "Validating Metadata..." : "Idle");
     }
 
     // --- WORKER ---
@@ -291,16 +275,15 @@ public final class ScanController {
 
             try {
                 log(">> Conectando ao Banco de Dados...");
-                pool = new Database.SimplePool(Config.getDbUrl(), dbPoolSizeFor(config));
+                // Pool pequeno é suficiente, pois agora só temos 1 Writer e a UI
+                pool = new Database.SimplePool(Config.getDbUrl(), 4);
 
-                // Garante Schema
                 try (var conn = pool.borrow()) {
                     Database.ensureSchema(conn);
                     conn.commit();
                 }
 
-                log(">> Iniciando motor de varredura...");
-                // AQUI: Passamos o método 'log' do controller para o Scanner
+                log(">> Iniciando motor de metadados...");
                 Scanner.runScan(java.nio.file.Path.of(rootPath), config, pool, metrics, running, ScanController.this::log);
 
             } catch (InterruptedException ie) {
