@@ -21,6 +21,7 @@ public final class Database {
     public record ScanSummary(long scanId, String rootPath, String startedAt, String finishedAt) {}
     public record FileHistoryRow(long scanId, String rootPath, String startedAt, String finishedAt, String hashHex, long sizeBytes, String statusEvent, String createdAt) {}
     public record CapacityReport(String date, long totalBytes, long growthBytes) {}
+    public record ScanIssue(String pathRel, String message) {}
 
     // --- CONNECTION POOL (HikariCP singleton) ---
     private static HikariDataSource dataSource;
@@ -175,10 +176,28 @@ public final class Database {
     }
 
     public static void updateHashes(Connection c, List<HashUpdate> updates) throws SQLException {
-        try (var ps = c.prepareStatement("UPDATE file_inventory SET hash_hex=?, status='HASHED' WHERE path_rel=?")) {
+        try (var ps = c.prepareStatement("""
+            UPDATE file_inventory
+            SET hash_hex=?,
+                status=CASE WHEN ? = 'SKIPPED_SIZE' THEN 'SKIPPED' ELSE 'HASHED' END
+            WHERE path_rel=?
+        """)) {
             for (var u : updates) {
                 ps.setString(1, u.hashHex());
-                ps.setString(2, u.pathRel());
+                ps.setString(2, u.hashHex());
+                ps.setString(3, u.pathRel());
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+
+    public static void insertScanIssues(Connection c, long scanId, List<ScanIssue> issues) throws SQLException {
+        try (var ps = c.prepareStatement("INSERT INTO scan_issues (scan_id, path, message, created_at) VALUES (?, ?, ?, datetime('now'))")) {
+            for (var issue : issues) {
+                ps.setLong(1, scanId);
+                ps.setString(2, issue.pathRel());
+                ps.setString(3, issue.message());
                 ps.addBatch();
             }
             ps.executeBatch();
