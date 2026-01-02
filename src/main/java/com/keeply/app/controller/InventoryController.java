@@ -2,7 +2,7 @@ package com.keeply.app.controller;
 
 import com.keeply.app.Database;
 import com.keeply.app.Config;
-import com.keeply.app.report.ReportExporter;
+import com.keeply.app.report.ReportService;
 // IMPORTANTE: Importando as classes estáticas dentro de Database
 import com.keeply.app.Database.InventoryRow;
 import com.keeply.app.Database.ScanSummary;
@@ -155,7 +155,7 @@ public final class InventoryController {
         File file = chooseExportFile("PDF", ".pdf", "relatorio");
         if (file == null) return;
         try {
-            ReportExporter.exportPdf(allRows, file, currentScanData);
+            new ReportService().exportPdf(allRows, file, currentScanData);
         } catch (Exception e) {
             logger.error("Erro ao exportar PDF", e);
         }
