@@ -12,7 +12,6 @@ import javafx.util.Duration;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.Connection;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -179,28 +178,21 @@ public final class ScanController {
 
     private void wipeTablesFallback() throws Exception {
         Database.init();
-        try (Connection conn = Database.openSingleConnection()) {
-            conn.setAutoCommit(false);
-            Database.ensureSchema(conn);
-            try (var stmt = conn.createStatement()) {
-                stmt.execute("PRAGMA busy_timeout = 5000");
-                log(">> Apagando tabelas...");
-                stmt.execute("DELETE FROM scan_issues");
-                stmt.execute("DELETE FROM file_inventory");
-                stmt.execute("DELETE FROM scans");
-                // Reset AUTOINCREMENT counters
-                try {
-                    stmt.execute("DELETE FROM sqlite_sequence");
-                } catch (Exception ignored) {
-                    // sqlite_sequence may not exist on some schemas; ignore
-                }
-                conn.commit();
-                
-                log(">> Compactando arquivo (VACUUM)...");
-                conn.setAutoCommit(true);
-                stmt.execute("VACUUM");
+        Database.jdbi().useHandle(handle -> {
+            handle.execute("PRAGMA busy_timeout = 5000");
+            log(">> Apagando tabelas...");
+            handle.execute("DELETE FROM scan_issues");
+            handle.execute("DELETE FROM file_inventory");
+            handle.execute("DELETE FROM scans");
+            // Reset AUTOINCREMENT counters
+            try {
+                handle.execute("DELETE FROM sqlite_sequence");
+            } catch (Exception ignored) {
+                // sqlite_sequence may not exist on some schemas; ignore
             }
-        }
+            log(">> Compactando arquivo (VACUUM)...");
+            handle.execute("VACUUM");
+        });
     }
 
 
@@ -286,12 +278,8 @@ public final class ScanController {
             try {
                 log(">> Conectando ao Banco de Dados...");
                 // Pool pequeno é suficiente, pois agora só temos 1 Writer e a UI
+                Database.init();
                 pool = new Database.SimplePool(Config.getDbUrl(), 4);
-
-                try (var conn = pool.borrow()) {
-                    Database.ensureSchema(conn);
-                    conn.commit();
-                }
 
                 log(">> Iniciando motor de metadados...");
                 Scanner.runScan(java.nio.file.Path.of(rootPath), config, pool, metrics, cancelRequested, ScanController.this::log);

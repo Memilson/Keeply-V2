@@ -11,6 +11,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
+import com.keeply.app.db.KeeplyDao;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,17 +54,11 @@ public final class Scanner {
         var rootAbs = root.toAbsolutePath().normalize();
         metrics.running.set(true);
 
-        // 1. Setup DB
-        try (Connection c = pool.borrow()) {
-            Database.ensureSchema(c);
-            c.commit();
-        }
-
-        long scanId;
-        try (Connection c = pool.borrow()) {
-            scanId = Database.startScanLog(c, rootAbs.toString());
-            c.commit();
-        }
+        Database.init();
+        long scanId = Database.jdbi().withExtension(
+                KeeplyDao.class,
+                dao -> dao.startScanLog(rootAbs.toString())
+        );
         // 2. Walk & Metadata Check (validação por metadados e SQL)
         uiLogger.accept(">> Fase 1: Validando metadados (Tamanho/Data/Nome)...");
         try (var writer = new DbWriter(pool, scanId, rootAbs.toString(), cfg.dbBatchSize(), metrics)) {
@@ -73,9 +68,8 @@ public final class Scanner {
         }
 
         if (cancel.get()) {
-            try (Connection c = pool.borrow()) {
-                Database.cancelScanLog(c, scanId);
-                c.commit();
+            try {
+                Database.jdbi().useExtension(KeeplyDao.class, dao -> dao.cancelScanLog(scanId));
             } catch (Exception e) {
                 logger.error("Falha ao marcar scan como cancelado", e);
             }
@@ -86,21 +80,22 @@ public final class Scanner {
 
         // 3. Limpeza (Detecta arquivos deletados)
         uiLogger.accept(">> Fase 2: Sincronizando banco (Limpeza)...");
-        try (Connection c = pool.borrow()) {
-            int deleted = Database.deleteStaleFiles(c, scanId, rootAbs.toString());
-            if (deleted > 0) uiLogger.accept(">> Removidos " + deleted + " arquivos que não existem mais.");
-            c.commit();
-        }
+        int deleted = Database.jdbi().withExtension(
+                KeeplyDao.class,
+                dao -> dao.deleteStaleFiles(scanId, rootAbs.toString())
+        );
+        if (deleted > 0) uiLogger.accept(">> Removidos " + deleted + " arquivos que não existem mais.");
         // Nota: a validação ocorre inteiramente na inserção do banco.
         // 4. Histórico (Time Lapse)
-        try (Connection c = pool.borrow()) {
-            // Agora copiamos para o histórico baseados apenas na flag MODIFIED/NEW definida pelos metadados
-            int hist = Database.snapshotToHistory(c, scanId);
-            if (hist > 0) logger.info("[DB] Histórico: {} alterações detectadas.", hist);
-            
-            Database.finishScanLog(c, scanId);
-            c.commit();
-        }
+        // Agora copiamos para o historico baseados apenas na flag MODIFIED/NEW definida pelos metadados
+        int hist = Database.jdbi().inTransaction(handle -> {
+            KeeplyDao dao = handle.attach(KeeplyDao.class);
+            int count = dao.copyToHistory(scanId);
+            dao.markStable(scanId);
+            dao.finishScanLog(scanId);
+            return count;
+        });
+        if (hist > 0) logger.info("[DB] Historico: {} alteracoes detectadas.", hist);
         
         uiLogger.accept("[SCAN] Finalizado.");
         uiLogger.accept(">> FINALIZADO! Total de arquivos validados: " + metrics.filesSeen.sum());

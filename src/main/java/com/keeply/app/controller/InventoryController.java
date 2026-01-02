@@ -2,6 +2,7 @@ package com.keeply.app.controller;
 
 import com.keeply.app.Database;
 import com.keeply.app.Config;
+import com.keeply.app.db.KeeplyDao;
 import com.keeply.app.report.ReportService;
 // IMPORTANTE: Importando as classes estáticas dentro de Database
 import com.keeply.app.Database.InventoryRow;
@@ -14,16 +15,17 @@ import javafx.stage.Window;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVPrinter;
 
-import java.sql.Connection;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.io.File;
 import java.io.IOException;
-import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -67,14 +69,13 @@ public final class InventoryController {
     private void refresh() {
         view.showLoading(true);
         Thread.ofVirtual().name("keeply-refresh").start(() -> {
-            Connection conn = null;
             try {
-                conn = Database.openSingleConnection();
-                Database.ensureSchema(conn);
-                var rows = Database.fetchInventory(conn);
-                var lastScan = Database.fetchLastScan(conn);
-                var allScans = Database.fetchAllScans(conn);
-                var reports = Database.predictGrowth(conn);
+                Database.init();
+                var jdbi = Database.jdbi();
+                var rows = jdbi.withExtension(KeeplyDao.class, KeeplyDao::fetchInventory);
+                var lastScan = jdbi.withExtension(KeeplyDao.class, dao -> dao.fetchLastScan().orElse(null));
+                var allScans = jdbi.withExtension(KeeplyDao.class, KeeplyDao::fetchAllScans);
+                var reports = jdbi.withExtension(KeeplyDao.class, KeeplyDao::predictGrowth);
 
                 printCapacityAnalysis(reports);
 
@@ -101,8 +102,6 @@ public final class InventoryController {
             } catch (Exception e) {
                 logger.error("Erro ao atualizar inventário", e);
                 Platform.runLater(() -> { view.showLoading(false); view.showError("Erro: " + e.getMessage()); });
-            } finally {
-                Database.safeClose(conn);
             }
         });
     }
@@ -110,10 +109,12 @@ public final class InventoryController {
     private void loadSnapshot(ScanSummary scan) {
         view.showLoading(true);
         Thread.ofVirtual().name("keeply-snapshot").start(() -> {
-            Connection conn = null;
             try {
-                conn = Database.openSingleConnection();
-                var snapshotRows = Database.fetchSnapshotFiles(conn, scan.scanId());
+                Database.init();
+                var snapshotRows = Database.jdbi().withExtension(
+                        KeeplyDao.class,
+                        dao -> dao.fetchSnapshotFiles(scan.scanId())
+                );
                 this.allRows = snapshotRows;
                 this.currentScanData = scan;
                 Platform.runLater(() -> {
@@ -125,8 +126,6 @@ public final class InventoryController {
             } catch (Exception e) {
                 logger.error("Erro ao carregar snapshot", e);
                 Platform.runLater(() -> { view.showLoading(false); view.showError("Erro Snapshot: " + e.getMessage()); });
-            } finally {
-                Database.safeClose(conn);
             }
         });
     }
@@ -194,17 +193,20 @@ public final class InventoryController {
             logger.warn("Export cancelado: dados ou arquivo ausente.");
             return;
         }
-        try (var writer = new PrintWriter(file, StandardCharsets.UTF_8)) {
-            writer.println("Caminho,Nome,Tamanho (Bytes),Estado,Criado Em,Modificado Em");
+        CSVFormat format = CSVFormat.DEFAULT.builder()
+                .setHeader("Caminho", "Nome", "Tamanho (Bytes)", "Estado", "Criado Em", "Modificado Em")
+                .build();
+        try (var writer = Files.newBufferedWriter(file.toPath(), StandardCharsets.UTF_8);
+             var printer = new CSVPrinter(writer, format)) {
             for (var row : rows) {
-                String line = String.format("%s,%s,%d,%s,%s,%s",
-                    csvEscape(row.pathRel()),
-                    csvEscape(row.name()),
-                    row.sizeBytes(),
-                    csvEscape(row.status()),
-                    csvEscape(formatInstant(row.createdMillis())),
-                    csvEscape(formatInstant(row.modifiedMillis())));
-                writer.println(line);
+                printer.printRecord(
+                        row.pathRel(),
+                        row.name(),
+                        row.sizeBytes(),
+                        row.status(),
+                        formatInstant(row.createdMillis()),
+                        formatInstant(row.modifiedMillis())
+                );
             }
         } catch (IOException e) {
             logger.error("Erro ao exportar", e);
@@ -217,25 +219,18 @@ public final class InventoryController {
                 .format(LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault()));
     }
 
-    private static String csvEscape(String value) {
-        if (value == null) return "\"\"";
-        String cleaned = value.replace("\"", "\"\"");
-        cleaned = cleaned.replace("\r", " ").replace("\n", " ");
-        return "\"" + cleaned + "\"";
-    }
-
     private void loadDialogHistory(String pathRel) {
         if (pathRel == null) return;
         Thread.ofVirtual().start(() -> {
-            Connection conn = null;
             try {
-                conn = Database.openSingleConnection();
-                var rows = Database.fetchFileHistory(conn, pathRel);
+                Database.init();
+                var rows = Database.jdbi().withExtension(
+                        KeeplyDao.class,
+                        dao -> dao.fetchFileHistory(pathRel)
+                );
                 Platform.runLater(() -> view.showHistoryDialog(rows, pathRel));
             } catch (Exception e) {
                 logger.error("Erro ao carregar histórico", e);
-            } finally {
-                Database.safeClose(conn);
             }
         });
     }
