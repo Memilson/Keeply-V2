@@ -14,7 +14,7 @@ public class DatabaseLifecycleTest {
     @AfterEach
     void tearDown() {
         // Make sure connections are closed between tests.
-        Database.shutdown();
+        DatabaseBackup.shutdown();
     }
 
     @Test
@@ -27,20 +27,20 @@ public class DatabaseLifecycleTest {
         Path runtimeShm = runtime.resolveSibling(runtime.getFileName().toString() + "-shm");
 
         // Start from a clean slate for this test.
-        Database.shutdown();
+        DatabaseBackup.shutdown();
         Files.deleteIfExists(runtime);
         Files.deleteIfExists(runtimeWal);
         Files.deleteIfExists(runtimeShm);
         Files.deleteIfExists(encrypted);
 
-        Database.init();
+        DatabaseBackup.init();
         // Touch the DB to ensure the runtime file is created.
-        Database.jdbi().withHandle(h -> h.createQuery("SELECT 1").mapTo(int.class).one());
+        DatabaseBackup.jdbi().withHandle(h -> h.createQuery("SELECT 1").mapTo(int.class).one());
 
         assertTrue(Files.exists(runtime), "Runtime plaintext sqlite file should exist while DB is initialized");
         assertFalse(DbFileCrypto.looksLikeKeeplyEncrypted(runtime), "Runtime file must not have KEEPLYENC header");
 
-        Database.shutdown();
+        DatabaseBackup.shutdown();
 
         assertFalse(Files.exists(runtime), "Runtime plaintext sqlite file should be removed on shutdown");
         assertFalse(Files.exists(runtimeWal), "Runtime WAL should be removed on shutdown");
@@ -50,7 +50,7 @@ public class DatabaseLifecycleTest {
         assertTrue(DbFileCrypto.looksLikeKeeplyEncrypted(encrypted), "Encrypted file must have KEEPLYENC header");
         assertFalse(DbFileCrypto.looksLikePlainSqlite(encrypted), "Encrypted file must not look like plain SQLite");
 
-        Database.DbEncryptionStatus status = Database.getEncryptionStatus();
+        DatabaseBackup.DbEncryptionStatus status = DatabaseBackup.getEncryptionStatus();
         assertTrue(status.encryptedFileExists());
         assertTrue(status.encryptedLooksEncrypted());
         assertFalse(status.runtimePlainExists());

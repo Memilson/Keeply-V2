@@ -1,7 +1,7 @@
 package com.keeply.app.inventory;
 
 import com.keeply.app.config.Config;
-import com.keeply.app.database.Database;
+import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
 
 import javafx.application.Platform;
@@ -11,13 +11,14 @@ import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
-import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 import javafx.scene.shape.SVGPath;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.Stage;
 
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -37,12 +38,16 @@ public final class BackupScreen {
     private final TextField destField = new TextField();
     private final TextArea consoleArea = new TextArea();
 
+    private final ToggleGroup destinationTypeGroup = new ToggleGroup();
+    private final ToggleButton btnLocal = new ToggleButton("Disco local");
+    private final ToggleButton btnCloud = new ToggleButton("Nuvem");
+
     // Botões de Ação
     private final Button btnScan   = new Button("Iniciar backup");
     private final Button btnStop   = new Button("Parar");
     private final Button btnWipe   = new Button("Limpar dados");
-    private final Button btnBrowse = new Button();
-    private final Button btnBrowseDest = new Button();
+    private final Button btnBrowse = new Button("Alterar origem");
+    private final Button btnBrowseDest = new Button("Alterar destino");
     private final Button btnDbOptions = new Button("Opções DB");
 
     private final HBox backupFooterActions = new HBox(10);
@@ -55,11 +60,26 @@ public final class BackupScreen {
 
     private void configureControls() {
         // Valores iniciais
-        pathField.setText(Config.getLastPath());
+        pathField.setText(Objects.requireNonNullElse(Config.getLastPath(), System.getProperty("user.home")));
         pathField.setPromptText("Selecione a pasta de origem…");
+        pathField.setEditable(false);
 
-        destField.setText(Config.getLastBackupDestination());
+        destField.setText(Objects.requireNonNullElse(Config.getLastBackupDestination(), defaultLocalBackupDestination().toString()));
         destField.setPromptText("Selecione a pasta de destino…");
+        destField.setEditable(false);
+
+        // Garante que o destino padrão exista (best-effort)
+        try {
+            Files.createDirectories(Path.of(destField.getText()));
+        } catch (Exception ignored) {}
+
+        // Tipo de destino (Local / Nuvem placeholder)
+        btnLocal.setToggleGroup(destinationTypeGroup);
+        btnCloud.setToggleGroup(destinationTypeGroup);
+        btnLocal.setSelected(true);
+
+        btnLocal.getStyleClass().addAll("segmented", "segmented-left");
+        btnCloud.getStyleClass().addAll("segmented", "segmented-right");
 
         btnStop.setDisable(true);
 
@@ -82,34 +102,53 @@ public final class BackupScreen {
         root.getStyleClass().add("backup-screen");
         root.setPadding(new Insets(18, 0, 0, 0));
 
-        // Carrega stylesheet (coloque em src/main/resources/styles/keeply.css)
-        root.getStylesheets().add(Objects.requireNonNull(
-                getClass().getResource("/styles/styles.css"),
-                "Missing /styles/keeply.css"
-        ).toExternalForm());
+        Label pageTitle = new Label("Backup");
+        pageTitle.getStyleClass().add("page-title");
 
-        var header = createHeader();
-        var pathsCard = createCard(
-                sectionTitle("Backup"),
-                mutedText("Escolha a pasta de origem e onde o cofre (.keeply/storage) vai ficar."),
-                spacer(6),
-                sectionLabel("Origem"),
-                createPathInputRow(),
-                spacer(10),
-                sectionLabel("Destino"),
-                createDestinationInputRow()
+        VBox card = new VBox(14);
+        card.getStyleClass().addAll("card", "backup-plan-card");
+        card.setPadding(new Insets(16));
+
+        HBox header = new HBox(10);
+        header.setAlignment(Pos.CENTER_LEFT);
+
+        Label h2 = new Label("Configuração do Plano de Backup");
+        h2.getStyleClass().add("card-h2");
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        HBox segmented = new HBox(0, btnLocal, btnCloud);
+        segmented.getStyleClass().add("segmented-host");
+
+        header.getChildren().addAll(h2, spacer, segmented);
+
+        HBox flow = new HBox(14);
+        flow.getStyleClass().add("flow-row");
+
+        Node originPanel = createFlowPanel(
+            "Origem",
+            "(O que fazer backup)",
+            ICON_FOLDER,
+            pathField,
+            btnBrowse
         );
 
-        var stats = createStatsGrid();
+        Label arrow = new Label("→");
+        arrow.getStyleClass().add("flow-arrow");
 
-        var logCard = createCard(
-                sectionLabel("Log em tempo real"),
-                consoleArea
-        );
-        VBox.setVgrow(logCard, Priority.ALWAYS);
-        VBox.setVgrow(consoleArea, Priority.ALWAYS);
+        Node destPanel = createDestinationPanel();
 
-        root.getChildren().addAll(header, pathsCard, stats, logCard);
+        flow.getChildren().addAll(originPanel, arrow, destPanel);
+        HBox.setHgrow(originPanel, Priority.ALWAYS);
+        HBox.setHgrow(destPanel, Priority.ALWAYS);
+
+        TitledPane options = createOptionsPane();
+        options.setExpanded(false);
+
+        card.getChildren().addAll(header, flow, options);
+
+        root.getChildren().addAll(pageTitle, card);
         return root;
     }
 
@@ -119,9 +158,10 @@ public final class BackupScreen {
         root.setAlignment(Pos.CENTER_LEFT);
         root.setPadding(new Insets(10, 0, 0, 0));
 
-        // Esquerda: opções DB (sempre visível)
-        btnDbOptions.getStyleClass().addAll("btn", "btn-secondary");
-        btnDbOptions.setMinWidth(140);
+        // Esquerda: botão principal
+        styleIconButton(btnScan, ICON_PLAY);
+        btnScan.getStyleClass().addAll("btn", "btn-primary");
+        btnScan.setMinWidth(150);
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -129,43 +169,21 @@ public final class BackupScreen {
         // Direita: ações
         backupFooterActions.setAlignment(Pos.CENTER_RIGHT);
 
-        styleIconButton(btnWipe, ICON_TRASH);
         styleIconButton(btnStop, ICON_STOP);
-        styleIconButton(btnScan, ICON_PLAY);
+        styleIconButton(btnWipe, ICON_TRASH);
 
-        btnWipe.getStyleClass().addAll("btn", "btn-secondary", "btn-danger-text");
         btnStop.getStyleClass().addAll("btn", "btn-secondary");
-        btnScan.getStyleClass().addAll("btn", "btn-primary");
+        btnWipe.getStyleClass().addAll("btn", "btn-secondary");
+        btnDbOptions.getStyleClass().addAll("btn", "btn-secondary");
 
         btnStop.setMinWidth(92);
-        btnScan.setMinWidth(150);
 
-        backupFooterActions.getChildren().setAll(btnWipe, btnStop, btnScan);
-        root.getChildren().addAll(btnDbOptions, spacer, backupFooterActions);
+        backupFooterActions.getChildren().setAll(btnStop, btnWipe, btnDbOptions);
+        root.getChildren().addAll(btnScan, spacer, backupFooterActions);
         return root;
     }
 
     // ---------------- UI building ----------------
-
-    private Node createHeader() {
-        var box = new HBox(12);
-        box.getStyleClass().add("header");
-        box.setAlignment(Pos.CENTER_LEFT);
-        box.setPadding(new Insets(0, 0, 4, 0));
-
-        var dot = new Circle(7);
-        dot.getStyleClass().add("header-dot");
-
-        var titles = new VBox(2);
-        var title = new Label("Backup");
-        title.getStyleClass().add("h1");
-        var subtitle = new Label("Armazenamento deduplicado por conteúdo (hash) com cofre local.");
-        subtitle.getStyleClass().add("muted");
-
-        titles.getChildren().addAll(title, subtitle);
-        box.getChildren().addAll(dot, titles);
-        return box;
-    }
 
     private VBox createCard(Node... children) {
         var card = new VBox(10, children);
@@ -199,69 +217,126 @@ public final class BackupScreen {
         return r;
     }
 
-    private Node createPathInputRow() {
-        var row = new HBox(10);
-        row.setAlignment(Pos.CENTER_LEFT);
+    private Node createFlowPanel(String title, String subtitle, String iconPath, TextField boundPath, Button actionButton) {
+        VBox panel = new VBox(8);
+        panel.getStyleClass().add("flow-panel");
+        panel.setPadding(new Insets(12));
 
-        pathField.getStyleClass().add("text-input");
-        HBox.setHgrow(pathField, Priority.ALWAYS);
+        HBox top = new HBox(10);
+        top.setAlignment(Pos.CENTER_LEFT);
 
-        btnBrowse.getStyleClass().addAll("btn", "btn-icon");
-        styleIconOnly(btnBrowse, ICON_FOLDER);
+        SVGPath icon = new SVGPath();
+        icon.setContent(iconPath);
+        icon.getStyleClass().add("flow-icon");
+        icon.setScaleX(1.2);
+        icon.setScaleY(1.2);
 
-        row.getChildren().addAll(pathField, btnBrowse);
-        return row;
+        VBox titles = new VBox(2);
+        Label t = new Label(title);
+        t.getStyleClass().add("flow-title");
+        Label st = new Label(subtitle);
+        st.getStyleClass().add("flow-subtitle");
+        titles.getChildren().addAll(t, st);
+
+        top.getChildren().addAll(icon, titles);
+
+        Label path = new Label();
+        path.getStyleClass().add("flow-path");
+        path.textProperty().bind(boundPath.textProperty());
+
+        actionButton.getStyleClass().addAll("btn", "btn-secondary");
+        actionButton.setMinWidth(140);
+
+        panel.getChildren().addAll(top, path, actionButton);
+        return panel;
     }
 
-    private Node createDestinationInputRow() {
-        var row = new HBox(10);
-        row.setAlignment(Pos.CENTER_LEFT);
+    private Node createDestinationPanel() {
+        VBox panel = new VBox(8);
+        panel.getStyleClass().add("flow-panel");
+        panel.setPadding(new Insets(12));
 
-        destField.getStyleClass().add("text-input");
-        HBox.setHgrow(destField, Priority.ALWAYS);
+        HBox top = new HBox(10);
+        top.setAlignment(Pos.CENTER_LEFT);
 
-        btnBrowseDest.getStyleClass().addAll("btn", "btn-icon");
-        styleIconOnly(btnBrowseDest, ICON_FOLDER);
+        SVGPath icon = new SVGPath();
+        icon.setContent("M6 19a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.6A4 4 0 0 1 18 19H6z");
+        icon.getStyleClass().add("flow-icon");
+        icon.setScaleX(1.2);
+        icon.setScaleY(1.2);
 
-        row.getChildren().addAll(destField, btnBrowseDest);
-        return row;
+        VBox titles = new VBox(2);
+        Label t = new Label("Destino");
+        t.getStyleClass().add("flow-title");
+        Label st = new Label("(Onde armazenar)");
+        st.getStyleClass().add("flow-subtitle");
+        titles.getChildren().addAll(t, st);
+
+        top.getChildren().addAll(icon, titles);
+
+        Label destText = new Label();
+        destText.getStyleClass().add("flow-path");
+        destText.textProperty().bind(javafx.beans.binding.Bindings.createStringBinding(() -> {
+            if (isCloudSelected()) return "Nuvem: Azure Blob Storage (container-backup)";
+            String v = destField.getText();
+            return (v == null || v.isBlank()) ? "-" : v;
+        }, destinationTypeGroup.selectedToggleProperty(), destField.textProperty()));
+
+        btnBrowseDest.getStyleClass().addAll("btn", "btn-secondary");
+        btnBrowseDest.setMinWidth(140);
+        btnBrowseDest.disableProperty().bind(destinationTypeGroup.selectedToggleProperty().isEqualTo(btnCloud));
+
+        panel.getChildren().addAll(top, destText, btnBrowseDest);
+        return panel;
     }
 
-    private GridPane createStatsGrid() {
-        var grid = new GridPane();
-        grid.getStyleClass().add("stats-grid");
-        grid.setHgap(14);
-        grid.setVgap(14);
+    private TitledPane createOptionsPane() {
+        Label title = new Label("Opções de Backup");
+        title.getStyleClass().add("options-title");
 
-        grid.add(createStatCard("Arquivos escaneados", model.filesScannedProperty, "accent"), 0, 0);
-        grid.add(createStatCard("Velocidade (MB/s)", model.mbPerSecProperty, "violet"), 1, 0);
-        grid.add(createStatCard("Taxa de scan", model.rateProperty, "amber"), 0, 1);
-        grid.add(createStatCard("Erros", model.errorsProperty, "danger"), 1, 1);
+        GridPane grid = new GridPane();
+        grid.getStyleClass().add("options-grid");
+        grid.setHgap(10);
+        grid.setVgap(10);
 
-        var col = new ColumnConstraints();
-        col.setPercentWidth(50);
-        grid.getColumnConstraints().setAll(col, col);
-        return grid;
+        addOptionRow(grid, 0, "M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11z", "Agendamento");
+        addOptionRow(grid, 1, "M4 6h16v2H4zm0 5h10v2H4zm0 5h16v2H4z", "Retenção");
+        addOptionRow(grid, 2, "M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 0 1 6 0v3H9z", "Criptografia");
+
+        TitledPane pane = new TitledPane();
+        pane.setText(null);
+        pane.setGraphic(title);
+        pane.setContent(grid);
+        pane.getStyleClass().add("options-pane");
+        return pane;
     }
 
-    private Node createStatCard(String title, StringProperty valueProp, String accentClass) {
-        var card = new HBox(12);
-        card.getStyleClass().addAll("stat-card");
+    private void addOptionRow(GridPane grid, int row, String iconPath, String label) {
+        HBox left = new HBox(8);
+        left.setAlignment(Pos.CENTER_LEFT);
 
-        var dot = new Circle(5);
-        dot.getStyleClass().addAll("stat-dot", accentClass);
+        SVGPath icon = new SVGPath();
+        icon.setContent(iconPath);
+        icon.getStyleClass().add("option-icon");
 
-        var box = new VBox(3);
-        var lblTitle = new Label(title);
-        lblTitle.getStyleClass().add("stat-title");
+        Label l = new Label(label);
+        l.getStyleClass().add("option-label");
 
-        var lblValue = new Label();
-        lblValue.getStyleClass().add("stat-value");
-        lblValue.textProperty().bind(valueProp);
+        left.getChildren().addAll(icon, l);
 
-        box.getChildren().addAll(lblTitle, lblValue);
-        card.getChildren().addAll(dot, box);
-        return card;
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        CheckBox sw = new CheckBox();
+        sw.getStyleClass().add("switch");
+        if ("Criptografia".equals(label)) sw.setSelected(true);
+
+        HBox right = new HBox(10, spacer, sw);
+        right.setAlignment(Pos.CENTER_RIGHT);
+
+        grid.add(left, 0, row);
+        grid.add(right, 1, row);
+        GridPane.setHgrow(right, Priority.ALWAYS);
     }
 
     private static void styleIconOnly(Button btn, String svgPath) {
@@ -286,7 +361,7 @@ public final class BackupScreen {
 
     private void chooseDirectory() {
         DirectoryChooser dc = new DirectoryChooser();
-        File initial = new File(Config.getLastPath());
+        File initial = new File(Objects.requireNonNullElse(Config.getLastPath(), System.getProperty("user.home")));
         if (initial.exists() && initial.isDirectory()) dc.setInitialDirectory(initial);
         dc.setTitle("Selecionar pasta de origem");
         File f = dc.showDialog(stage);
@@ -298,18 +373,31 @@ public final class BackupScreen {
 
     private void chooseDestinationDirectory() {
         DirectoryChooser dc = new DirectoryChooser();
-        File initial = new File(Config.getLastBackupDestination());
+        File initial = new File(Objects.requireNonNullElse(Config.getLastBackupDestination(), defaultLocalBackupDestination().toString()));
         if (initial.exists() && initial.isDirectory()) dc.setInitialDirectory(initial);
         dc.setTitle("Selecionar destino do backup");
         File f = dc.showDialog(stage);
         if (f != null) {
             destField.setText(f.getAbsolutePath());
             Config.saveLastBackupDestination(f.getAbsolutePath());
+
+            try {
+                Files.createDirectories(f.toPath());
+            } catch (Exception ignored) {}
         }
     }
 
+    private static Path defaultLocalBackupDestination() {
+        String home = Objects.requireNonNullElse(System.getProperty("user.home"), ".");
+        return Path.of(home, "Documents", "Keeply", "Backup");
+    }
+
+    public boolean isCloudSelected() {
+        return destinationTypeGroup.getSelectedToggle() == btnCloud;
+    }
+
     private void showDbOptions() {
-        Database.DbEncryptionStatus s = Database.getEncryptionStatus();
+        DatabaseBackup.DbEncryptionStatus s = DatabaseBackup.getEncryptionStatus();
         String text = "Status da Criptografia:\n" +
                 "Ativado: " + s.encryptionEnabled() + "\n\n" +
                 "Arquivos:\n" +

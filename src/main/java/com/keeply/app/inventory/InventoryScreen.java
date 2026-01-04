@@ -1,6 +1,7 @@
 package com.keeply.app.inventory;
 
 import javafx.beans.property.SimpleStringProperty;
+import javafx.beans.binding.Bindings;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -11,9 +12,9 @@ import javafx.scene.shape.SVGPath;
 import java.util.*;
 import java.util.function.Consumer;
 
-import com.keeply.app.database.Database.FileHistoryRow;
-import com.keeply.app.database.Database.InventoryRow;
-import com.keeply.app.database.Database.ScanSummary;
+import com.keeply.app.database.DatabaseBackup.FileHistoryRow;
+import com.keeply.app.database.DatabaseBackup.InventoryRow;
+import com.keeply.app.database.DatabaseBackup.ScanSummary;
 
 public final class InventoryScreen {
 
@@ -27,7 +28,6 @@ public final class InventoryScreen {
     private final Button btnExpand = new Button("Expandir");
     private final Button btnCollapse = new Button("Colapsar");
     private final Button btnRestoreSnapshot = new Button("Restaurar Snapshot");
-    private final Button btnRestoreSelected = new Button("Restaurar Selecionados");
     private final MenuButton btnExport = new MenuButton("Report");
     private final MenuItem miExportCsv = new MenuItem("CSV");
     private final MenuItem miExportPdf = new MenuItem("PDF");
@@ -46,6 +46,7 @@ public final class InventoryScreen {
 
     private Consumer<String> onFileSelected;
     private Consumer<String> onShowHistory;
+    private Runnable onRestoreSelected;
 
     public Node content() {
         configureTree();
@@ -82,7 +83,6 @@ public final class InventoryScreen {
         btnExpand.getStyleClass().add("button-secondary");
         btnCollapse.getStyleClass().add("button-secondary");
         btnRestoreSnapshot.getStyleClass().add("button-action");
-        btnRestoreSelected.getStyleClass().add("button-secondary");
 
         btnExport.getItems().setAll(miExportCsv, miExportPdf);
         btnExport.getStyleClass().add("button-secondary");
@@ -91,7 +91,6 @@ public final class InventoryScreen {
         lockButtonWidth(btnCollapse);
         lockButtonWidth(btnRefresh);
         lockButtonWidth(btnRestoreSnapshot);
-        lockButtonWidth(btnRestoreSelected);
         lockButtonWidth(btnExport);
 
 
@@ -102,7 +101,7 @@ public final class InventoryScreen {
         HBox filterRow = new HBox(10, cbScans, txtSearch);
         filterRow.setAlignment(Pos.CENTER_LEFT);
 
-        HBox actionsRow = new HBox(10, btnExpand, btnCollapse, btnRefresh, btnRestoreSelected, btnRestoreSnapshot, btnExport);
+        HBox actionsRow = new HBox(10, btnExpand, btnCollapse, btnRefresh, btnRestoreSnapshot, btnExport);
         actionsRow.setAlignment(Pos.CENTER_RIGHT);
         actionsRow.setMaxWidth(Double.MAX_VALUE);
 
@@ -199,15 +198,35 @@ public final class InventoryScreen {
         // Context Menu e Eventos
         tree.setRowFactory(tv -> {
             TreeTableRow<FileNode> row = new TreeTableRow<>();
-            row.setOnMouseClicked(e -> {
-                if (e.getButton() == javafx.scene.input.MouseButton.SECONDARY && !row.isEmpty() && !row.getItem().directory) {
-                    ContextMenu menu = new ContextMenu();
-                    MenuItem item = new MenuItem("Ver Histórico de Versões");
-                    item.setOnAction(ev -> { if(onShowHistory!=null) onShowHistory.accept(row.getItem().path); });
-                    menu.getItems().add(item);
-                    menu.show(row, e.getScreenX(), e.getScreenY());
+
+            row.setOnContextMenuRequested(e -> {
+                if (row.isEmpty()) return;
+
+                // Se clicou com o botão direito em algo fora da seleção, seleciona esse item
+                if (!tree.getSelectionModel().getSelectedIndices().contains(row.getIndex())) {
+                    tree.getSelectionModel().clearSelection();
+                    tree.getSelectionModel().select(row.getIndex());
                 }
+
+                ContextMenu menu = new ContextMenu();
+
+                MenuItem restore = new MenuItem("Restaurar selecionados");
+                restore.disableProperty().bind(Bindings.isEmpty(tree.getSelectionModel().getSelectedItems()));
+                restore.setOnAction(ev -> {
+                    if (onRestoreSelected != null) onRestoreSelected.run();
+                });
+                menu.getItems().add(restore);
+
+                // Para arquivos: manter opção de histórico
+                if (!row.getItem().directory) {
+                    MenuItem history = new MenuItem("Ver Histórico de Versões");
+                    history.setOnAction(ev -> { if (onShowHistory != null) onShowHistory.accept(row.getItem().path); });
+                    menu.getItems().add(history);
+                }
+
+                menu.show(row, e.getScreenX(), e.getScreenY());
             });
+
             return row;
         });
         
@@ -231,7 +250,17 @@ public final class InventoryScreen {
 
         TableColumn<FileSizeRow, String> fSize = new TableColumn<>("Tamanho");
         fSize.setCellValueFactory(p -> new SimpleStringProperty(humanSize(p.getValue().sizeBytes())));
-        fSize.setStyle("-fx-alignment: CENTER-RIGHT;");
+        fSize.setCellFactory(c -> new TableCell<>() {
+            {
+                getStyleClass().add("cell-right");
+            }
+
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+            }
+        });
 
         largestFilesTable.getColumns().setAll(List.of(fName, fPath, fSize));
 
@@ -243,7 +272,17 @@ public final class InventoryScreen {
 
         TableColumn<FolderSizeRow, String> dSize = new TableColumn<>("Tamanho Total");
         dSize.setCellValueFactory(p -> new SimpleStringProperty(humanSize(p.getValue().sizeBytes())));
-        dSize.setStyle("-fx-alignment: CENTER-RIGHT;");
+        dSize.setCellFactory(c -> new TableCell<>() {
+            {
+                getStyleClass().add("cell-right");
+            }
+
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+            }
+        });
 
         largestFoldersTable.getColumns().setAll(List.of(dPath, dSize));
     }
@@ -342,7 +381,17 @@ public final class InventoryScreen {
 
         TableColumn<FileHistoryRow, String> cSize = new TableColumn<>("Tamanho");
         cSize.setCellValueFactory(p -> new SimpleStringProperty(humanSize(p.getValue().sizeBytes())));
-        cSize.setStyle("-fx-alignment: CENTER-RIGHT;");
+        cSize.setCellFactory(c -> new TableCell<>() {
+            {
+                getStyleClass().add("cell-right");
+            }
+
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+            }
+        });
 
         table.getColumns().setAll(List.of(cScan, cDate, cEvent, cSize));
         table.getItems().setAll(safeRows);
@@ -397,7 +446,6 @@ public final class InventoryScreen {
     public Button expandButton() { return btnExpand; }
     public Button collapseButton() { return btnCollapse; }
     public Button restoreSnapshotButton() { return btnRestoreSnapshot; }
-    public Button restoreSelectedButton() { return btnRestoreSelected; }
     public MenuItem exportCsvItem() { return miExportCsv; }
     public MenuItem exportPdfItem() { return miExportPdf; }
     public MenuButton exportMenuButton() { return btnExport; }
@@ -405,13 +453,13 @@ public final class InventoryScreen {
     public ComboBox<ScanSummary> scanSelector() { return cbScans; }
     public void onFileSelected(Consumer<String> c) { this.onFileSelected = c; }
     public void onShowHistory(Consumer<String> c) { this.onShowHistory = c; }
+    public void onRestoreSelected(Runnable r) { this.onRestoreSelected = r; }
     
     public void showLoading(boolean value) {
         loading.setVisible(value);
         dataTabs.setDisable(value);
         btnRefresh.setDisable(value);
         btnRestoreSnapshot.setDisable(value);
-        btnRestoreSelected.setDisable(value);
         cbScans.setDisable(value);
     }
 

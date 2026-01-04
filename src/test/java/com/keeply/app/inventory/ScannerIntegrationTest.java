@@ -1,7 +1,7 @@
 package com.keeply.app.inventory;
 
 import com.keeply.app.config.Config;
-import com.keeply.app.database.Database;
+import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.database.KeeplyDao;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -19,7 +19,7 @@ public class ScannerIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        Database.shutdown();
+        DatabaseBackup.shutdown();
     }
 
     @Test
@@ -38,8 +38,8 @@ public class ScannerIntegrationTest {
         Backup.ScanMetrics metrics = new Backup.ScanMetrics();
         AtomicBoolean cancel = new AtomicBoolean(false);
 
-        Database.init();
-        Database.SimplePool pool = new Database.SimplePool(Config.getDbUrl(), 4);
+        DatabaseBackup.init();
+        DatabaseBackup.SimplePool pool = new DatabaseBackup.SimplePool(Config.getDbUrl(), 4);
 
         Backup.runScan(root, cfg, pool, metrics, cancel, s -> { /* no-op */ });
 
@@ -47,13 +47,13 @@ public class ScannerIntegrationTest {
 
         String rootAbs = root.toAbsolutePath().normalize().toString();
 
-        List<Database.InventoryRow> inventory = Database.jdbi().withExtension(KeeplyDao.class, KeeplyDao::fetchInventory);
-        List<Database.InventoryRow> ours = inventory.stream().filter(r -> r.rootPath() != null && r.rootPath().equalsIgnoreCase(rootAbs)).toList();
+        List<DatabaseBackup.InventoryRow> inventory = DatabaseBackup.jdbi().withExtension(KeeplyDao.class, KeeplyDao::fetchInventory);
+        List<DatabaseBackup.InventoryRow> ours = inventory.stream().filter(r -> r.rootPath() != null && r.rootPath().equalsIgnoreCase(rootAbs)).toList();
 
         assertTrue(ours.size() >= 2, "Expected at least 2 inventory rows for the test root");
         assertTrue(ours.stream().allMatch(r -> "STABLE".equals(r.status())), "After scan, statuses should be STABLE");
 
-        var lastScan = Database.jdbi().withExtension(KeeplyDao.class, KeeplyDao::fetchLastScan).orElseThrow();
+        var lastScan = DatabaseBackup.jdbi().withExtension(KeeplyDao.class, KeeplyDao::fetchLastScan).orElseThrow();
         assertTrue(lastScan.rootPath() != null && lastScan.rootPath().equalsIgnoreCase(rootAbs));
         assertNotNull(lastScan.finishedAt(), "Scan should be marked finished");
 
@@ -64,7 +64,7 @@ public class ScannerIntegrationTest {
         Backup.runScan(root, cfg, pool, metrics2, cancel, s -> { /* no-op */ });
 
         String relA = fileAName;
-        var history = Database.jdbi().withExtension(KeeplyDao.class, dao -> dao.fetchFileHistory(relA));
+        var history = DatabaseBackup.jdbi().withExtension(KeeplyDao.class, dao -> dao.fetchFileHistory(relA));
 
         // Expect at least one NEW (first scan) and one MODIFIED (second scan) for this pathRel.
         assertTrue(history.size() >= 2, "Expected at least 2 history events for modified file");

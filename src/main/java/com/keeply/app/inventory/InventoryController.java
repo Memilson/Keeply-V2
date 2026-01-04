@@ -3,11 +3,11 @@ package com.keeply.app.inventory;
 import com.keeply.app.config.Config;
 import com.keeply.app.blob.BlobStore;
 import com.keeply.app.blob.RestoreLogWindow;
-import com.keeply.app.database.Database;
+import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.database.KeeplyDao;
-import com.keeply.app.database.Database.CapacityReport;
-import com.keeply.app.database.Database.InventoryRow;
-import com.keeply.app.database.Database.ScanSummary;
+import com.keeply.app.database.DatabaseBackup.CapacityReport;
+import com.keeply.app.database.DatabaseBackup.InventoryRow;
+import com.keeply.app.database.DatabaseBackup.ScanSummary;
 import com.keeply.app.report.ReportService;
 
 import javafx.application.Platform;
@@ -54,7 +54,7 @@ public final class InventoryController {
         view.expandButton().setOnAction(e -> view.expandAll());
         view.collapseButton().setOnAction(e -> view.collapseAll());
         view.restoreSnapshotButton().setOnAction(e -> restoreSnapshot());
-        view.restoreSelectedButton().setOnAction(e -> restoreSelected());
+        view.onRestoreSelected(this::restoreSelected);
         view.exportCsvItem().setOnAction(e -> exportCsv());
         view.exportPdfItem().setOnAction(e -> exportPdf());
         view.searchField().textProperty().addListener((obs, oldVal, newVal) -> applyFilter(newVal));
@@ -218,8 +218,8 @@ public final class InventoryController {
         view.showLoading(true);
         Thread.ofVirtual().name("keeply-refresh").start(() -> {
             try {
-                Database.init();
-                var jdbi = Database.jdbi();
+                DatabaseBackup.init();
+                var jdbi = DatabaseBackup.jdbi();
                 var rows = jdbi.withExtension(KeeplyDao.class, KeeplyDao::fetchInventory);
                 var lastScan = jdbi.withExtension(KeeplyDao.class, dao -> dao.fetchLastScan().orElse(null));
                 var allScans = jdbi.withExtension(KeeplyDao.class, KeeplyDao::fetchAllScans);
@@ -258,8 +258,8 @@ public final class InventoryController {
         view.showLoading(true);
         Thread.ofVirtual().name("keeply-snapshot").start(() -> {
             try {
-                Database.init();
-                var snapshotRows = Database.jdbi().withExtension(
+                DatabaseBackup.init();
+                var snapshotRows = DatabaseBackup.jdbi().withExtension(
                         KeeplyDao.class,
                         dao -> dao.fetchSnapshotFiles(scan.scanId())
                 );
@@ -373,8 +373,8 @@ public final class InventoryController {
         if (pathRel == null) return;
         Thread.ofVirtual().start(() -> {
             try {
-                Database.init();
-                var rows = Database.jdbi().withExtension(
+                DatabaseBackup.init();
+                var rows = DatabaseBackup.jdbi().withExtension(
                         KeeplyDao.class,
                         dao -> dao.fetchFileHistory(pathRel)
                 );

@@ -10,11 +10,11 @@ import org.jdbi.v3.sqlobject.statement.SqlQuery;
 import org.jdbi.v3.sqlobject.statement.SqlUpdate;
 import org.jdbi.v3.sqlobject.transaction.Transaction;
 
-import com.keeply.app.database.Database.CapacityReport;
-import com.keeply.app.database.Database.FileHistoryRow;
-import com.keeply.app.database.Database.InventoryRow;
-import com.keeply.app.database.Database.ScanSummary;
-import com.keeply.app.database.Database.SnapshotBlobRow;
+import com.keeply.app.database.DatabaseBackup.CapacityReport;
+import com.keeply.app.database.DatabaseBackup.FileHistoryRow;
+import com.keeply.app.database.DatabaseBackup.InventoryRow;
+import com.keeply.app.database.DatabaseBackup.ScanSummary;
+import com.keeply.app.database.DatabaseBackup.SnapshotBlobRow;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;

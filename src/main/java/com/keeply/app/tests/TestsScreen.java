@@ -1,7 +1,6 @@
 package com.keeply.app.tests;
 
-import com.keeply.app.database.Database;
-import com.keeply.app.templates.KeeplyTemplate.Theme;
+import com.keeply.app.database.DatabaseBackup;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -9,6 +8,8 @@ import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.TextArea;
 import javafx.scene.layout.VBox;
+
+import java.util.Objects;
 
 public final class TestsScreen {
 
@@ -23,27 +24,15 @@ public final class TestsScreen {
         root.setPadding(new Insets(12, 0, 0, 0));
 
         btnRun.setMinWidth(220);
+        btnRun.getStyleClass().addAll("btn", "btn-primary");
         btnRun.setOnAction(e -> run());
-        btnRun.setStyle("""
-            -fx-background-color: %s;
-            -fx-text-fill: %s;
-            -fx-font-family: 'Segoe UI';
-            -fx-font-weight: bold;
-            -fx-font-size: 12px;
-            -fx-padding: 10 16;
-            -fx-background-radius: 6;
-            -fx-border-color: %s;
-            -fx-border-width: 1;
-            -fx-border-radius: 6;
-            -fx-cursor: hand;
-        """.formatted(Theme.BG_PRIMARY, Theme.TEXT_MAIN, Theme.BORDER));
 
         root.getChildren().add(btnRun);
         return root;
     }
 
     private void run() {
-        Database.SelfTestResult res = Database.runBasicSelfTests();
+        DatabaseBackup.SelfTestResult res = DatabaseBackup.runBasicSelfTests();
 
         Alert alert = new Alert(res.ok() ? Alert.AlertType.INFORMATION : Alert.AlertType.ERROR);
         alert.setTitle("Testes");
@@ -53,8 +42,17 @@ public final class TestsScreen {
         area.setEditable(false);
         area.setWrapText(true);
         area.setPrefRowCount(16);
-        area.setStyle("-fx-font-family: " + Theme.FONT_MONO + "; -fx-font-size: 11px;");
+        area.getStyleClass().addAll("text-input", "mono-area");
         alert.getDialogPane().setContent(area);
+
+        try {
+            alert.getDialogPane().getStylesheets().add(Objects.requireNonNull(
+                    getClass().getResource("/styles.css"),
+                    "Missing /styles.css"
+            ).toExternalForm());
+        } catch (Exception ignored) {
+            // best-effort: dialog will still show
+        }
 
         alert.showAndWait();
     }

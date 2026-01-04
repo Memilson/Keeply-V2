@@ -1,12 +1,12 @@
 package com.keeply.app;
 
-import com.keeply.app.database.Database;
+import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.inventory.InventoryController;
 import com.keeply.app.inventory.InventoryScreen;
 import com.keeply.app.inventory.BackupController;
 import com.keeply.app.inventory.BackupScreen;
+import com.keeply.app.overview.OverviewScreen;
 import com.keeply.app.templates.KeeplyTemplate;
-import com.keeply.app.tests.TestsScreen;
 
 import io.github.cdimascio.dotenv.Dotenv;
 import javafx.application.Application;
@@ -25,9 +25,9 @@ import java.util.Objects;
 
 public class Main extends Application {
 
-    private static final double WIDTH = 540;
-    private static final double HEIGHT = 780;
     private static final double SCREEN_MARGIN = 12;
+    private static final double DEFAULT_WIDTH = 1280;
+    private static final double DEFAULT_HEIGHT = 720;
 
     public static void main(String[] args) {
         try {
@@ -42,7 +42,7 @@ public class Main extends Application {
     @Override
     public void start(Stage stage) {
         // 1. Inicializa o Banco
-        Database.init();
+        DatabaseBackup.init();
 
         // 2. Inicializa o Modelo e Telas (Arquitetura V2)
         KeeplyTemplate.ScanModel scanModel = new KeeplyTemplate.ScanModel();
@@ -62,8 +62,20 @@ public class Main extends Application {
         // 5. Configura Janela
         stage.initStyle(StageStyle.UNDECORATED);
         stage.setTitle("Keeply V2");
+
+        Rectangle2D bounds = Screen.getPrimary().getVisualBounds();
+
+        double maxW = Math.max(320, bounds.getWidth() - (SCREEN_MARGIN * 2));
+        double maxH = Math.max(240, bounds.getHeight() - (SCREEN_MARGIN * 2));
+
+        double targetW = Math.min(DEFAULT_WIDTH, maxW);
+        double targetH = targetW * 9.0 / 16.0;
+        if (targetH > maxH) {
+            targetH = Math.min(DEFAULT_HEIGHT, maxH);
+            targetW = targetH * 16.0 / 9.0;
+        }
         
-        Scene scene = new Scene(layout.root(), WIDTH, HEIGHT);
+        Scene scene = new Scene(layout.root(), targetW, targetH);
         try {
             scene.getStylesheets().add(Objects.requireNonNull(getClass().getResource("/styles.css")).toExternalForm());
         } catch (Exception e) {
@@ -77,14 +89,13 @@ public class Main extends Application {
         stage.setScene(scene);
         stage.setResizable(false);
 
-        // Posiciona no canto inferior direito
-        Rectangle2D bounds = Screen.getPrimary().getVisualBounds();
-        stage.setX(bounds.getMaxX() - WIDTH - SCREEN_MARGIN);
-        stage.setY(bounds.getMaxY() - HEIGHT - SCREEN_MARGIN);
+        // Centraliza (16:9)
+        stage.setX(bounds.getMinX() + ((bounds.getWidth() - targetW) / 2.0));
+        stage.setY(bounds.getMinY() + ((bounds.getHeight() - targetH) / 2.0));
 
         // Fecha banco ao sair
         stage.setOnCloseRequest(e -> {
-            Database.shutdown();
+            DatabaseBackup.shutdown();
             Platform.exit();
             System.exit(0);
         });
@@ -95,28 +106,33 @@ public class Main extends Application {
     private TabPane buildTabs(KeeplyTemplate layout, BackupScreen scan, InventoryScreen inventory) {
         TabPane tabs = new TabPane();
         tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
-        tabs.setStyle("-fx-background-color: transparent; -fx-padding: 0;");
+        tabs.getStyleClass().add("app-tabs");
 
+        OverviewScreen overviewView = new OverviewScreen();
+        Tab tOverview = new Tab("VISÃO GERAL", overviewView.content());
         Tab tScan = new Tab("BACKUP", scan.content());
         Tab tInv = new Tab("INVENTARIO", inventory.content());
-        TestsScreen testsView = new TestsScreen();
-        Tab tTests = new Tab("TESTES", testsView.content());
 
-        tabs.getTabs().addAll(tScan, tInv, tTests);
+        tabs.getTabs().addAll(tOverview, tScan, tInv);
 
-        layout.setTitle("Backup");
+        // Footer global (mesmos botões em todas as telas)
         layout.setFooter(scan.footer());
 
+        layout.setTitle("Visão Geral");
+        scan.getScanButton().setDisable(true);
+        scan.getStopButton().setDisable(true);
+
         tabs.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
-            if (newVal == tScan) {
+            boolean isBackup = newVal == tScan;
+            scan.getScanButton().setDisable(!isBackup);
+            scan.getStopButton().setDisable(!isBackup);
+
+            if (newVal == tOverview) {
+                layout.setTitle("Visão Geral");
+            } else if (newVal == tScan) {
                 layout.setTitle("Backup");
-                layout.setFooter(scan.footer());
             } else if (newVal == tInv) {
-                layout.setTitle("Inventario");
-                layout.setFooter(null);
-            } else if (newVal == tTests) {
-                layout.setTitle("Testes");
-                layout.setFooter(null);
+                layout.setTitle("Inventário");
             }
         });
 

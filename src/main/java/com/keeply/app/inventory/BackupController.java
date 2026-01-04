@@ -2,7 +2,7 @@ package com.keeply.app.inventory;
 
 import com.keeply.app.config.Config;
 import com.keeply.app.blob.BlobStore;
-import com.keeply.app.database.Database;
+import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
 
 import javafx.animation.KeyFrame;
@@ -69,6 +69,11 @@ public final class BackupController {
     private void startScan() {
         if (currentTask != null && currentTask.isRunning()) {
             log(">> Aviso: Backup anterior ainda está finalizando...");
+            return;
+        }
+
+        if (view.isCloudSelected()) {
+            log(">> Nuvem ainda não implementado (placeholder). Selecione 'Disco local'.");
             return;
         }
 
@@ -176,7 +181,7 @@ public final class BackupController {
         log(">> Encerrando conexões e removendo arquivos de banco...");
 
         try {
-            Database.shutdown();
+            DatabaseBackup.shutdown();
         } catch (Exception ignored) {
             // Best-effort.
         }
@@ -214,7 +219,7 @@ public final class BackupController {
             wipeTablesFallback();
         } else {
             log(">> Arquivos removidos (ou já não existiam). Um novo banco será criado no próximo backup.");
-            Database.init();
+            DatabaseBackup.init();
         }
     }
 
@@ -351,8 +356,8 @@ public final class BackupController {
     }
 
     private void wipeTablesFallback() throws Exception {
-        Database.init();
-        Database.jdbi().useHandle(handle -> {
+        DatabaseBackup.init();
+        DatabaseBackup.jdbi().useHandle(handle -> {
             handle.execute("PRAGMA busy_timeout = 5000");
             log(">> Apagando tabelas...");
             handle.execute("DELETE FROM scan_issues");
@@ -429,7 +434,7 @@ public final class BackupController {
         private final Backup.ScanConfig config;
         private final AtomicBoolean running = new AtomicBoolean(false);
         private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
-        private Database.SimplePool pool;
+        private DatabaseBackup.SimplePool pool;
 
         ScannerTask(String rootPath, String backupDest, Backup.ScanConfig config) {
             this.rootPath = rootPath;
@@ -455,8 +460,8 @@ public final class BackupController {
             try {
                 log(">> Conectando ao Banco de Dados...");
                 // Pool pequeno é suficiente, pois agora só temos 1 Writer e a UI
-                Database.init();
-                pool = new Database.SimplePool(Config.getDbUrl(), 4);
+                DatabaseBackup.init();
+                pool = new DatabaseBackup.SimplePool(Config.getDbUrl(), 4);
 
                 log(">> Iniciando motor de metadados...");
                 long scanId = Backup.runScan(java.nio.file.Path.of(rootPath), config, pool, metrics, cancelRequested, BackupController.this::log);

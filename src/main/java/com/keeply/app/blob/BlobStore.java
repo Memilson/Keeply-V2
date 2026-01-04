@@ -3,7 +3,7 @@ package com.keeply.app.blob;
 import com.github.luben.zstd.ZstdInputStream;
 import com.github.luben.zstd.ZstdOutputStream;
 import com.keeply.app.config.Config;
-import com.keeply.app.database.Database;
+import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.database.KeeplyDao;
 import com.keeply.app.inventory.Backup;
 
@@ -208,8 +208,8 @@ public class BlobStore {
             throw new IllegalArgumentException("baseDir is required");
         }
 
-        Database.init();
-        List<String> changed = Database.jdbi().withExtension(KeeplyDao.class, dao -> dao.fetchChangedFilesForScan(scanId));
+        DatabaseBackup.init();
+        List<String> changed = DatabaseBackup.jdbi().withExtension(KeeplyDao.class, dao -> dao.fetchChangedFilesForScan(scanId));
 
         uiLogger.accept(">> Backup incremental: scanId=" + scanId + ", arquivos alterados=" + changed.size());
         uiLogger.accept(">> Backup: destino = " + baseDir.resolve(".keeply").resolve("storage").toAbsolutePath());
@@ -230,7 +230,7 @@ public class BlobStore {
                 }
 
                 String hash = store.put(source);
-                Database.jdbi().useExtension(KeeplyDao.class, dao -> dao.setHistoryContentHash(scanId, pathRel, hash));
+                DatabaseBackup.jdbi().useExtension(KeeplyDao.class, dao -> dao.setHistoryContentHash(scanId, pathRel, hash));
                 files[0]++;
             } catch (Exception e) {
                 errors[0]++;
@@ -252,8 +252,8 @@ public class BlobStore {
         if (baseDir == null || destinationDir == null) {
             throw new IllegalArgumentException("baseDir and destinationDir are required");
         }
-        Database.init();
-        List<Database.SnapshotBlobRow> blobs = Database.jdbi().withExtension(
+        DatabaseBackup.init();
+        List<DatabaseBackup.SnapshotBlobRow> blobs = DatabaseBackup.jdbi().withExtension(
                 KeeplyDao.class,
                 dao -> dao.fetchChangedBlobsForScan(scanId)
         );
@@ -271,8 +271,8 @@ public class BlobStore {
         filePaths = (filePaths == null) ? List.of() : filePaths;
         dirPrefixes = (dirPrefixes == null) ? List.of() : dirPrefixes;
 
-        Database.init();
-        List<Database.SnapshotBlobRow> snapshot = Database.jdbi().withExtension(
+        DatabaseBackup.init();
+        List<DatabaseBackup.SnapshotBlobRow> snapshot = DatabaseBackup.jdbi().withExtension(
                 KeeplyDao.class,
                 dao -> dao.fetchSnapshotBlobs(scanId)
         );
@@ -282,8 +282,8 @@ public class BlobStore {
             if (p != null && !p.isBlank()) wanted.add(p);
         }
 
-        Set<Database.SnapshotBlobRow> toRestore = new java.util.LinkedHashSet<>();
-        for (Database.SnapshotBlobRow row : snapshot) {
+        Set<DatabaseBackup.SnapshotBlobRow> toRestore = new java.util.LinkedHashSet<>();
+        for (DatabaseBackup.SnapshotBlobRow row : snapshot) {
             String p = row.pathRel();
             if (p == null || p.isBlank()) continue;
             if (wanted.contains(p)) {
@@ -303,8 +303,8 @@ public class BlobStore {
         return restoreBlobs(List.copyOf(toRestore), baseDir, destinationDir, cancel, uiLogger);
     }
 
-    private static RestoreResult restoreBlobs(List<Database.SnapshotBlobRow> blobs, Path baseDir, Path destinationDir, AtomicBoolean cancel, Consumer<String> uiLogger) throws Exception {
-        List<Database.SnapshotBlobRow> safe = (blobs == null) ? List.of() : blobs;
+    private static RestoreResult restoreBlobs(List<DatabaseBackup.SnapshotBlobRow> blobs, Path baseDir, Path destinationDir, AtomicBoolean cancel, Consumer<String> uiLogger) throws Exception {
+        List<DatabaseBackup.SnapshotBlobRow> safe = (blobs == null) ? List.of() : blobs;
 
         uiLogger.accept(">> Restore: arquivos encontrados=" + safe.size());
         uiLogger.accept(">> Restore: origem (cofre)=" + baseDir.resolve(".keeply").resolve("storage").toAbsolutePath());
@@ -316,7 +316,7 @@ public class BlobStore {
         long restored = 0;
         long errors = 0;
 
-        for (Database.SnapshotBlobRow row : safe) {
+        for (DatabaseBackup.SnapshotBlobRow row : safe) {
             if (cancel != null && cancel.get()) break;
 
             String pathRel = row.pathRel();

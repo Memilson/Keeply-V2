@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 
-import com.keeply.app.database.Database;
+import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.database.KeeplyDao;
 
 import org.slf4j.Logger;
@@ -48,7 +48,7 @@ public final class Backup {
         public static long runScan(
             Path root, 
             ScanConfig cfg, 
-            Database.SimplePool pool, 
+            DatabaseBackup.SimplePool pool, 
             ScanMetrics metrics, 
             AtomicBoolean cancel,
             Consumer<String> uiLogger
@@ -57,8 +57,8 @@ public final class Backup {
         var rootAbs = root.toAbsolutePath().normalize();
         metrics.running.set(true);
 
-        Database.init();
-        long scanId = Database.jdbi().withExtension(
+        DatabaseBackup.init();
+        long scanId = DatabaseBackup.jdbi().withExtension(
                 KeeplyDao.class,
                 dao -> dao.startScanLog(rootAbs.toString())
         );
@@ -72,7 +72,7 @@ public final class Backup {
 
         if (cancel.get()) {
             try {
-                Database.jdbi().useExtension(KeeplyDao.class, dao -> dao.cancelScanLog(scanId));
+                DatabaseBackup.jdbi().useExtension(KeeplyDao.class, dao -> dao.cancelScanLog(scanId));
             } catch (Exception e) {
                 logger.error("Falha ao marcar scan como cancelado", e);
             }
@@ -83,7 +83,7 @@ public final class Backup {
 
         // 3. Limpeza (Detecta arquivos deletados)
         uiLogger.accept(">> Fase 2: Sincronizando banco (Limpeza)...");
-        int deleted = Database.jdbi().withExtension(
+        int deleted = DatabaseBackup.jdbi().withExtension(
                 KeeplyDao.class,
                 dao -> dao.deleteStaleFiles(scanId, rootAbs.toString())
         );
@@ -91,7 +91,7 @@ public final class Backup {
         // Nota: a validação ocorre inteiramente na inserção do banco.
         // 4. Histórico (Time Lapse)
         // Agora copiamos para o historico baseados apenas na flag MODIFIED/NEW definida pelos metadados
-        int hist = Database.jdbi().inTransaction(handle -> {
+        int hist = DatabaseBackup.jdbi().inTransaction(handle -> {
             KeeplyDao dao = handle.attach(KeeplyDao.class);
             int count = dao.copyToHistory(scanId);
             dao.markStable(scanId);
@@ -163,7 +163,7 @@ public final class Backup {
     }
     // --- WRITER (Validação via SQL) ---
     private static class DbWriter implements AutoCloseable {
-        private final Database.SimplePool pool;
+        private final DatabaseBackup.SimplePool pool;
         private final long scanId;
         private final String rootPath;
         private final int batchSize;
@@ -173,7 +173,7 @@ public final class Backup {
         private volatile boolean finished = false;
         private volatile Exception workerError;
 
-        DbWriter(Database.SimplePool pool, long scanId, String rootPath, int batchSize, ScanMetrics metrics) {
+        DbWriter(DatabaseBackup.SimplePool pool, long scanId, String rootPath, int batchSize, ScanMetrics metrics) {
             this.pool = pool;
             this.scanId = scanId;
             this.rootPath = rootPath;

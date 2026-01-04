@@ -1,14 +1,384 @@
 .root {
     -fx-font-family: 'Segoe UI';
-    -fx-text-main: #18181B;
-    -fx-text-muted: #71717A;
-    -fx-accent: #06B6D4;
-    -fx-warn: #F59E0B;
-    -fx-success: #10B981;
-    -fx-danger: #EF4444;
-    -fx-bg-secondary: #F4F4F5;
-    -fx-color-border: #D1D5DB;
+    -fx-primary: #004488;
+    -fx-bg: #F0F2F5;
+    -fx-card: #FFFFFF;
+    -fx-text-main: #333333;
+    -fx-text-muted: #666666;
+    -fx-success: #28a745;
+    -fx-danger: #dc3545;
+    -fx-border: #E0E0E0;
+
+    /* Aliases/legado (mantém compatibilidade com regras antigas) */
+    -fx-accent: -fx-primary;
+    -fx-warn: #ffc107;
+    -fx-bg-secondary: -fx-bg;
+    -fx-color-border: -fx-border;
 }
+
+/* ---------------- App shell (KeeplyTemplate) ---------------- */
+
+.keeply-root {
+    -fx-background-color: -fx-bg;
+    -fx-font-family: 'Segoe UI';
+    -fx-font-smoothing-type: lcd;
+    -fx-border-color: -fx-border;
+    -fx-border-width: 1;
+}
+
+.keeply-titlebar-bar {
+    -fx-background-color: -fx-primary;
+}
+
+.keeply-brand {
+    -fx-text-fill: white;
+    -fx-font-weight: 800;
+    -fx-font-size: 15px;
+}
+
+.keeply-separator {
+    -fx-text-fill: rgba(255, 255, 255, 0.70);
+}
+
+.keeply-screen-title {
+    -fx-text-fill: rgba(255, 255, 255, 0.80);
+    -fx-font-size: 13px;
+}
+
+.keeply-titlebar-accent {
+    -fx-background-color: rgba(255, 255, 255, 0.18);
+}
+
+.keeply-body {
+    -fx-background-color: transparent;
+}
+
+.keeply-footer {
+    -fx-background-color: -fx-card;
+    -fx-border-color: -fx-border;
+    -fx-border-width: 1 0 0 0;
+}
+
+.window-btn {
+    -fx-background-color: transparent;
+    -fx-background-radius: 999;
+    -fx-cursor: hand;
+    -fx-padding: 0;
+}
+
+.window-btn-icon {
+    -fx-stroke: rgba(255, 255, 255, 0.85);
+    -fx-stroke-width: 1.5;
+    -fx-fill: transparent;
+}
+
+.window-btn-min:hover {
+    -fx-background-color: rgba(255, 255, 255, 0.14);
+}
+
+.window-btn-close:hover {
+    -fx-background-color: -fx-danger;
+}
+
+.window-btn-close:hover .window-btn-icon {
+    -fx-stroke: white;
+}
+
+/* ---------------- Shared primitives (cards/buttons/inputs) ---------------- */
+
+.card {
+    -fx-background-color: -fx-card;
+    -fx-background-radius: 8;
+    -fx-border-color: -fx-border;
+    -fx-border-radius: 8;
+    -fx-border-width: 1;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.06), 10, 0.20, 0, 2);
+}
+
+.btn {
+    -fx-font-weight: 700;
+    -fx-background-radius: 10;
+    -fx-border-radius: 10;
+    -fx-padding: 10 14;
+    -fx-cursor: hand;
+}
+
+.btn-primary {
+    -fx-background-color: -fx-primary;
+    -fx-text-fill: white;
+}
+
+.btn-primary:hover {
+    -fx-background-color: derive(-fx-primary, -8%);
+}
+
+.btn-secondary {
+    -fx-background-color: transparent;
+    -fx-text-fill: -fx-text-muted;
+    -fx-border-color: transparent;
+    -fx-border-width: 1;
+}
+
+.btn-secondary:hover {
+    -fx-text-fill: -fx-primary;
+    -fx-background-color: rgba(0, 68, 136, 0.06);
+}
+
+.btn-icon {
+    -fx-padding: 10 10;
+    -fx-min-width: 44;
+}
+
+.btn-danger-text {
+    -fx-text-fill: -fx-danger;
+}
+
+.icon {
+    -fx-fill: rgba(15, 23, 42, 0.70);
+}
+
+.text-input {
+    -fx-background-color: white;
+    -fx-background-radius: 10;
+    -fx-border-color: rgba(17, 24, 39, 0.15);
+    -fx-border-radius: 10;
+    -fx-padding: 10 12;
+}
+
+.text-input:focused {
+    -fx-border-color: -fx-primary;
+    -fx-effect: dropshadow(gaussian, rgba(0, 68, 136, 0.14), 10, 0.25, 0, 0);
+}
+
+.mono-area {
+    -fx-font-family: 'Consolas';
+    -fx-font-size: 11px;
+}
+
+.cell-right {
+    -fx-alignment: center-right;
+}
+
+/* ---------------- Tabs (Main TabPane) ---------------- */
+
+.app-tabs {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+}
+
+.app-tabs .tab-header-area .tab-header-background {
+    -fx-background-color: -fx-card;
+    -fx-border-color: -fx-border;
+    -fx-border-width: 0 0 1 0;
+}
+
+.app-tabs .tab {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-border-width: 0 0 2 0;
+    -fx-padding: 10 16;
+}
+
+.app-tabs .tab-label {
+    -fx-text-fill: -fx-text-muted;
+    -fx-font-weight: 600;
+}
+
+.app-tabs .tab:selected {
+    -fx-border-color: -fx-primary;
+}
+
+.app-tabs .tab:selected .tab-label {
+    -fx-text-fill: -fx-primary;
+}
+
+.page-title {
+    -fx-font-size: 20px;
+    -fx-font-weight: 800;
+    -fx-text-fill: -fx-text-main;
+    -fx-padding: 0 20 0 20;
+}
+
+.card-h2 {
+    -fx-font-size: 16px;
+    -fx-font-weight: 700;
+    -fx-text-fill: -fx-text-main;
+}
+
+/* ---------------- Backup Screen ---------------- */
+
+.muted {
+    -fx-text-fill: -fx-text-muted;
+}
+
+.backup-plan-card {
+    -fx-padding: 16;
+    -fx-margin: 0 20 0 20;
+}
+
+.flow-row {
+    -fx-alignment: center;
+}
+
+.flow-panel {
+    -fx-background-color: -fx-card;
+    -fx-border-color: -fx-border;
+    -fx-border-width: 1;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+}
+
+.flow-icon {
+    -fx-fill: -fx-text-muted;
+}
+
+.flow-title {
+    -fx-font-size: 14px;
+    -fx-font-weight: 700;
+    -fx-text-fill: -fx-text-main;
+}
+
+.flow-subtitle {
+    -fx-font-size: 12px;
+    -fx-text-fill: -fx-text-muted;
+}
+
+.flow-path {
+    -fx-font-size: 12px;
+    -fx-text-fill: -fx-text-main;
+}
+
+.flow-arrow {
+    -fx-font-size: 26px;
+    -fx-text-fill: -fx-text-muted;
+}
+
+.segmented-host {
+    -fx-background-color: rgba(0, 0, 0, 0.03);
+    -fx-background-radius: 8;
+    -fx-padding: 2;
+}
+
+.segmented {
+    -fx-background-color: transparent;
+    -fx-text-fill: -fx-text-muted;
+    -fx-font-weight: 600;
+    -fx-padding: 8 12;
+}
+
+.segmented:selected {
+    -fx-background-color: -fx-primary;
+    -fx-text-fill: white;
+}
+
+.segmented-left {
+    -fx-background-radius: 6 0 0 6;
+}
+
+.segmented-right {
+    -fx-background-radius: 0 6 6 0;
+}
+
+.options-pane {
+    -fx-background-color: transparent;
+}
+
+.options-grid {
+    -fx-padding: 10 0 0 0;
+}
+
+.options-title {
+    -fx-text-fill: -fx-text-main;
+    -fx-font-weight: 700;
+}
+
+.option-icon {
+    -fx-fill: -fx-text-muted;
+}
+
+.option-label {
+    -fx-text-fill: -fx-text-main;
+}
+
+/* Switch (CheckBox) */
+.switch {
+    -fx-padding: 0;
+}
+
+.switch .box {
+    -fx-background-color: rgba(0, 0, 0, 0.15);
+    -fx-background-radius: 14;
+    -fx-min-width: 42;
+    -fx-min-height: 22;
+    -fx-border-color: transparent;
+}
+
+.switch:selected .box {
+    -fx-background-color: -fx-primary;
+}
+
+.switch .mark {
+    -fx-background-color: white;
+    -fx-background-radius: 10;
+    -fx-padding: 8;
+}
+
+.switch:selected .mark {
+    -fx-translate-x: 18;
+}
+
+/* ---------------- Overview Screen ---------------- */
+
+.metrics-grid {
+    -fx-padding: 0 20 0 20;
+}
+
+.metric-card {
+    -fx-min-height: 100;
+}
+
+.metric-value {
+    -fx-font-size: 30px;
+    -fx-font-weight: 800;
+    -fx-text-fill: -fx-text-main;
+}
+
+.mini-icon {
+    -fx-fill: -fx-text-muted;
+}
+
+.metric-progress {
+    -fx-accent: -fx-primary;
+}
+
+.status-text.status-ok {
+    -fx-text-fill: -fx-success;
+    -fx-font-weight: 700;
+}
+
+.status-text.status-bad {
+    -fx-text-fill: -fx-danger;
+    -fx-font-weight: 700;
+}
+
+.area-chart {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+}
+
+.health-dot {
+    -fx-background-radius: 999;
+}
+
+.health-dot.dot-ok {
+    -fx-background-color: -fx-success;
+}
+
+.health-text {
+    -fx-text-fill: -fx-text-main;
+}
+
+/* --- Inventory Screen --- */
 .button-action {
     -fx-background-color: #06B6D4;
     -fx-text-fill: white;

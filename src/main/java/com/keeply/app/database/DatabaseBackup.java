@@ -17,11 +17,11 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.Arrays;
 
-public final class Database {
+public final class DatabaseBackup {
 
-    private static final Logger logger = LoggerFactory.getLogger(Database.class);
+    private static final Logger logger = LoggerFactory.getLogger(DatabaseBackup.class);
 
-    private Database() {}
+    private DatabaseBackup() {}
 
     // --- RECORDS (Data Models) ---
     public record InventoryRow(String rootPath, String pathRel, String name, long sizeBytes, long modifiedMillis,
@@ -174,7 +174,7 @@ public final class Database {
         shutdownHookRegistered = true;
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
-                Database.shutdown();
+                DatabaseBackup.shutdown();
             } catch (Exception ignored) {
             }
         }, "keeply-db-shutdown"));

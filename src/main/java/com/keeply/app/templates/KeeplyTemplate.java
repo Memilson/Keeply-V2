@@ -10,10 +10,7 @@ import javafx.scene.Parent;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.layout.*;
-import javafx.scene.paint.Color;
 import javafx.scene.shape.SVGPath;
-import javafx.scene.text.Font;
-import javafx.scene.text.FontWeight;
 import javafx.stage.Stage;
 
 public final class KeeplyTemplate {
@@ -107,14 +104,8 @@ public final class KeeplyTemplate {
     // --- Construção do Layout ---
 
     private void initLayout() {
-        // Aplica o fundo global e a fonte
-        root.setStyle("""
-            -fx-background-color: %s;
-            -fx-font-family: %s;
-            -fx-font-smoothing-type: lcd;
-            -fx-border-color: #333;
-            -fx-border-width: 1;
-        """.formatted(Theme.BG_SECONDARY, Theme.FONT_UI));
+        // Visual via CSS (styles.css)
+        root.getStyleClass().add("keeply-root");
 
         root.setTop(createTitleBar());
         root.setCenter(createBody());
@@ -123,19 +114,14 @@ public final class KeeplyTemplate {
 
     private Node createTitleBar() {
         var bar = new HBox(12);
+        bar.getStyleClass().add("keeply-titlebar-bar");
         bar.setPadding(new Insets(10, 16, 10, 16));
         bar.setAlignment(Pos.CENTER_LEFT);
-        bar.setStyle("-fx-background-color: " + Theme.BG_HEADER + ";");
 
-        var brand = new Label("Keeply");
-        brand.setFont(Font.font("Segoe UI", FontWeight.BOLD, 15));
-        brand.setTextFill(Color.WHITE);
+        var brand = new Label("Keeply |");
+        brand.getStyleClass().add("keeply-brand");
 
-        var separator = new Label("|");
-        separator.setTextFill(Color.web("#333"));
-
-        screenTitle.setTextFill(Color.web(Theme.TEXT_MUTED));
-        screenTitle.setFont(Font.font("Segoe UI", FontWeight.NORMAL, 13));
+        screenTitle.getStyleClass().add("keeply-screen-title");
 
         var spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -147,29 +133,27 @@ public final class KeeplyTemplate {
         var btnClose = createWindowButton(ICON_CLOSE, true);
         btnClose.setOnAction(e -> stage.close());
 
-        bar.getChildren().addAll(brand, separator, screenTitle, spacer, btnMin, btnClose);
+        bar.getChildren().addAll(brand, screenTitle, spacer, btnMin, btnClose);
 
         // Linha fina colorida (Accent Line)
         var accentLine = new Region();
         accentLine.setPrefHeight(2);
-        accentLine.setStyle("-fx-background-color: linear-gradient(to right, %s, transparent);".formatted(Theme.ACCENT));
+        accentLine.getStyleClass().add("keeply-titlebar-accent");
 
-        return new VBox(bar, accentLine);
+        var host = new VBox(bar, accentLine);
+        host.getStyleClass().add("keeply-titlebar");
+        return host;
     }
 
     private Node createBody() {
         contentHost.setPadding(new Insets(20));
+        contentHost.getStyleClass().add("keeply-body");
         return contentHost;
     }
 
     private Node createFooter() {
         footerHost.setPadding(new Insets(16, 20, 20, 20));
-        // Footer com borda superior sutil
-        footerHost.setStyle("""
-            -fx-background-color: %s;
-            -fx-border-color: %s;
-            -fx-border-width: 1 0 0 0;
-        """.formatted(Theme.BG_SECONDARY, Theme.BORDER));
+        footerHost.getStyleClass().add("keeply-footer");
         return footerHost;
     }
 
@@ -190,29 +174,16 @@ public final class KeeplyTemplate {
     private Button createWindowButton(String svgPath, boolean isClose) {
         var path = new SVGPath();
         path.setContent(svgPath);
-        path.setStroke(Color.web("#EAEAEA"));
-        path.setStrokeWidth(1.5);
-        path.setFill(Color.TRANSPARENT);
+        path.getStyleClass().add("window-btn-icon");
 
         var btn = new Button();
         btn.setGraphic(path);
         btn.setMinSize(28, 28);
         btn.setMaxSize(28, 28);
+        btn.setFocusTraversable(false);
 
-        String baseStyle  = "-fx-background-color: transparent; -fx-background-radius: 50%; -fx-cursor: hand;";
-        String hoverColor = isClose ? Theme.DANGER : "#3F3F46";
-
-        btn.setStyle(baseStyle);
-
-        btn.setOnMouseEntered(e -> {
-            btn.setStyle(baseStyle + "-fx-background-color: " + hoverColor + ";");
-            if (isClose) path.setStroke(Color.WHITE);
-        });
-
-        btn.setOnMouseExited(e -> {
-            btn.setStyle(baseStyle);
-            path.setStroke(Color.web("#EAEAEA"));
-        });
+        btn.getStyleClass().add("window-btn");
+        btn.getStyleClass().add(isClose ? "window-btn-close" : "window-btn-min");
 
         return btn;
     }

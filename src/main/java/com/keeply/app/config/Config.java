@@ -130,13 +130,10 @@ public final class Config {
     }
 
     public static String getLastBackupDestination() {
-        String fallback;
-        try {
-            Path p = getEncryptedDbFilePath().toAbsolutePath().getParent();
-            fallback = (p != null) ? p.toString() : System.getProperty("user.home");
-        } catch (Exception e) {
-            fallback = System.getProperty("user.home");
-        }
+        String home = System.getProperty("user.home");
+        String fallback = (home == null || home.isBlank())
+                ? "."
+                : Paths.get(home, "Documents", APP_NAME, "Backup").toString();
         return prefs.get("last_backup_dest", fallback);
     }
 
