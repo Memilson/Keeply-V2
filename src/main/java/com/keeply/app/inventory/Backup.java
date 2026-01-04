@@ -18,9 +18,9 @@ import com.keeply.app.database.KeeplyDao;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public final class Scanner {
+public final class Backup {
 
-    Scanner() {}
+    Backup() {}
     // Configuração simplificada (somente metadados)
     public record ScanConfig(int dbBatchSize, List<String> excludeGlobs) {
         public static ScanConfig defaults() {
@@ -41,7 +41,7 @@ public final class Scanner {
         public final Instant start = Instant.now();
     }
 
-    private static final Logger logger = LoggerFactory.getLogger(Scanner.class);
+    private static final Logger logger = LoggerFactory.getLogger(Backup.class);
 
     // --- ENGINE PRINCIPAL ---
 

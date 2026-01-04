@@ -104,6 +104,21 @@ public final class Config {
         return prefs.get("last_scan_path", System.getProperty("user.home"));
     }
 
+    public static void saveLastBackupDestination(String path) {
+        prefs.put("last_backup_dest", path);
+    }
+
+    public static String getLastBackupDestination() {
+        String fallback;
+        try {
+            Path p = getEncryptedDbFilePath().toAbsolutePath().getParent();
+            fallback = (p != null) ? p.toString() : System.getProperty("user.home");
+        } catch (Exception e) {
+            fallback = System.getProperty("user.home");
+        }
+        return prefs.get("last_backup_dest", fallback);
+    }
+
     // --- Lógica de Resolução ---
 
     private static String resolveDbFileName() {

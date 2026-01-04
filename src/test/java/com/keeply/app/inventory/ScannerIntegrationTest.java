@@ -34,14 +34,14 @@ public class ScannerIntegrationTest {
         Files.writeString(root.resolve(fileAName), "hello", StandardCharsets.UTF_8);
         Files.writeString(root.resolve(fileBName), "world", StandardCharsets.UTF_8);
 
-        Scanner.ScanConfig cfg = Scanner.ScanConfig.defaults();
-        Scanner.ScanMetrics metrics = new Scanner.ScanMetrics();
+        Backup.ScanConfig cfg = Backup.ScanConfig.defaults();
+        Backup.ScanMetrics metrics = new Backup.ScanMetrics();
         AtomicBoolean cancel = new AtomicBoolean(false);
 
         Database.init();
         Database.SimplePool pool = new Database.SimplePool(Config.getDbUrl(), 4);
 
-        Scanner.runScan(root, cfg, pool, metrics, cancel, s -> { /* no-op */ });
+        Backup.runScan(root, cfg, pool, metrics, cancel, s -> { /* no-op */ });
 
         assertTrue(metrics.filesSeen.sum() >= 2, "Expected scanner to see at least 2 files");
 
@@ -60,8 +60,8 @@ public class ScannerIntegrationTest {
         // Modify one file and rescan.
         Files.writeString(root.resolve(fileAName), "hello!!", StandardCharsets.UTF_8);
 
-        Scanner.ScanMetrics metrics2 = new Scanner.ScanMetrics();
-        Scanner.runScan(root, cfg, pool, metrics2, cancel, s -> { /* no-op */ });
+        Backup.ScanMetrics metrics2 = new Backup.ScanMetrics();
+        Backup.runScan(root, cfg, pool, metrics2, cancel, s -> { /* no-op */ });
 
         String relA = fileAName;
         var history = Database.jdbi().withExtension(KeeplyDao.class, dao -> dao.fetchFileHistory(relA));

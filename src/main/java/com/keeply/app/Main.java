@@ -3,8 +3,8 @@ package com.keeply.app;
 import com.keeply.app.database.Database;
 import com.keeply.app.inventory.InventoryController;
 import com.keeply.app.inventory.InventoryScreen;
-import com.keeply.app.inventory.ScanController;
-import com.keeply.app.inventory.ScanScreen;
+import com.keeply.app.inventory.BackupController;
+import com.keeply.app.inventory.BackupScreen;
 import com.keeply.app.templates.KeeplyTemplate;
 import com.keeply.app.tests.TestsScreen;
 
@@ -47,11 +47,11 @@ public class Main extends Application {
         // 2. Inicializa o Modelo e Telas (Arquitetura V2)
         KeeplyTemplate.ScanModel scanModel = new KeeplyTemplate.ScanModel();
         
-        ScanScreen scanView = new ScanScreen(stage, scanModel);
+        BackupScreen scanView = new BackupScreen(stage, scanModel);
         InventoryScreen inventoryView = new InventoryScreen();
         
         // 3. Inicializa Controladores
-        new ScanController(scanView, scanModel);
+        new BackupController(scanView, scanModel);
         new InventoryController(inventoryView);
 
         // 4. Monta o Layout
@@ -92,24 +92,24 @@ public class Main extends Application {
         stage.show();
     }
 
-    private TabPane buildTabs(KeeplyTemplate layout, ScanScreen scan, InventoryScreen inventory) {
+    private TabPane buildTabs(KeeplyTemplate layout, BackupScreen scan, InventoryScreen inventory) {
         TabPane tabs = new TabPane();
         tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
         tabs.setStyle("-fx-background-color: transparent; -fx-padding: 0;");
 
-        Tab tScan = new Tab("SCANNER", scan.content());
+        Tab tScan = new Tab("BACKUP", scan.content());
         Tab tInv = new Tab("INVENTARIO", inventory.content());
         TestsScreen testsView = new TestsScreen();
         Tab tTests = new Tab("TESTES", testsView.content());
 
         tabs.getTabs().addAll(tScan, tInv, tTests);
 
-        layout.setTitle("Scanner");
+        layout.setTitle("Backup");
         layout.setFooter(scan.footer());
 
         tabs.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
             if (newVal == tScan) {
-                layout.setTitle("Scanner");
+                layout.setTitle("Backup");
                 layout.setFooter(scan.footer());
             } else if (newVal == tInv) {
                 layout.setTitle("Inventario");

@@ -23,7 +23,7 @@ import javafx.stage.Stage;
 import java.io.File;
 import java.util.Optional;
 
-public final class ScanScreen {
+public final class BackupScreen {
 
     // --- Ícones SVG (Paths) ---
     private static final String ICON_FOLDER = "M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z";
@@ -35,16 +35,18 @@ public final class ScanScreen {
     private final ScanModel model;
 
     private final TextField pathField = new TextField();
+    private final TextField destField = new TextField();
     private final TextArea consoleArea = new TextArea();
 
     // Botões agora com ícones
-    private final Button btnScan   = new Button("START");
+    private final Button btnScan   = new Button("BACKUP");
     private final Button btnStop   = new Button("STOP");
     private final Button btnWipe   = new Button("WIPE");
     private final Button btnBrowse = new Button(); // Sem texto, só ícone
+    private final Button btnBrowseDest = new Button(); // Sem texto, só ícone
     private final Button btnDbOptions = new Button("Banco de dados options");
 
-    public ScanScreen(Stage stage, ScanModel model) {
+    public BackupScreen(Stage stage, ScanModel model) {
         this.stage = stage;
         this.model = model;
         configureControls();
@@ -52,11 +54,17 @@ public final class ScanScreen {
 
     private void configureControls() {
         pathField.setText(Config.getLastPath());
-        pathField.setPromptText("Select directory to scan...");
+        pathField.setPromptText("Select directory to backup...");
+
+        destField.setText(Config.getLastBackupDestination());
+        destField.setPromptText("Select destination folder to save backups...");
         
         btnStop.setDisable(true);
         btnBrowse.setOnAction(e -> chooseDirectory());
         btnBrowse.setTooltip(new Tooltip("Select Folder"));
+
+        btnBrowseDest.setOnAction(e -> chooseDestinationDirectory());
+        btnBrowseDest.setTooltip(new Tooltip("Select Backup Destination"));
 
         btnDbOptions.setOnAction(e -> showDbOptions());
         btnDbOptions.setTooltip(new Tooltip("Validar se o banco está criptografado"));
@@ -86,7 +94,9 @@ public final class ScanScreen {
 
         VBox pathSection = createCard(
                 createHeaderLabel("TARGET DIRECTORY"),
-                createPathInputRow()
+            createPathInputRow(),
+            createHeaderLabel("BACKUP DESTINATION"),
+            createDestinationInputRow()
         );
 
         GridPane statsGrid = createStatsGrid();
@@ -215,6 +225,31 @@ public final class ScanScreen {
         return row;
     }
 
+    private Node createDestinationInputRow() {
+        HBox row = new HBox(8);
+        row.setAlignment(Pos.CENTER_LEFT);
+
+        destField.setStyle("""
+            -fx-background-color: %s;
+            -fx-border-color: %s;
+            -fx-border-radius: 6;
+            -fx-background-radius: 6;
+            -fx-padding: 9; 
+            -fx-text-fill: %s;
+            -fx-font-size: 13px;
+        """.formatted(Theme.BG_SECONDARY, Theme.BORDER, Theme.TEXT_MAIN));
+
+        HBox.setHgrow(destField, Priority.ALWAYS);
+
+        styleButton(btnBrowseDest, Theme.BG_SECONDARY, Theme.TEXT_MAIN, true, ICON_FOLDER);
+        btnBrowseDest.setPadding(new Insets(8));
+        btnBrowseDest.setMinWidth(40);
+        btnBrowseDest.setMaxWidth(40);
+
+        row.getChildren().addAll(destField, btnBrowseDest);
+        return row;
+    }
+
     private GridPane createStatsGrid() {
         GridPane grid = new GridPane();
         grid.setHgap(12);
@@ -329,21 +364,39 @@ public final class ScanScreen {
         }
     }
 
+    private void chooseDestinationDirectory() {
+        DirectoryChooser dc = new DirectoryChooser();
+        File initial = new File(Config.getLastBackupDestination());
+        if (initial.exists() && initial.isDirectory()) {
+            dc.setInitialDirectory(initial);
+        }
+        dc.setTitle("Select Backup Destination Folder");
+        File f = dc.showDialog(stage);
+        if (f != null) {
+            destField.setText(f.getAbsolutePath());
+            Config.saveLastBackupDestination(f.getAbsolutePath());
+        }
+    }
+
     public Button getScanButton() { return btnScan; }
     public Button getStopButton() { return btnStop; }
     public Button getWipeButton() { return btnWipe; }
 
     public String getRootPathText() { return pathField.getText(); }
+    public String getBackupDestinationText() { return destField.getText(); }
 
     public void setScanningState(boolean isScanning) {
         btnScan.setDisable(isScanning);
         btnWipe.setDisable(isScanning);
         btnBrowse.setDisable(isScanning);
         pathField.setDisable(isScanning);
+        btnBrowseDest.setDisable(isScanning);
+        destField.setDisable(isScanning);
         btnStop.setDisable(!isScanning);
         
         // Efeito visual extra: reduz opacidade da área de input quando bloqueada
         pathField.setOpacity(isScanning ? 0.6 : 1.0);
+        destField.setOpacity(isScanning ? 0.6 : 1.0);
     }
 
     public void clearConsole() { consoleArea.clear(); }
