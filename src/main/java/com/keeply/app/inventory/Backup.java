@@ -45,7 +45,7 @@ public final class Backup {
 
     // --- ENGINE PRINCIPAL ---
 
-    public static void runScan(
+        public static long runScan(
             Path root, 
             ScanConfig cfg, 
             Database.SimplePool pool, 
@@ -78,7 +78,7 @@ public final class Backup {
             }
             uiLogger.accept(">> Cancelado pelo usuário.");
             metrics.running.set(false);
-            return;
+            return scanId;
         }
 
         // 3. Limpeza (Detecta arquivos deletados)
@@ -103,6 +103,7 @@ public final class Backup {
         uiLogger.accept("[SCAN] Finalizado.");
         uiLogger.accept(">> FINALIZADO! Total de arquivos validados: " + metrics.filesSeen.sum());
         metrics.running.set(false);
+        return scanId;
     }
 
     private static void walk(Path root, long scanId, ScanConfig cfg, ScanMetrics metrics, AtomicBoolean cancel, DbWriter writer) throws IOException {

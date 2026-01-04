@@ -29,6 +29,7 @@ public final class Database {
     public record ScanSummary(long scanId, String rootPath, String startedAt, String finishedAt) {}
     public record FileHistoryRow(long scanId, String rootPath, String startedAt, String finishedAt, long sizeBytes,
                                  String statusEvent, String createdAt) {}
+    public record SnapshotBlobRow(String pathRel, String contentHash) {}
     public record CapacityReport(String date, long totalBytes, long growthBytes) {}
 
     // --- CONNECTION POOL (HikariCP singleton) ---

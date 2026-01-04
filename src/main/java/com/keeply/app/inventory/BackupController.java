@@ -12,9 +12,13 @@ import javafx.util.Duration;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -157,6 +161,10 @@ public final class BackupController {
     }
 
     private void performWipeLogic() throws Exception {
+        // First: delete backup storage, because user asked DB wipe == backup wipe.
+        // Best-effort: do not abort DB wipe if some storage path is locked/missing.
+        wipeBackupStorageBestEffort();
+
         Path encrypted = Config.getEncryptedDbFilePath();
         Path runtime = Config.getRuntimeDbFilePath();
 
@@ -181,23 +189,23 @@ public final class BackupController {
         boolean anyFailed = false;
 
         // Delete runtime + WAL/SHM
-        anyFailed |= !deleteIfExistsQuiet(runtime);
-        anyFailed |= !deleteIfExistsQuiet(Path.of(runtime.toString() + "-wal"));
-        anyFailed |= !deleteIfExistsQuiet(Path.of(runtime.toString() + "-shm"));
+        anyFailed |= !deleteIfExistsQuiet(runtime, 12, 75);
+        anyFailed |= !deleteIfExistsQuiet(Path.of(runtime.toString() + "-wal"), 12, 75);
+        anyFailed |= !deleteIfExistsQuiet(Path.of(runtime.toString() + "-shm"), 12, 75);
 
         // Delete encrypted + any accidental sqlite sidecars
-        anyFailed |= !deleteIfExistsQuiet(encrypted);
-        anyFailed |= !deleteIfExistsQuiet(Path.of(encrypted.toString() + "-wal"));
-        anyFailed |= !deleteIfExistsQuiet(Path.of(encrypted.toString() + "-shm"));
+        anyFailed |= !deleteIfExistsQuiet(encrypted, 6, 75);
+        anyFailed |= !deleteIfExistsQuiet(Path.of(encrypted.toString() + "-wal"), 6, 75);
+        anyFailed |= !deleteIfExistsQuiet(Path.of(encrypted.toString() + "-shm"), 6, 75);
 
         // If encryption is enabled, also try removing legacy plaintext base name (without .enc)
         if (Config.isDbEncryptionEnabled()) {
             String name = encrypted.getFileName().toString();
             if (name.endsWith(".enc")) {
                 Path legacy = encrypted.resolveSibling(name.substring(0, name.length() - 4));
-                anyFailed |= !deleteIfExistsQuiet(legacy);
-                anyFailed |= !deleteIfExistsQuiet(Path.of(legacy.toString() + "-wal"));
-                anyFailed |= !deleteIfExistsQuiet(Path.of(legacy.toString() + "-shm"));
+                anyFailed |= !deleteIfExistsQuiet(legacy, 6, 75);
+                anyFailed |= !deleteIfExistsQuiet(Path.of(legacy.toString() + "-wal"), 6, 75);
+                anyFailed |= !deleteIfExistsQuiet(Path.of(legacy.toString() + "-shm"), 6, 75);
             }
         }
 
@@ -210,14 +218,136 @@ public final class BackupController {
         }
     }
 
-    private boolean deleteIfExistsQuiet(Path p) {
+    private void wipeBackupStorageBestEffort() {
+        Set<Path> baseDirs = new LinkedHashSet<>();
+
+        // 1) From UI field
         try {
-            Files.deleteIfExists(p);
-            return true;
-        } catch (Exception e) {
-            logger.warn("Falha ao deletar {}", p, e);
-            return false;
+            String txt = view.getBackupDestinationText();
+            if (txt != null && !txt.isBlank()) baseDirs.add(Path.of(txt).toAbsolutePath().normalize());
+        } catch (Exception ignored) {}
+
+        // 2) From persisted config
+        try {
+            String txt = Config.getLastBackupDestination();
+            if (txt != null && !txt.isBlank()) baseDirs.add(Path.of(txt).toAbsolutePath().normalize());
+        } catch (Exception ignored) {}
+
+        // 3) From DB base dir (historical default)
+        try {
+            Path p = Config.getEncryptedDbFilePath();
+            if (p != null && p.toAbsolutePath().getParent() != null) baseDirs.add(p.toAbsolutePath().getParent().normalize());
+        } catch (Exception ignored) {}
+
+        if (baseDirs.isEmpty()) {
+            baseDirs.add(Path.of(".").toAbsolutePath().normalize());
         }
+
+        log(">> Apagando backups locais (BlobStore)...");
+
+        boolean anyDeleted = false;
+        boolean anyFailed = false;
+
+        for (Path baseDir : baseDirs) {
+            Path storageDir = baseDir.resolve(".keeply").resolve("storage");
+            log(">> Cofre = " + storageDir.toAbsolutePath());
+
+            if (!Files.exists(storageDir)) {
+                log(">> Nenhum cofre encontrado aqui (ok).");
+                continue;
+            }
+
+            try {
+                deleteDirectoryRecursive(storageDir, 8, 90);
+                anyDeleted = true;
+                log(">> Backups locais removidos.");
+            } catch (Exception e) {
+                anyFailed = true;
+                log(">> Aviso: falha ao apagar cofre: " + safeMsg(e));
+                logger.warn("Falha ao apagar cofre {}", storageDir, e);
+            }
+        }
+
+        if (!anyDeleted && !anyFailed) {
+            log(">> Nenhum cofre encontrado (ok). ");
+        }
+    }
+
+    private static void deleteDirectoryRecursive(Path dir, int attempts, long delayMillis) throws Exception {
+        Files.walkFileTree(dir, new SimpleFileVisitor<>() {
+            @Override
+            public java.nio.file.FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws java.io.IOException {
+                deletePathWithRetry(file, attempts, delayMillis);
+                return java.nio.file.FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public java.nio.file.FileVisitResult postVisitDirectory(Path d, java.io.IOException exc) throws java.io.IOException {
+                if (exc != null) throw exc;
+                deletePathWithRetry(d, attempts, delayMillis);
+                return java.nio.file.FileVisitResult.CONTINUE;
+            }
+        });
+    }
+
+    private static void deletePathWithRetry(Path p, int attempts, long delayMillis) throws java.io.IOException {
+        if (p == null) return;
+
+        java.io.IOException last = null;
+        int tries = Math.max(1, attempts);
+
+        for (int i = 1; i <= tries; i++) {
+            try {
+                Files.deleteIfExists(p);
+                return;
+            } catch (java.io.IOException e) {
+                last = e;
+
+                // On Windows, read-only attribute can prevent deletion.
+                try {
+                    Files.setAttribute(p, "dos:readonly", false);
+                } catch (Exception ignored) {}
+
+                if (delayMillis > 0 && i < tries) {
+                    try {
+                        Thread.sleep(delayMillis);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (last != null) throw last;
+    }
+
+    private boolean deleteIfExistsQuiet(Path p) {
+        return deleteIfExistsQuiet(p, 1, 0);
+    }
+
+    private boolean deleteIfExistsQuiet(Path p, int attempts, long delayMillis) {
+        if (p == null) return true;
+        Exception last = null;
+        for (int i = 1; i <= Math.max(1, attempts); i++) {
+            try {
+                Files.deleteIfExists(p);
+                return true;
+            } catch (Exception e) {
+                last = e;
+                // Windows may keep file handles briefly after closing SQLite/Hikari.
+                if (delayMillis > 0 && i < attempts) {
+                    try {
+                        Thread.sleep(delayMillis);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        logger.warn("Falha ao deletar {}", p, last);
+        return false;
     }
 
     private void wipeTablesFallback() throws Exception {
@@ -329,11 +459,18 @@ public final class BackupController {
                 pool = new Database.SimplePool(Config.getDbUrl(), 4);
 
                 log(">> Iniciando motor de metadados...");
-                Backup.runScan(java.nio.file.Path.of(rootPath), config, pool, metrics, cancelRequested, BackupController.this::log);
+                long scanId = Backup.runScan(java.nio.file.Path.of(rootPath), config, pool, metrics, cancelRequested, BackupController.this::log);
 
                 // Depois que o scan terminou, aciona o Backup (BlobStore).
                 if (!cancelRequested.get()) {
-                    BlobStore.runBackup(java.nio.file.Path.of(rootPath), config, java.nio.file.Path.of(backupDest), cancelRequested, BackupController.this::log);
+                    BlobStore.runBackupIncremental(
+                            java.nio.file.Path.of(rootPath),
+                            config,
+                            java.nio.file.Path.of(backupDest),
+                            scanId,
+                            cancelRequested,
+                            BackupController.this::log
+                    );
                 }
 
             } catch (InterruptedException ie) {

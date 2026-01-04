@@ -1,6 +1,8 @@
 package com.keeply.app.inventory;
 
 import com.keeply.app.config.Config;
+import com.keeply.app.blob.BlobStore;
+import com.keeply.app.blob.RestoreLogWindow;
 import com.keeply.app.database.Database;
 import com.keeply.app.database.KeeplyDao;
 import com.keeply.app.database.Database.CapacityReport;
@@ -9,6 +11,7 @@ import com.keeply.app.database.Database.ScanSummary;
 import com.keeply.app.report.ReportService;
 
 import javafx.application.Platform;
+import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
 
@@ -25,6 +28,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -49,6 +53,8 @@ public final class InventoryController {
         view.refreshButton().setOnAction(e -> refresh());
         view.expandButton().setOnAction(e -> view.expandAll());
         view.collapseButton().setOnAction(e -> view.collapseAll());
+        view.restoreSnapshotButton().setOnAction(e -> restoreSnapshot());
+        view.restoreSelectedButton().setOnAction(e -> restoreSelected());
         view.exportCsvItem().setOnAction(e -> exportCsv());
         view.exportPdfItem().setOnAction(e -> exportPdf());
         view.searchField().textProperty().addListener((obs, oldVal, newVal) -> applyFilter(newVal));
@@ -63,6 +69,149 @@ public final class InventoryController {
         
         // Evento de menu de contexto -> Abre Dialog
         view.onShowHistory(this::loadDialogHistory);
+    }
+
+    private void restoreSnapshot() {
+        ScanSummary scan = view.scanSelector().getValue();
+        if (scan == null) {
+            view.showError("Selecione um Snapshot antes de restaurar.");
+            return;
+        }
+
+        String baseDirRaw = Config.getLastBackupDestination();
+        if (baseDirRaw == null || baseDirRaw.isBlank()) {
+            view.showError("Destino de Backup não configurado. Rode um Backup primeiro.");
+            return;
+        }
+
+        Path baseDir;
+        try {
+            baseDir = Path.of(baseDirRaw);
+        } catch (Exception e) {
+            view.showError("Destino de Backup inválido: " + baseDirRaw);
+            return;
+        }
+
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Restaurar Snapshot #" + scan.scanId() + " (somente NEW/MODIFIED)");
+
+        File initialDir = new File(Config.getLastPath());
+        if (initialDir.exists() && initialDir.isDirectory()) {
+            chooser.setInitialDirectory(initialDir);
+        }
+
+        Window window = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
+        File destDir = chooser.showDialog(window);
+        if (destDir == null) return;
+
+        Config.saveLastPath(destDir.getAbsolutePath());
+
+        Window owner = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
+        RestoreLogWindow log = RestoreLogWindow.open(owner, "Restaurando Snapshot #" + scan.scanId());
+        log.appendLine(">> Snapshot #" + scan.scanId() + " (somente NEW/MODIFIED)");
+
+        Path destinationDir = destDir.toPath();
+
+        Thread.ofVirtual().name("keeply-restore-snapshot").start(() -> {
+            try {
+                BlobStore.RestoreResult result = BlobStore.restoreChangedFilesFromScan(
+                        scan.scanId(),
+                        baseDir,
+                        destinationDir,
+                        log.cancelFlag(),
+                        log.logger()
+                );
+
+                log.markDoneOk(">> Restore concluído: arquivos=" + result.filesRestored() + ", erros=" + result.errors());
+            } catch (Exception e) {
+                logger.error("Erro ao restaurar snapshot", e);
+                log.markDoneError(">> Erro ao restaurar snapshot: " + e.getMessage());
+                Platform.runLater(() -> view.showError("Erro ao restaurar snapshot: " + e.getMessage()));
+            }
+        });
+    }
+
+    private void restoreSelected() {
+        ScanSummary scan = view.scanSelector().getValue();
+        if (scan == null) {
+            view.showError("Selecione um Snapshot antes de restaurar.");
+            return;
+        }
+
+        List<InventoryScreen.SelectedNode> selected = view.getSelectedNodes();
+        if (selected == null || selected.isEmpty()) {
+            view.showError("Selecione arquivos/pastas (até 10) para restaurar.");
+            return;
+        }
+
+        // Limite: até 10 itens
+        if (selected.size() > 10) {
+            view.showError("Selecione no máximo 10 itens para restaurar. Selecionados=" + selected.size());
+            return;
+        }
+
+        String baseDirRaw = Config.getLastBackupDestination();
+        if (baseDirRaw == null || baseDirRaw.isBlank()) {
+            view.showError("Destino de Backup não configurado. Rode um Backup primeiro.");
+            return;
+        }
+
+        Path baseDir;
+        try {
+            baseDir = Path.of(baseDirRaw);
+        } catch (Exception e) {
+            view.showError("Destino de Backup inválido: " + baseDirRaw);
+            return;
+        }
+
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Restaurar Selecionados (Snapshot #" + scan.scanId() + ")");
+
+        File initialDir = new File(Config.getLastPath());
+        if (initialDir.exists() && initialDir.isDirectory()) {
+            chooser.setInitialDirectory(initialDir);
+        }
+
+        Window window = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
+        File destDir = chooser.showDialog(window);
+        if (destDir == null) return;
+        Config.saveLastPath(destDir.getAbsolutePath());
+
+        List<String> filePaths = new ArrayList<>();
+        List<String> dirPrefixes = new ArrayList<>();
+        for (InventoryScreen.SelectedNode n : selected) {
+            if (n == null) continue;
+            String p = n.pathRel();
+            if (p == null || p.isBlank()) continue;
+            if (n.directory()) dirPrefixes.add(p);
+            else filePaths.add(p);
+        }
+
+        Window owner = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
+        RestoreLogWindow log = RestoreLogWindow.open(owner, "Restaurando Seleção (Snapshot #" + scan.scanId() + ")");
+        log.appendLine(">> Snapshot #" + scan.scanId());
+        log.appendLine(">> Seleção: arquivos=" + filePaths.size() + ", pastas=" + dirPrefixes.size());
+
+        Path destinationDir = destDir.toPath();
+
+        Thread.ofVirtual().name("keeply-restore-selected").start(() -> {
+            try {
+                BlobStore.RestoreResult result = BlobStore.restoreSelectionFromSnapshot(
+                        scan.scanId(),
+                        filePaths,
+                        dirPrefixes,
+                        baseDir,
+                        destinationDir,
+                        log.cancelFlag(),
+                        log.logger()
+                );
+                log.markDoneOk(">> Restore concluído: arquivos=" + result.filesRestored() + ", erros=" + result.errors());
+            } catch (Exception e) {
+                logger.error("Erro ao restaurar selecionados", e);
+                log.markDoneError(">> Erro ao restaurar selecionados: " + e.getMessage());
+                Platform.runLater(() -> view.showError("Erro ao restaurar selecionados: " + e.getMessage()));
+            }
+        });
     }
 
     private void refresh() {

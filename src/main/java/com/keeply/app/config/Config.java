@@ -42,12 +42,8 @@ public final class Config {
 
     private static final Preferences prefs = Preferences.userNodeForPackage(Main.class);
 
-    private static final String DB_FILENAME = resolveDbFileName();
-    private static final Path DB_PATH = resolveDbPath(DB_FILENAME);
-
-    private static final boolean DB_ENCRYPTION_ENABLED = resolveDbEncryptionEnabled();
-    // Só exige chave se a criptografia estiver habilitada.
-    private static final String SECRET_KEY = DB_ENCRYPTION_ENABLED ? resolveSecretKey() : "";
+    private static volatile String cachedDbPathKey;
+    private static volatile Path cachedDbPath;
 
     // Construtor privado para impedir instanciação (Utility Class)
     private Config() {}
@@ -70,26 +66,51 @@ public final class Config {
     }
 
     public static Path getEncryptedDbFilePath() {
-        if (!DB_ENCRYPTION_ENABLED) return DB_PATH;
+        Path dbPath = getResolvedDbPath();
+        if (!isDbEncryptionEnabled()) return dbPath;
         // Não sobrescreve o banco atual (data.keeply). Cria um novo arquivo cifrado ao lado.
-        return DB_PATH.resolveSibling(DB_PATH.getFileName().toString() + ".enc");
+        return dbPath.resolveSibling(dbPath.getFileName().toString() + ".enc");
     }
 
     public static Path getRuntimeDbFilePath() {
-        if (!DB_ENCRYPTION_ENABLED) return DB_PATH;
+        Path dbPath = getResolvedDbPath();
+        if (!isDbEncryptionEnabled()) return dbPath;
         // Arquivo plaintext temporário usado somente durante execução.
-        return DB_PATH.resolveSibling(DB_PATH.getFileName().toString() + ".runtime.sqlite");
+        return dbPath.resolveSibling(dbPath.getFileName().toString() + ".runtime.sqlite");
     }
 
     public static boolean isDbEncryptionEnabled() {
-        return DB_ENCRYPTION_ENABLED;
+        return resolveDbEncryptionEnabled();
     }
 
     /**
      * Retorna a chave para desbloquear o arquivo data.keeply.
      */
     public static String getSecretKey() {
-        return SECRET_KEY;
+        if (!isDbEncryptionEnabled()) return "";
+        return resolveSecretKey();
+    }
+
+    private static Path getResolvedDbPath() {
+        String dbFileName = resolveDbFileName();
+        String overrideDir = getEnvOrDotenv(ENV_DATA_DIR);
+
+        String key = (overrideDir == null ? "" : overrideDir.trim()) + "|" + dbFileName;
+        Path current = cachedDbPath;
+        if (current != null && key.equals(cachedDbPathKey)) {
+            return current;
+        }
+
+        synchronized (Config.class) {
+            current = cachedDbPath;
+            if (current != null && key.equals(cachedDbPathKey)) {
+                return current;
+            }
+            Path resolved = resolveDbPath(dbFileName);
+            cachedDbPathKey = key;
+            cachedDbPath = resolved;
+            return resolved;
+        }
     }
 
     // Métodos de compatibilidade

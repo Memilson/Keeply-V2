@@ -14,6 +14,7 @@ import com.keeply.app.database.Database.CapacityReport;
 import com.keeply.app.database.Database.FileHistoryRow;
 import com.keeply.app.database.Database.InventoryRow;
 import com.keeply.app.database.Database.ScanSummary;
+import com.keeply.app.database.Database.SnapshotBlobRow;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -123,13 +124,36 @@ public interface KeeplyDao {
             ON fh.root_path = ls.root_path
            AND fh.path_rel = ls.path_rel
            AND fh.scan_id = ls.max_scan
+                 WHERE fh.status_event != 'DELETED'
          ORDER BY fh.path_rel
         """)
     @RegisterRowMapper(InventorySnapshotMapper.class)
     List<InventoryRow> fetchSnapshotFiles(@Bind("scanId") long scanId);
 
-    @SqlUpdate("DELETE FROM file_inventory WHERE root_path = :rootPath AND last_scan_id < :scanId")
-    int deleteStaleFiles(@Bind("scanId") long scanId, @Bind("rootPath") String rootPath);
+        @SqlUpdate("""
+                INSERT INTO file_history (scan_id, root_path, path_rel, size_bytes, status_event, created_at, created_millis, modified_millis)
+                SELECT :scanId,
+                             root_path,
+                             path_rel,
+                             size_bytes,
+                             'DELETED',
+                             datetime('now'),
+                             created_millis,
+                             modified_millis
+                    FROM file_inventory
+                 WHERE root_path = :rootPath
+                     AND last_scan_id < :scanId
+                """)
+        int copyStaleFilesToHistoryAsDeleted(@Bind("scanId") long scanId, @Bind("rootPath") String rootPath);
+
+        @SqlUpdate("DELETE FROM file_inventory WHERE root_path = :rootPath AND last_scan_id < :scanId")
+        int deleteStaleFilesRaw(@Bind("scanId") long scanId, @Bind("rootPath") String rootPath);
+
+        @Transaction
+        default int deleteStaleFiles(long scanId, String rootPath) {
+                copyStaleFilesToHistoryAsDeleted(scanId, rootPath);
+                return deleteStaleFilesRaw(scanId, rootPath);
+        }
 
     // --- History ---
     @Transaction
@@ -166,6 +190,63 @@ public interface KeeplyDao {
         """)
     @RegisterConstructorMapper(FileHistoryRow.class)
     List<FileHistoryRow> fetchFileHistory(@Bind("pathRel") String pathRel);
+
+        // --- Blob mapping (per-scan) ---
+        @SqlQuery("""
+                SELECT path_rel
+                    FROM file_history
+                 WHERE scan_id = :scanId
+                     AND status_event IN ('NEW', 'MODIFIED')
+                 ORDER BY path_rel
+                """)
+        List<String> fetchChangedFilesForScan(@Bind("scanId") long scanId);
+
+        @SqlUpdate("""
+                UPDATE file_history
+                     SET content_hash = :contentHash
+                 WHERE scan_id = :scanId
+                     AND path_rel = :pathRel
+                """)
+        void setHistoryContentHash(@Bind("scanId") long scanId, @Bind("pathRel") String pathRel, @Bind("contentHash") String contentHash);
+
+        @SqlQuery("""
+                SELECT path_rel AS pathRel,
+                             content_hash AS contentHash
+                    FROM file_history
+                 WHERE scan_id = :scanId
+                     AND status_event IN ('NEW', 'MODIFIED')
+                     AND content_hash IS NOT NULL
+                 ORDER BY path_rel
+                """)
+        @RegisterConstructorMapper(SnapshotBlobRow.class)
+        List<SnapshotBlobRow> fetchChangedBlobsForScan(@Bind("scanId") long scanId);
+
+        @SqlQuery("""
+                WITH Target AS (
+                        SELECT root_path AS root
+                            FROM scans
+                         WHERE scan_id = :scanId
+                ),
+                LatestState AS (
+                        SELECT root_path, path_rel, MAX(scan_id) AS max_scan
+                            FROM file_history
+                         WHERE scan_id <= :scanId
+                             AND root_path = (SELECT root FROM Target)
+                    GROUP BY root_path, path_rel
+                )
+                SELECT fh.path_rel AS pathRel,
+                             fh.content_hash AS contentHash
+                    FROM file_history fh
+                    JOIN LatestState ls
+                        ON fh.root_path = ls.root_path
+                     AND fh.path_rel = ls.path_rel
+                     AND fh.scan_id = ls.max_scan
+                                 WHERE fh.content_hash IS NOT NULL
+                                     AND fh.status_event != 'DELETED'
+                 ORDER BY fh.path_rel
+                """)
+        @RegisterConstructorMapper(SnapshotBlobRow.class)
+        List<SnapshotBlobRow> fetchSnapshotBlobs(@Bind("scanId") long scanId);
 
     final class InventorySnapshotMapper implements RowMapper<InventoryRow> {
         @Override

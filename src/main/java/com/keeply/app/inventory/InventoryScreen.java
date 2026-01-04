@@ -26,6 +26,8 @@ public final class InventoryScreen {
     private final Button btnRefresh = new Button("Recarregar");
     private final Button btnExpand = new Button("Expandir");
     private final Button btnCollapse = new Button("Colapsar");
+    private final Button btnRestoreSnapshot = new Button("Restaurar Snapshot");
+    private final Button btnRestoreSelected = new Button("Restaurar Selecionados");
     private final MenuButton btnExport = new MenuButton("Report");
     private final MenuItem miExportCsv = new MenuItem("CSV");
     private final MenuItem miExportPdf = new MenuItem("PDF");
@@ -79,6 +81,8 @@ public final class InventoryScreen {
         btnRefresh.getStyleClass().add("button-action");
         btnExpand.getStyleClass().add("button-secondary");
         btnCollapse.getStyleClass().add("button-secondary");
+        btnRestoreSnapshot.getStyleClass().add("button-action");
+        btnRestoreSelected.getStyleClass().add("button-secondary");
 
         btnExport.getItems().setAll(miExportCsv, miExportPdf);
         btnExport.getStyleClass().add("button-secondary");
@@ -86,6 +90,8 @@ public final class InventoryScreen {
         lockButtonWidth(btnExpand);
         lockButtonWidth(btnCollapse);
         lockButtonWidth(btnRefresh);
+        lockButtonWidth(btnRestoreSnapshot);
+        lockButtonWidth(btnRestoreSelected);
         lockButtonWidth(btnExport);
 
 
@@ -96,7 +102,7 @@ public final class InventoryScreen {
         HBox filterRow = new HBox(10, cbScans, txtSearch);
         filterRow.setAlignment(Pos.CENTER_LEFT);
 
-        HBox actionsRow = new HBox(10, btnExpand, btnCollapse, btnRefresh, btnExport);
+        HBox actionsRow = new HBox(10, btnExpand, btnCollapse, btnRefresh, btnRestoreSelected, btnRestoreSnapshot, btnExport);
         actionsRow.setAlignment(Pos.CENTER_RIGHT);
         actionsRow.setMaxWidth(Double.MAX_VALUE);
 
@@ -135,6 +141,7 @@ public final class InventoryScreen {
     private void configureTree() {
         tree.setShowRoot(true);
         tree.setColumnResizePolicy(TreeTableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+        tree.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
         
         // Coluna Nome + Ícone
         TreeTableColumn<FileNode, String> colName = new TreeTableColumn<>("Nome");
@@ -389,6 +396,8 @@ public final class InventoryScreen {
     public Button refreshButton() { return btnRefresh; }
     public Button expandButton() { return btnExpand; }
     public Button collapseButton() { return btnCollapse; }
+    public Button restoreSnapshotButton() { return btnRestoreSnapshot; }
+    public Button restoreSelectedButton() { return btnRestoreSelected; }
     public MenuItem exportCsvItem() { return miExportCsv; }
     public MenuItem exportPdfItem() { return miExportPdf; }
     public MenuButton exportMenuButton() { return btnExport; }
@@ -401,7 +410,24 @@ public final class InventoryScreen {
         loading.setVisible(value);
         dataTabs.setDisable(value);
         btnRefresh.setDisable(value);
+        btnRestoreSnapshot.setDisable(value);
+        btnRestoreSelected.setDisable(value);
         cbScans.setDisable(value);
+    }
+
+    public List<SelectedNode> getSelectedNodes() {
+        var items = tree.getSelectionModel().getSelectedItems();
+        if (items == null || items.isEmpty()) return List.of();
+
+        List<SelectedNode> out = new ArrayList<>();
+        for (TreeItem<FileNode> ti : items) {
+            if (ti == null) continue;
+            FileNode n = ti.getValue();
+            if (n == null) continue;
+            if (n.path == null || n.path.isBlank()) continue; // ignore root
+            out.add(new SelectedNode(n.path, n.directory));
+        }
+        return out;
     }
     
     public void showError(String msg) {
@@ -429,6 +455,7 @@ public final class InventoryScreen {
     }
 
     public record FileNode(String name, String path, boolean directory, long sizeBytes, String status, long modifiedMillis) {}
+    public record SelectedNode(String pathRel, boolean directory) {}
     public record FileSizeRow(String name, String path, long sizeBytes) {}
     public record FolderSizeRow(String path, long sizeBytes) {}
     

@@ -2,11 +2,10 @@ package com.keeply.app.inventory;
 
 import com.keeply.app.config.Config;
 import com.keeply.app.database.Database;
-import com.keeply.app.templates.KeeplyTemplate;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
-import com.keeply.app.templates.KeeplyTemplate.Theme;
 
 import javafx.application.Platform;
+import javafx.beans.property.StringProperty;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -15,12 +14,11 @@ import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 import javafx.scene.shape.SVGPath;
-import javafx.scene.text.Font;
-import javafx.scene.text.FontWeight;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.Stage;
 
 import java.io.File;
+import java.util.Objects;
 import java.util.Optional;
 
 public final class BackupScreen {
@@ -34,329 +32,263 @@ public final class BackupScreen {
     private final Stage stage;
     private final ScanModel model;
 
+    // Campos de Input
     private final TextField pathField = new TextField();
     private final TextField destField = new TextField();
     private final TextArea consoleArea = new TextArea();
 
-    // Botões agora com ícones
-    private final Button btnScan   = new Button("BACKUP");
-    private final Button btnStop   = new Button("STOP");
-    private final Button btnWipe   = new Button("WIPE");
-    private final Button btnBrowse = new Button(); // Sem texto, só ícone
-    private final Button btnBrowseDest = new Button(); // Sem texto, só ícone
-    private final Button btnDbOptions = new Button("Banco de dados options");
+    // Botões de Ação
+    private final Button btnScan   = new Button("Iniciar backup");
+    private final Button btnStop   = new Button("Parar");
+    private final Button btnWipe   = new Button("Limpar dados");
+    private final Button btnBrowse = new Button();
+    private final Button btnBrowseDest = new Button();
+    private final Button btnDbOptions = new Button("Opções DB");
+
+    private final HBox backupFooterActions = new HBox(10);
 
     public BackupScreen(Stage stage, ScanModel model) {
-        this.stage = stage;
-        this.model = model;
+        this.stage = Objects.requireNonNull(stage, "stage");
+        this.model = Objects.requireNonNull(model, "model");
         configureControls();
     }
 
     private void configureControls() {
+        // Valores iniciais
         pathField.setText(Config.getLastPath());
-        pathField.setPromptText("Select directory to backup...");
+        pathField.setPromptText("Selecione a pasta de origem…");
 
         destField.setText(Config.getLastBackupDestination());
-        destField.setPromptText("Select destination folder to save backups...");
-        
+        destField.setPromptText("Selecione a pasta de destino…");
+
         btnStop.setDisable(true);
+
+        // Eventos (MESMA lógica)
         btnBrowse.setOnAction(e -> chooseDirectory());
-        btnBrowse.setTooltip(new Tooltip("Select Folder"));
+        btnBrowse.setTooltip(new Tooltip("Selecionar pasta de origem"));
 
         btnBrowseDest.setOnAction(e -> chooseDestinationDirectory());
-        btnBrowseDest.setTooltip(new Tooltip("Select Backup Destination"));
+        btnBrowseDest.setTooltip(new Tooltip("Selecionar destino do backup"));
 
         btnDbOptions.setOnAction(e -> showDbOptions());
-        btnDbOptions.setTooltip(new Tooltip("Validar se o banco está criptografado"));
 
-        // Console styling
+        // Console
         consoleArea.setEditable(false);
         consoleArea.setWrapText(true);
-        consoleArea.setStyle("""
-            -fx-control-inner-background: %s;
-            -fx-text-fill: #A7F3D0; 
-            -fx-font-family: %s;
-            -fx-font-size: 11px;
-            -fx-background-radius: 8;
-            -fx-border-radius: 8;
-            -fx-border-color: #1E293B; 
-            -fx-border-width: 1;
-            -fx-padding: 5;
-            -fx-highlight-fill: #A7F3D0; 
-            -fx-highlight-text-fill: #0F172A;
-        """.formatted(Theme.BG_CONSOLE, Theme.FONT_MONO));
     }
 
     public Node content() {
-        VBox layout = new VBox(16);
-        layout.setAlignment(Pos.TOP_LEFT);
-        layout.setPadding(new Insets(4, 0, 4, 0)); // Pequeno respiro extra
+        var root = new VBox(14);
+        root.getStyleClass().add("backup-screen");
+        root.setPadding(new Insets(18, 0, 0, 0));
 
-        VBox pathSection = createCard(
-                createHeaderLabel("TARGET DIRECTORY"),
-            createPathInputRow(),
-            createHeaderLabel("BACKUP DESTINATION"),
-            createDestinationInputRow()
+        // Carrega stylesheet (coloque em src/main/resources/styles/keeply.css)
+        root.getStylesheets().add(Objects.requireNonNull(
+                getClass().getResource("/styles/styles.css"),
+                "Missing /styles/keeply.css"
+        ).toExternalForm());
+
+        var header = createHeader();
+        var pathsCard = createCard(
+                sectionTitle("Backup"),
+                mutedText("Escolha a pasta de origem e onde o cofre (.keeply/storage) vai ficar."),
+                spacer(6),
+                sectionLabel("Origem"),
+                createPathInputRow(),
+                spacer(10),
+                sectionLabel("Destino"),
+                createDestinationInputRow()
         );
 
-        GridPane statsGrid = createStatsGrid();
+        var stats = createStatsGrid();
 
-        VBox logSection = createCard(
-                createHeaderLabel("LIVE EXECUTION LOG"),
+        var logCard = createCard(
+                sectionLabel("Log em tempo real"),
                 consoleArea
         );
-        
-        VBox.setVgrow(logSection, Priority.ALWAYS);
+        VBox.setVgrow(logCard, Priority.ALWAYS);
         VBox.setVgrow(consoleArea, Priority.ALWAYS);
 
-        layout.getChildren().addAll(pathSection, statsGrid, logSection);
-        return layout;
+        root.getChildren().addAll(header, pathsCard, stats, logCard);
+        return root;
     }
 
     public Node footer() {
-        HBox root = new HBox(12);
+        var root = new HBox(12);
+        root.getStyleClass().add("footer");
         root.setAlignment(Pos.CENTER_LEFT);
-        root.setPadding(new Insets(4, 0, 0, 0));
+        root.setPadding(new Insets(10, 0, 0, 0));
 
-        HBox actions = new HBox(12);
-        actions.setAlignment(Pos.CENTER_RIGHT);
+        // Esquerda: opções DB (sempre visível)
+        btnDbOptions.getStyleClass().addAll("btn", "btn-secondary");
+        btnDbOptions.setMinWidth(140);
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        // Aplica estilos e ícones
-        styleButton(btnWipe, Theme.BG_SECONDARY, Theme.DANGER, true, ICON_TRASH);
-        styleButton(btnStop, Theme.BG_PRIMARY, Theme.TEXT_MAIN, true, ICON_STOP);
-        styleButton(btnScan, Theme.ACCENT, Theme.TEXT_INVERT, false, ICON_PLAY);
-        styleButton(btnDbOptions, Theme.BG_SECONDARY, Theme.TEXT_MAIN, true, null);
+        // Direita: ações
+        backupFooterActions.setAlignment(Pos.CENTER_RIGHT);
 
-        // Tamanho fixo para os botões de ação principal ficarem uniformes
-        btnStop.setMinWidth(90);
-        btnScan.setMinWidth(100);
+        styleIconButton(btnWipe, ICON_TRASH);
+        styleIconButton(btnStop, ICON_STOP);
+        styleIconButton(btnScan, ICON_PLAY);
 
-        btnDbOptions.setMinWidth(190);
+        btnWipe.getStyleClass().addAll("btn", "btn-secondary", "btn-danger-text");
+        btnStop.getStyleClass().addAll("btn", "btn-secondary");
+        btnScan.getStyleClass().addAll("btn", "btn-primary");
 
-        actions.getChildren().addAll(btnWipe, btnStop, btnScan);
-        root.getChildren().addAll(btnDbOptions, spacer, actions);
+        btnStop.setMinWidth(92);
+        btnScan.setMinWidth(150);
+
+        backupFooterActions.getChildren().setAll(btnWipe, btnStop, btnScan);
+        root.getChildren().addAll(btnDbOptions, spacer, backupFooterActions);
         return root;
     }
 
-    private void showDbOptions() {
-        Database.DbEncryptionStatus s = Database.getEncryptionStatus();
+    // ---------------- UI building ----------------
 
-        String text = "Criptografia habilitada: " + s.encryptionEnabled() + "\n" +
-                "\n" +
-                "Arquivo criptografado (.enc):\n" +
-                "  path: " + s.encryptedFile().toAbsolutePath() + "\n" +
-                "  existe: " + s.encryptedFileExists() + "\n" +
-                "  header KEEPLYENC: " + s.encryptedLooksEncrypted() + "\n" +
-                "  parece SQLite plaintext: " + s.encryptedLooksPlainSqlite() + "\n" +
-                "\n" +
-                "Plaintext legado (antigo):\n" +
-                "  path: " + s.legacyPlainFile().toAbsolutePath() + "\n" +
-                "  existe: " + s.legacyPlainExists() + "\n" +
-                "  parece SQLite plaintext: " + s.legacyPlainLooksPlainSqlite() + "\n" +
-                "  -wal existe: " + s.legacyPlainWalExists() + "\n" +
-                "  -shm existe: " + s.legacyPlainShmExists() + "\n" +
-                "\n" +
-                "Runtime plaintext (durante execução):\n" +
-                "  path: " + s.runtimePlainFile().toAbsolutePath() + "\n" +
-                "  existe: " + s.runtimePlainExists() + "\n" +
-                "  -wal existe: " + s.runtimePlainWalExists() + "\n" +
-                "  -shm existe: " + s.runtimePlainShmExists() + "\n";
+    private Node createHeader() {
+        var box = new HBox(12);
+        box.getStyleClass().add("header");
+        box.setAlignment(Pos.CENTER_LEFT);
+        box.setPadding(new Insets(0, 0, 4, 0));
 
-        Alert alert = new Alert(Alert.AlertType.INFORMATION);
-        alert.setTitle("Banco de dados options");
-        alert.setHeaderText("Validação do banco criptografado");
+        var dot = new Circle(7);
+        dot.getStyleClass().add("header-dot");
 
-        TextArea area = new TextArea(text);
-        area.setEditable(false);
-        area.setWrapText(true);
-        area.setPrefRowCount(16);
-        area.setStyle("-fx-font-family: " + Theme.FONT_MONO + "; -fx-font-size: 11px;");
-        alert.getDialogPane().setContent(area);
+        var titles = new VBox(2);
+        var title = new Label("Backup");
+        title.getStyleClass().add("h1");
+        var subtitle = new Label("Armazenamento deduplicado por conteúdo (hash) com cofre local.");
+        subtitle.getStyleClass().add("muted");
 
-        alert.showAndWait();
+        titles.getChildren().addAll(title, subtitle);
+        box.getChildren().addAll(dot, titles);
+        return box;
     }
 
-    // --- UI Helpers & Components ---
-
     private VBox createCard(Node... children) {
-        VBox card = new VBox(8, children); // Espaçamento interno reduzido levemente
-        card.setPadding(new Insets(16));
-        
-        // Sombra aprimorada
-        String shadow = "-fx-effect: dropshadow(three-pass-box, rgba(0,0,0,0.06), 10, 0, 0, 4);";
-        
-        card.setStyle("""
-            -fx-background-color: %s;
-            -fx-background-radius: 12;
-            -fx-border-radius: 12;
-            -fx-border-color: %s;
-            -fx-border-width: 1;
-            %s
-        """.formatted(Theme.BG_PRIMARY, Theme.BORDER, shadow));
+        var card = new VBox(10, children);
+        card.getStyleClass().add("card");
+        card.setPadding(new Insets(18));
         return card;
     }
 
+    private Label sectionTitle(String text) {
+        var l = new Label(text);
+        l.getStyleClass().add("card-title");
+        return l;
+    }
+
+    private Label sectionLabel(String text) {
+        var l = new Label(text);
+        l.getStyleClass().add("section-label");
+        return l;
+    }
+
+    private Label mutedText(String text) {
+        var l = new Label(text);
+        l.getStyleClass().add("muted");
+        l.setWrapText(true);
+        return l;
+    }
+
+    private Region spacer(double h) {
+        var r = new Region();
+        r.setMinHeight(h);
+        return r;
+    }
+
     private Node createPathInputRow() {
-        HBox row = new HBox(8);
+        var row = new HBox(10);
         row.setAlignment(Pos.CENTER_LEFT);
 
-        pathField.setStyle("""
-            -fx-background-color: %s;
-            -fx-border-color: %s;
-            -fx-border-radius: 6;
-            -fx-background-radius: 6;
-            -fx-padding: 9; 
-            -fx-text-fill: %s;
-            -fx-font-size: 13px;
-        """.formatted(Theme.BG_SECONDARY, Theme.BORDER, Theme.TEXT_MAIN));
-        
+        pathField.getStyleClass().add("text-input");
         HBox.setHgrow(pathField, Priority.ALWAYS);
 
-        // Configura o botão Browse como um ícone quadrado
-        styleButton(btnBrowse, Theme.BG_SECONDARY, Theme.TEXT_MAIN, true, ICON_FOLDER);
-        btnBrowse.setPadding(new Insets(8));
-        btnBrowse.setMinWidth(40);
-        btnBrowse.setMaxWidth(40);
+        btnBrowse.getStyleClass().addAll("btn", "btn-icon");
+        styleIconOnly(btnBrowse, ICON_FOLDER);
 
         row.getChildren().addAll(pathField, btnBrowse);
         return row;
     }
 
     private Node createDestinationInputRow() {
-        HBox row = new HBox(8);
+        var row = new HBox(10);
         row.setAlignment(Pos.CENTER_LEFT);
 
-        destField.setStyle("""
-            -fx-background-color: %s;
-            -fx-border-color: %s;
-            -fx-border-radius: 6;
-            -fx-background-radius: 6;
-            -fx-padding: 9; 
-            -fx-text-fill: %s;
-            -fx-font-size: 13px;
-        """.formatted(Theme.BG_SECONDARY, Theme.BORDER, Theme.TEXT_MAIN));
-
+        destField.getStyleClass().add("text-input");
         HBox.setHgrow(destField, Priority.ALWAYS);
 
-        styleButton(btnBrowseDest, Theme.BG_SECONDARY, Theme.TEXT_MAIN, true, ICON_FOLDER);
-        btnBrowseDest.setPadding(new Insets(8));
-        btnBrowseDest.setMinWidth(40);
-        btnBrowseDest.setMaxWidth(40);
+        btnBrowseDest.getStyleClass().addAll("btn", "btn-icon");
+        styleIconOnly(btnBrowseDest, ICON_FOLDER);
 
         row.getChildren().addAll(destField, btnBrowseDest);
         return row;
     }
 
     private GridPane createStatsGrid() {
-        GridPane grid = new GridPane();
-        grid.setHgap(12);
-        grid.setVgap(12);
+        var grid = new GridPane();
+        grid.getStyleClass().add("stats-grid");
+        grid.setHgap(14);
+        grid.setVgap(14);
 
-        grid.add(createStatCard("FILES SCANNED", model.filesScannedProperty, Color.web(Theme.ACCENT)), 0, 0);
-        grid.add(createStatCard("THROUGHPUT (MB/s)", model.mbPerSecProperty, Color.web("#8B5CF6")), 1, 0);
-        grid.add(createStatCard("SCAN RATE", model.rateProperty, Color.web("#F59E0B")), 0, 1);
-        grid.add(createStatCard("ERRORS", model.errorsProperty, Color.web(Theme.DANGER)), 1, 1);
+        grid.add(createStatCard("Arquivos escaneados", model.filesScannedProperty, "accent"), 0, 0);
+        grid.add(createStatCard("Velocidade (MB/s)", model.mbPerSecProperty, "violet"), 1, 0);
+        grid.add(createStatCard("Taxa de scan", model.rateProperty, "amber"), 0, 1);
+        grid.add(createStatCard("Erros", model.errorsProperty, "danger"), 1, 1);
 
-        ColumnConstraints col = new ColumnConstraints();
+        var col = new ColumnConstraints();
         col.setPercentWidth(50);
-        grid.getColumnConstraints().addAll(col, col);
+        grid.getColumnConstraints().setAll(col, col);
         return grid;
     }
 
-    private Node createStatCard(String title, javafx.beans.property.StringProperty valueProp, Color accent) {
-        HBox container = new HBox(12);
-        container.setPadding(new Insets(12));
-        container.setAlignment(Pos.CENTER_LEFT);
-        
-        container.setStyle("""
-            -fx-background-color: %s;
-            -fx-background-radius: 8;
-            -fx-border-color: %s;
-        """.formatted(Theme.BG_SECONDARY, Theme.BORDER));
+    private Node createStatCard(String title, StringProperty valueProp, String accentClass) {
+        var card = new HBox(12);
+        card.getStyleClass().addAll("stat-card");
 
-        Circle dot = new Circle(4, accent);
-        // Efeito de brilho no dot (opcional)
-        dot.setEffect(new javafx.scene.effect.DropShadow(4, Color.color(accent.getRed(), accent.getGreen(), accent.getBlue(), 0.4)));
+        var dot = new Circle(5);
+        dot.getStyleClass().addAll("stat-dot", accentClass);
 
-        VBox box = new VBox(2);
-        Label lblTitle = new Label(title);
-        lblTitle.setFont(Font.font("Segoe UI", FontWeight.BOLD, 9));
-        lblTitle.setTextFill(Color.web(Theme.TEXT_MUTED));
+        var box = new VBox(3);
+        var lblTitle = new Label(title);
+        lblTitle.getStyleClass().add("stat-title");
 
-        Label lblValue = new Label();
-        lblValue.setFont(Font.font("Consolas", FontWeight.BOLD, 18));
-        lblValue.setTextFill(Color.web(Theme.TEXT_MAIN));
+        var lblValue = new Label();
+        lblValue.getStyleClass().add("stat-value");
         lblValue.textProperty().bind(valueProp);
 
         box.getChildren().addAll(lblTitle, lblValue);
-        container.getChildren().addAll(dot, box);
-        return container;
+        card.getChildren().addAll(dot, box);
+        return card;
     }
 
-    private Label createHeaderLabel(String text) {
-        Label l = new Label(text);
-        l.setFont(Font.font("Segoe UI", FontWeight.BOLD, 10));
-        l.setTextFill(Color.web(Theme.TEXT_MUTED));
-        l.setPadding(new Insets(0, 0, 4, 0));
-        return l;
+    private static void styleIconOnly(Button btn, String svgPath) {
+        var icon = new SVGPath();
+        icon.setContent(svgPath);
+        icon.getStyleClass().add("icon");
+        btn.setGraphic(icon);
+        btn.setContentDisplay(ContentDisplay.GRAPHIC_ONLY);
+        btn.setMinWidth(44);
+        btn.setPrefHeight(42);
     }
 
-    // --- Styling Logic Refined ---
-
-    private void styleButton(Button btn, String bgHex, String textHex, boolean outline, String svgIcon) {
-        String borderStyle = outline ? "-fx-border-color: " + Theme.BORDER + "; -fx-border-width: 1; -fx-border-radius: 6;" : "";
-        
-        // Configura o Ícone
-        if (svgIcon != null) {
-            SVGPath icon = new SVGPath();
-            icon.setContent(svgIcon);
-            icon.setFill(Color.web(textHex));
-            icon.setScaleX(0.85); // Ajuste fino de tamanho
-            icon.setScaleY(0.85);
-            btn.setGraphic(icon);
-            btn.setGraphicTextGap(8);
-        }
-
-        String baseStyle = """
-            -fx-background-color: %s;
-            -fx-text-fill: %s;
-            -fx-font-family: 'Segoe UI';
-            -fx-font-weight: bold;
-            -fx-font-size: 12px;
-            -fx-padding: 8 16;
-            -fx-background-radius: 6;
-            -fx-cursor: hand;
-            -fx-transition: -fx-background-color 0.2s, -fx-opacity 0.2s;
-            %s
-        """.formatted(bgHex, textHex, borderStyle);
-
-        btn.setStyle(baseStyle);
-
-        // Efeito Hover: Escurece levemente o background ou reduz opacidade
-        btn.setOnMouseEntered(e -> {
-            btn.setOpacity(0.85);
-            // Se for outline, muda a cor da borda também
-            if(outline) btn.setStyle(baseStyle.replace(Theme.BORDER, "#A1A1AA"));
-        });
-        
-        btn.setOnMouseExited(e -> {
-            btn.setOpacity(1.0);
-            btn.setStyle(baseStyle);
-        });
+    private static void styleIconButton(Button btn, String svgPath) {
+        var icon = new SVGPath();
+        icon.setContent(svgPath);
+        icon.getStyleClass().add("icon");
+        btn.setGraphic(icon);
+        btn.setGraphicTextGap(8);
     }
 
-    // --- Métodos de Controle ---
+    // ---------------- Controle (MESMA lógica) ----------------
 
     private void chooseDirectory() {
         DirectoryChooser dc = new DirectoryChooser();
         File initial = new File(Config.getLastPath());
-        if (initial.exists() && initial.isDirectory()) {
-            dc.setInitialDirectory(initial);
-        }
-        dc.setTitle("Select Target Folder");
+        if (initial.exists() && initial.isDirectory()) dc.setInitialDirectory(initial);
+        dc.setTitle("Selecionar pasta de origem");
         File f = dc.showDialog(stage);
         if (f != null) {
             pathField.setText(f.getAbsolutePath());
@@ -367,15 +299,32 @@ public final class BackupScreen {
     private void chooseDestinationDirectory() {
         DirectoryChooser dc = new DirectoryChooser();
         File initial = new File(Config.getLastBackupDestination());
-        if (initial.exists() && initial.isDirectory()) {
-            dc.setInitialDirectory(initial);
-        }
-        dc.setTitle("Select Backup Destination Folder");
+        if (initial.exists() && initial.isDirectory()) dc.setInitialDirectory(initial);
+        dc.setTitle("Selecionar destino do backup");
         File f = dc.showDialog(stage);
         if (f != null) {
             destField.setText(f.getAbsolutePath());
             Config.saveLastBackupDestination(f.getAbsolutePath());
         }
+    }
+
+    private void showDbOptions() {
+        Database.DbEncryptionStatus s = Database.getEncryptionStatus();
+        String text = "Status da Criptografia:\n" +
+                "Ativado: " + s.encryptionEnabled() + "\n\n" +
+                "Arquivos:\n" +
+                ".enc exists: " + s.encryptedFileExists() + "\n" +
+                "Legacy plain exists: " + s.legacyPlainExists();
+
+        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+        alert.setTitle("Opções do Banco de Dados");
+        alert.setHeaderText("Diagnóstico de segurança");
+        TextArea area = new TextArea(text);
+        area.setEditable(false);
+        area.setWrapText(true);
+        area.setPrefRowCount(8);
+        alert.getDialogPane().setContent(area);
+        alert.showAndWait();
     }
 
     public Button getScanButton() { return btnScan; }
@@ -393,36 +342,27 @@ public final class BackupScreen {
         btnBrowseDest.setDisable(isScanning);
         destField.setDisable(isScanning);
         btnStop.setDisable(!isScanning);
-        
-        // Efeito visual extra: reduz opacidade da área de input quando bloqueada
-        pathField.setOpacity(isScanning ? 0.6 : 1.0);
-        destField.setOpacity(isScanning ? 0.6 : 1.0);
+
+        double opacity = isScanning ? 0.72 : 1.0;
+        pathField.setOpacity(opacity);
+        destField.setOpacity(opacity);
     }
 
     public void clearConsole() { consoleArea.clear(); }
 
     public void appendLog(String message) {
         Platform.runLater(() -> {
-            consoleArea.appendText("> " + message + "\n");
-            // Método mais robusto para auto-scroll
-            consoleArea.selectPositionCaret(consoleArea.getLength()); 
-            consoleArea.deselect();
+            consoleArea.appendText("• " + message + "\n");
+            consoleArea.positionCaret(consoleArea.getLength());
         });
     }
 
     public boolean confirmWipe() {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
-        alert.setTitle("Apagar Banco de Dados");
-        alert.setHeaderText("Apagar todos os dados? Esta ação é irreversível");
-        alert.setContentText("Isto removerá permanentemente todo o histórico de scans e métricas.\nNão será possível recuperar os dados após a confirmação.");
-        
-        // Estilizando o Alert (Opcional, mas recomendado para consistência)
-        DialogPane dialogPane = alert.getDialogPane();
-        dialogPane.setStyle("-fx-font-family: 'Segoe UI'; -fx-font-size: 13px;");
-        
+        alert.setTitle("Confirmar limpeza");
+        alert.setHeaderText("Apagar todos os dados e backups?");
+        alert.setContentText("Isso removerá o histórico e os arquivos do cofre (.keeply/storage).");
         Optional<ButtonType> res = alert.showAndWait();
         return res.isPresent() && res.get() == ButtonType.OK;
     }
 }
-
-
