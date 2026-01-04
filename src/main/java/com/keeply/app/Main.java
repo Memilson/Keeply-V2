@@ -1,10 +1,13 @@
 package com.keeply.app;
 
-import com.keeply.app.controller.InventoryController;
-import com.keeply.app.controller.ScanController;
-import com.keeply.app.view.InventoryScreen;
-import com.keeply.app.view.KeeplyTemplate;
-import com.keeply.app.view.ScanScreen;
+import com.keeply.app.database.Database;
+import com.keeply.app.inventory.InventoryController;
+import com.keeply.app.inventory.InventoryScreen;
+import com.keeply.app.inventory.ScanController;
+import com.keeply.app.inventory.ScanScreen;
+import com.keeply.app.templates.KeeplyTemplate;
+import com.keeply.app.tests.TestsScreen;
+
 import io.github.cdimascio.dotenv.Dotenv;
 import javafx.application.Application;
 import javafx.application.Platform;
@@ -96,8 +99,10 @@ public class Main extends Application {
 
         Tab tScan = new Tab("SCANNER", scan.content());
         Tab tInv = new Tab("INVENTARIO", inventory.content());
+        TestsScreen testsView = new TestsScreen();
+        Tab tTests = new Tab("TESTES", testsView.content());
 
-        tabs.getTabs().addAll(tScan, tInv);
+        tabs.getTabs().addAll(tScan, tInv, tTests);
 
         layout.setTitle("Scanner");
         layout.setFooter(scan.footer());
@@ -108,6 +113,9 @@ public class Main extends Application {
                 layout.setFooter(scan.footer());
             } else if (newVal == tInv) {
                 layout.setTitle("Inventario");
+                layout.setFooter(null);
+            } else if (newVal == tTests) {
+                layout.setTitle("Testes");
                 layout.setFooter(null);
             }
         });

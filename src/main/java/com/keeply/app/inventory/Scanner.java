@@ -1,4 +1,4 @@
-package com.keeply.app;
+package com.keeply.app.inventory;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -11,7 +11,10 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
-import com.keeply.app.db.KeeplyDao;
+
+import com.keeply.app.database.Database;
+import com.keeply.app.database.KeeplyDao;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -167,6 +170,7 @@ public final class Scanner {
         private final BlockingQueue<FileSeen> queue = new ArrayBlockingQueue<>(10000);
         private final Thread worker;
         private volatile boolean finished = false;
+        private volatile Exception workerError;
 
         DbWriter(Database.SimplePool pool, long scanId, String rootPath, int batchSize, ScanMetrics metrics) {
             this.pool = pool;
@@ -186,7 +190,16 @@ public final class Scanner {
         }
         
         void flush() { finished = true; }
-        void waitFinish() { try { worker.join(); } catch (InterruptedException e) {} }
+        void waitFinish() {
+            try {
+                worker.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (workerError != null) {
+                throw new RuntimeException("DbWriter failed", workerError);
+            }
+        }
         @Override public void close() { flush(); waitFinish(); }
 
         private void run() {
@@ -239,7 +252,10 @@ public final class Scanner {
                     }
                     if (pending > 0) { ps.executeBatch(); c.commit(); metrics.dbBatches.increment(); }
                 }
-            } catch (Exception e) { logger.error("DbWriter error", e); }
+            } catch (Exception e) {
+                workerError = e;
+                logger.error("DbWriter error", e);
+            }
         }
     }
 }

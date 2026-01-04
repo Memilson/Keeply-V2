@@ -1,14 +1,13 @@
-package com.keeply.app.controller;
+package com.keeply.app.inventory;
 
-import com.keeply.app.Database;
-import com.keeply.app.Config;
-import com.keeply.app.db.KeeplyDao;
+import com.keeply.app.config.Config;
+import com.keeply.app.database.Database;
+import com.keeply.app.database.KeeplyDao;
+import com.keeply.app.database.Database.CapacityReport;
+import com.keeply.app.database.Database.InventoryRow;
+import com.keeply.app.database.Database.ScanSummary;
 import com.keeply.app.report.ReportService;
-// IMPORTANTE: Importando as classes estáticas dentro de Database
-import com.keeply.app.Database.InventoryRow;
-import com.keeply.app.Database.ScanSummary;
-import com.keeply.app.Database.CapacityReport;
-import com.keeply.app.view.InventoryScreen;
+
 import javafx.application.Platform;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
@@ -156,7 +155,9 @@ public final class InventoryController {
         try {
             new ReportService().exportPdf(allRows, file, currentScanData);
         } catch (Exception e) {
+            e.printStackTrace(); // mostra o erro completo no console
             logger.error("Erro ao exportar PDF", e);
+            Platform.runLater(() -> view.showError("Erro ao exportar PDF: " + e.getMessage()));
         }
     }
 

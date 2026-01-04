@@ -1,9 +1,5 @@
-package com.keeply.app.db;
+package com.keeply.app.database;
 
-import com.keeply.app.Database.CapacityReport;
-import com.keeply.app.Database.FileHistoryRow;
-import com.keeply.app.Database.InventoryRow;
-import com.keeply.app.Database.ScanSummary;
 import org.jdbi.v3.core.mapper.RowMapper;
 import org.jdbi.v3.core.statement.StatementContext;
 import org.jdbi.v3.sqlobject.config.RegisterConstructorMapper;
@@ -13,6 +9,11 @@ import org.jdbi.v3.sqlobject.statement.GetGeneratedKeys;
 import org.jdbi.v3.sqlobject.statement.SqlQuery;
 import org.jdbi.v3.sqlobject.statement.SqlUpdate;
 import org.jdbi.v3.sqlobject.transaction.Transaction;
+
+import com.keeply.app.database.Database.CapacityReport;
+import com.keeply.app.database.Database.FileHistoryRow;
+import com.keeply.app.database.Database.InventoryRow;
+import com.keeply.app.database.Database.ScanSummary;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;

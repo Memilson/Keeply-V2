@@ -1,10 +1,12 @@
-package com.keeply.app;
+package com.keeply.app.config;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.prefs.Preferences;
+
+import com.keeply.app.Main;
 
 import io.github.cdimascio.dotenv.Dotenv;
 
@@ -22,8 +24,16 @@ public final class Config {
     
     // Variáveis de ambiente a serem checadas (ordem de prioridade)
     private static final String ENV_DB_NAME = "KEEPLY_DB_NAME";
+    private static final String ENV_DB_ENCRYPTION = "KEEPLY_DB_ENCRYPTION";
     private static final String ENV_KEY_PRIMARY = "KEEPLY_SECRET_KEY";
     private static final String ENV_KEY_SECONDARY = "SECRET_KEY";
+    private static final String ENV_DATA_DIR = "KEEPLY_DATA_DIR";
+
+    // System property overrides (useful for tests/CI)
+    private static final String PROP_DB_NAME = "keeply.dbName";
+    private static final String PROP_DB_ENCRYPTION = "keeply.dbEncryption";
+    private static final String PROP_SECRET_KEY = "keeply.secretKey";
+    private static final String PROP_DATA_DIR = "keeply.dataDir";
 
     // O caminho e a chave são calculados estaticamente na inicialização da classe
     // Logger must be initialized before any static initializer that may use it
@@ -34,7 +44,10 @@ public final class Config {
 
     private static final String DB_FILENAME = resolveDbFileName();
     private static final Path DB_PATH = resolveDbPath(DB_FILENAME);
-    private static final String SECRET_KEY = resolveSecretKey();
+
+    private static final boolean DB_ENCRYPTION_ENABLED = resolveDbEncryptionEnabled();
+    // Só exige chave se a criptografia estiver habilitada.
+    private static final String SECRET_KEY = DB_ENCRYPTION_ENABLED ? resolveSecretKey() : "";
 
     // Construtor privado para impedir instanciação (Utility Class)
     private Config() {}
@@ -43,14 +56,33 @@ public final class Config {
      * Retorna a URL de Conexão JDBC.
      */
     public static String getDbUrl() {
-        return "jdbc:sqlite:" + DB_PATH.toAbsolutePath().toString();
+        // IMPORTANTE:
+        // - Sem criptografia: conecta direto no arquivo base.
+        // - Com criptografia de arquivo (AES): conecta no arquivo runtime (plaintext) e persiste cifrado em *.enc.
+        return "jdbc:sqlite:" + getRuntimeDbFilePath().toAbsolutePath();
     }
 
     /**
      * Caminho do arquivo de banco (usado para operações de limpeza/backup).
      */
     public static Path getDbFilePath() {
-        return DB_PATH;
+        return getEncryptedDbFilePath();
+    }
+
+    public static Path getEncryptedDbFilePath() {
+        if (!DB_ENCRYPTION_ENABLED) return DB_PATH;
+        // Não sobrescreve o banco atual (data.keeply). Cria um novo arquivo cifrado ao lado.
+        return DB_PATH.resolveSibling(DB_PATH.getFileName().toString() + ".enc");
+    }
+
+    public static Path getRuntimeDbFilePath() {
+        if (!DB_ENCRYPTION_ENABLED) return DB_PATH;
+        // Arquivo plaintext temporário usado somente durante execução.
+        return DB_PATH.resolveSibling(DB_PATH.getFileName().toString() + ".runtime.sqlite");
+    }
+
+    public static boolean isDbEncryptionEnabled() {
+        return DB_ENCRYPTION_ENABLED;
     }
 
     /**
@@ -98,11 +130,27 @@ public final class Config {
         return key;
     }
 
+    private static boolean resolveDbEncryptionEnabled() {
+        String v = getEnvOrDotenv(ENV_DB_ENCRYPTION);
+        if (v == null || v.isBlank()) return false;
+        String norm = v.trim().toLowerCase();
+        return norm.equals("1") || norm.equals("true") || norm.equals("yes") || norm.equals("on") || norm.equals("file");
+    }
+
     /**
      * Tenta obter o valor de uma variável de ambiente.
      * Se não existir, tenta ler do arquivo .env local via java-dotenv.
      */
     private static String getEnvOrDotenv(String key) {
+        // 0. System properties override (tests/CI)
+        String propKey = mapToSystemPropertyKey(key);
+        if (propKey != null) {
+            String propVal = System.getProperty(propKey);
+            if (propVal != null && !propVal.isBlank()) {
+                return propVal.trim();
+            }
+        }
+
         // 1. Tenta Variável de Ambiente do SO
         String envVal = System.getenv(key);
         if (envVal != null && !envVal.isBlank()) {
@@ -117,10 +165,37 @@ public final class Config {
         return fileVal.trim();
     }
 
+    private static String mapToSystemPropertyKey(String envKey) {
+        if (envKey == null) return null;
+        return switch (envKey) {
+            case ENV_DB_NAME -> PROP_DB_NAME;
+            case ENV_DB_ENCRYPTION -> PROP_DB_ENCRYPTION;
+            case ENV_KEY_PRIMARY -> PROP_SECRET_KEY;
+            case ENV_KEY_SECONDARY -> PROP_SECRET_KEY;
+            case ENV_DATA_DIR -> PROP_DATA_DIR;
+            default -> null;
+        };
+    }
+
     /**
      * Lógica resiliente para determinar o local de armazenamento.
      */
     private static Path resolveDbPath(String dbFileName) {
+        // Test/CI override: allow forcing a specific data dir.
+        String overrideDir = getEnvOrDotenv(ENV_DATA_DIR);
+        if (overrideDir != null && !overrideDir.isBlank()) {
+            Path p = Paths.get(overrideDir.trim());
+            try {
+                if (!Files.exists(p)) {
+                    Files.createDirectories(p);
+                }
+            } catch (IOException e) {
+                throw new IllegalStateException("Não foi possível criar diretório de dados: " + p, e);
+            }
+            logger.info("Banco de dados localizado em (override): {}", p.toAbsolutePath());
+            return p.resolve(dbFileName);
+        }
+
         String os = System.getProperty("os.name").toLowerCase();
         String userHome = System.getProperty("user.home");
         Path appDataDir;

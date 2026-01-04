@@ -1,9 +1,11 @@
-package com.keeply.app.view;
+package com.keeply.app.inventory;
 
-import com.keeply.app.Config;
+import com.keeply.app.config.Config;
+import com.keeply.app.database.Database;
+import com.keeply.app.templates.KeeplyTemplate;
+import com.keeply.app.templates.KeeplyTemplate.ScanModel;
+import com.keeply.app.templates.KeeplyTemplate.Theme;
 
-import com.keeply.app.view.KeeplyTemplate.ScanModel;
-import com.keeply.app.view.KeeplyTemplate.Theme;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -40,6 +42,7 @@ public final class ScanScreen {
     private final Button btnStop   = new Button("STOP");
     private final Button btnWipe   = new Button("WIPE");
     private final Button btnBrowse = new Button(); // Sem texto, só ícone
+    private final Button btnDbOptions = new Button("Banco de dados options");
 
     public ScanScreen(Stage stage, ScanModel model) {
         this.stage = stage;
@@ -54,6 +57,9 @@ public final class ScanScreen {
         btnStop.setDisable(true);
         btnBrowse.setOnAction(e -> chooseDirectory());
         btnBrowse.setTooltip(new Tooltip("Select Folder"));
+
+        btnDbOptions.setOnAction(e -> showDbOptions());
+        btnDbOptions.setTooltip(new Tooltip("Validar se o banco está criptografado"));
 
         // Console styling
         consoleArea.setEditable(false);
@@ -98,21 +104,69 @@ public final class ScanScreen {
     }
 
     public Node footer() {
+        HBox root = new HBox(12);
+        root.setAlignment(Pos.CENTER_LEFT);
+        root.setPadding(new Insets(4, 0, 0, 0));
+
         HBox actions = new HBox(12);
         actions.setAlignment(Pos.CENTER_RIGHT);
-        actions.setPadding(new Insets(4, 0, 0, 0));
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
 
         // Aplica estilos e ícones
         styleButton(btnWipe, Theme.BG_SECONDARY, Theme.DANGER, true, ICON_TRASH);
         styleButton(btnStop, Theme.BG_PRIMARY, Theme.TEXT_MAIN, true, ICON_STOP);
         styleButton(btnScan, Theme.ACCENT, Theme.TEXT_INVERT, false, ICON_PLAY);
+        styleButton(btnDbOptions, Theme.BG_SECONDARY, Theme.TEXT_MAIN, true, null);
 
         // Tamanho fixo para os botões de ação principal ficarem uniformes
         btnStop.setMinWidth(90);
         btnScan.setMinWidth(100);
 
+        btnDbOptions.setMinWidth(190);
+
         actions.getChildren().addAll(btnWipe, btnStop, btnScan);
-        return actions;
+        root.getChildren().addAll(btnDbOptions, spacer, actions);
+        return root;
+    }
+
+    private void showDbOptions() {
+        Database.DbEncryptionStatus s = Database.getEncryptionStatus();
+
+        String text = "Criptografia habilitada: " + s.encryptionEnabled() + "\n" +
+                "\n" +
+                "Arquivo criptografado (.enc):\n" +
+                "  path: " + s.encryptedFile().toAbsolutePath() + "\n" +
+                "  existe: " + s.encryptedFileExists() + "\n" +
+                "  header KEEPLYENC: " + s.encryptedLooksEncrypted() + "\n" +
+                "  parece SQLite plaintext: " + s.encryptedLooksPlainSqlite() + "\n" +
+                "\n" +
+                "Plaintext legado (antigo):\n" +
+                "  path: " + s.legacyPlainFile().toAbsolutePath() + "\n" +
+                "  existe: " + s.legacyPlainExists() + "\n" +
+                "  parece SQLite plaintext: " + s.legacyPlainLooksPlainSqlite() + "\n" +
+                "  -wal existe: " + s.legacyPlainWalExists() + "\n" +
+                "  -shm existe: " + s.legacyPlainShmExists() + "\n" +
+                "\n" +
+                "Runtime plaintext (durante execução):\n" +
+                "  path: " + s.runtimePlainFile().toAbsolutePath() + "\n" +
+                "  existe: " + s.runtimePlainExists() + "\n" +
+                "  -wal existe: " + s.runtimePlainWalExists() + "\n" +
+                "  -shm existe: " + s.runtimePlainShmExists() + "\n";
+
+        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+        alert.setTitle("Banco de dados options");
+        alert.setHeaderText("Validação do banco criptografado");
+
+        TextArea area = new TextArea(text);
+        area.setEditable(false);
+        area.setWrapText(true);
+        area.setPrefRowCount(16);
+        area.setStyle("-fx-font-family: " + Theme.FONT_MONO + "; -fx-font-size: 11px;");
+        alert.getDialogPane().setContent(area);
+
+        alert.showAndWait();
     }
 
     // --- UI Helpers & Components ---

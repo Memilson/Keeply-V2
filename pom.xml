@@ -11,6 +11,7 @@
         <javafx.version>21.0.2</javafx.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <openhtml.version>1.0.10</openhtml.version>
+        <slf4j.version>2.0.12</slf4j.version>
     </properties>
 
     <dependencies>
@@ -29,6 +30,12 @@
             <groupId>org.xerial</groupId>
             <artifactId>sqlite-jdbc</artifactId>
             <version>3.45.1.0</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-api</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>com.zaxxer</groupId>
@@ -57,7 +64,6 @@
             <artifactId>openhtmltopdf-svg-support</artifactId>
             <version>${openhtml.version}</version>
         </dependency>
-        
         <!-- Batik script dependency with Rhino for JavaScript support in SVG -->
         <dependency>
             <groupId>org.apache.xmlgraphics</groupId>
@@ -84,7 +90,7 @@
         <dependency>
             <groupId>io.pebbletemplates</groupId>
             <artifactId>pebble</artifactId>
-            <version>3.2.2</version>
+            <version>3.2.3</version>
         </dependency>
 
         <dependency>
@@ -113,6 +119,13 @@
             <artifactId>logback-classic</artifactId>
             <version>1.5.3</version>
         </dependency>
+
+        <!-- Align SLF4J API with Logback 1.5.x (prevents NOP logger warnings in tests) -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.jdbi</groupId>
             <artifactId>jdbi3-core</artifactId>
@@ -138,6 +151,14 @@
             <artifactId>commons-csv</artifactId>
             <version>1.10.0</version>
         </dependency>
+
+        <!-- Tests (JUnit 5) -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -156,6 +177,20 @@
                 <version>0.0.8</version>
                 <configuration>
                     <mainClass>com.keeply.app.Main</mainClass>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <useModulePath>false</useModulePath>
+                    <systemPropertyVariables>
+                        <keeply.dataDir>${project.build.directory}/keeply-test-data</keeply.dataDir>
+                        <keeply.dbEncryption>file</keeply.dbEncryption>
+                        <keeply.secretKey>unit-test-secret</keeply.secretKey>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
         </plugins>

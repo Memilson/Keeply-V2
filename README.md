@@ -6,17 +6,22 @@ Como compilar e executar:
 
 ```bash
 mvn package
-java -jar target/keeply-0.1.0.jar
+java -jar target/keeply-scanner-gui-1.0.0.jar
 ```
 
-Ou rodar diretamente com o Maven (requer plugin exec se preferir):
+Ou rodar diretamente com o Maven (JavaFX):
 
 ```bash
-mvn -q compile exec:java -Dexec.mainClass="com.keeply.app.Main"
+mvn javafx:run
 ```
 
 Estrutura criada:
 
 - `pom.xml`
 - `src/main/java/com/keeply/app/Main.java`
+
+Configuração (opcional):
+
+- `KEEPLY_DB_ENCRYPTION=1` habilita criptografia do arquivo `.enc` (AES-GCM) em repouso
+- `KEEPLY_SECRET_KEY=...` define a chave (obrigatória quando `KEEPLY_DB_ENCRYPTION=1`)
 

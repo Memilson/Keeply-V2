@@ -1,10 +1,9 @@
-package com.keeply.app.controller;
+package com.keeply.app.inventory;
 
-import com.keeply.app.Config;
-import com.keeply.app.Database;
-import com.keeply.app.Scanner;
-import com.keeply.app.view.KeeplyTemplate.ScanModel;
-import com.keeply.app.view.ScanScreen;
+import com.keeply.app.config.Config;
+import com.keeply.app.database.Database;
+import com.keeply.app.templates.KeeplyTemplate.ScanModel;
+
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Platform;

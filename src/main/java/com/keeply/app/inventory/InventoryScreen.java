@@ -1,8 +1,5 @@
-package com.keeply.app.view;
+package com.keeply.app.inventory;
 
-import com.keeply.app.Database.FileHistoryRow;
-import com.keeply.app.Database.InventoryRow;
-import com.keeply.app.Database.ScanSummary;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -13,6 +10,10 @@ import javafx.scene.shape.SVGPath;
 
 import java.util.*;
 import java.util.function.Consumer;
+
+import com.keeply.app.database.Database.FileHistoryRow;
+import com.keeply.app.database.Database.InventoryRow;
+import com.keeply.app.database.Database.ScanSummary;
 
 public final class InventoryScreen {
 

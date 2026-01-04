@@ -1,240 +1,185 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="{{ o.locale.language }}">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="pt-BR">
 <head>
   <meta charset="utf-8"/>
   <title>Relatório de Inventário</title>
-
   <style>
     @page {
-      margin: 0 0 20mm 0;
-      size: {{ o.pageSize }} {% if o.landscape %}landscape{% else %}portrait{% endif %};
-
+      size: A4 portrait;
+      margin: 0;
+      margin-bottom: 16mm;
       @bottom-center {
         content: "Página " counter(page) " de " counter(pages);
-        font-family: "Noto Sans", "Inter", sans-serif;
-        font-size: 10px;
+        font-family: "Noto Sans", sans-serif;
+        font-size: 9px;
         color: #94a3b8;
-        margin-bottom: 10mm;
+        margin-bottom: 8mm;
       }
     }
 
     @font-face {
-      font-family: "Noto Sans";
-      src: url(classloader:/fonts/NotoSans-Regular.ttf) format("truetype");
+      font-family: 'Noto Sans';
+      src: url(classloader:/fonts/NotoSans-Regular.ttf);
       font-weight: 400;
-      font-style: normal;
     }
     @font-face {
-      font-family: "Noto Sans";
-      src: url(classloader:/fonts/NotoSans-Bold.ttf) format("truetype");
+      font-family: 'Noto Sans';
+      src: url(classloader:/fonts/NotoSans-Bold.ttf);
       font-weight: 700;
-      font-style: normal;
     }
 
     * { box-sizing: border-box; }
 
-    :root {
-      --bg: #f6f8fb;
-      --surface: #ffffff;
-      --text: #0f172a;      /* “preto SaaS” (navy) */
-      --muted: #475569;     /* MAIS escuro (p/ não ficar lavado) */
-      --muted-2: #94a3b8;
-      --border: #e2e8f0;
-      --border-2: #eef2f7;
-      --soft: #f1f5f9;
-      --shadow: rgba(2, 6, 23, 0.06);
-      --accent: {{ o.theme.accent }};
-      --radius: 14px;
-    }
-
     body {
-      font-family: "Noto Sans", "Inter", sans-serif;
+      font-family: "Noto Sans", sans-serif;
       margin: 0;
       padding: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-size: 12px;
-      line-height: 1.55;
-      font-variant-numeric: tabular-nums;
+      color: #0f172a;
+      background: #ffffff;
+      font-size: 11px;
+      line-height: 1.5;
     }
 
-    /* ========= Header ========= */
-    .header-section {
-      background: #0b1220;
-      color: #ffffff;
-      padding: 15mm 15mm 22px 15mm;
-      width: 100%;
-      border-bottom: 4px solid var(--accent);
+    /* Header (full-bleed) */
+    .header {
+      background: {{ o.theme.headerBg }};
+      color: #fff;
+      padding: 14mm 15mm 10mm 15mm;
+      border-bottom: 4px solid {{ o.theme.accent }};
     }
+
     .header-grid { display: table; width: 100%; }
-    .header-left, .header-right { display: table-cell; vertical-align: top; }
-    .header-right { text-align: right; }
+    .h-left { display: table-cell; vertical-align: bottom; }
+    .h-right { display: table-cell; vertical-align: bottom; text-align: right; }
 
     .brand {
       font-size: 10px;
+      letter-spacing: 2px;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 2.2px;
-      color: #cbd5e1;
-      margin-bottom: 10px;
+      color: {{ o.theme.accent }};
+      margin-bottom: 6px;
     }
-    .report-title {
+
+    .title {
       font-size: 30px;
       font-weight: 700;
       margin: 0;
-      line-height: 1.05;
-      letter-spacing: -0.7px;
+      line-height: 1.1;
+      letter-spacing: -0.5px;
     }
 
-    .meta-box {
+    .meta {
       display: inline-block;
-      margin-left: 14px;
       text-align: left;
-      padding: 8px 10px;
-      border: 1px solid rgba(226,232,240,0.16);
-      border-radius: 12px;
-      background: rgba(255,255,255,0.06);
+      margin-left: 18px;
+      padding-left: 14px;
+      border-left: 1px solid #2b2b2b; /* sem rgba (parser do PDF gosta mais) */
     }
     .meta-label {
       font-size: 9px;
       text-transform: uppercase;
-      letter-spacing: 0.9px;
+      letter-spacing: 1px;
       color: #cbd5e1;
       margin-bottom: 2px;
     }
     .meta-value {
-      font-size: 11px;
+      font-size: 12px;
       font-weight: 700;
       color: #ffffff;
-      opacity: 0.95;
-      white-space: nowrap;
     }
 
-    /* ========= Layout ========= */
-    .main-content { padding: 10mm 15mm 25mm 15mm; }
-
-    .page-surface {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 16px 16px 12px 16px;
-      box-shadow: 0 10px 28px var(--shadow);
+    /* Content padding */
+    .content {
+      padding: 10mm 15mm 0 15mm;
     }
 
-    .section { margin-top: 16px; }
-    .no-break { page-break-inside: avoid; }
+    /* KPI cards */
+    .kpis { display: table; width: 100%; border-spacing: 14px; margin: 0 -14px 10px -14px; }
+    .kpi { display: table-cell; width: 33.33%; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; vertical-align: top; }
+    .kpi-label { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; font-weight: 700; }
+    .kpi-value { margin-top: 8px; font-size: 24px; font-weight: 700; color: #0f172a; line-height: 1.1; }
+    .kpi-sub { margin-top: 8px; font-size: 10.5px; color: #475569; overflow-wrap: anywhere; word-break: break-word; }
 
-    /* ========= KPI ========= */
-    .kpi-container {
-      display: table;
-      width: 100%;
-      border-spacing: 14px 0;
-      margin: 0 -14px 14px -14px;
-    }
-    .kpi-card {
-      display: table-cell;
-      width: 33.33%;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 14px 16px;
-      vertical-align: top;
-    }
-    .kpi-title {
+    /* Status row */
+    .status-row { margin: 10px 0 18px 0; }
+    .chip {
+      display: inline-block;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      padding: 6px 10px;
+      border-radius: 999px;
       font-size: 10px;
       font-weight: 700;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      margin-bottom: 6px;
+      color: #334155;
+      margin-right: 8px;
+      margin-bottom: 8px;
     }
-    .kpi-number {
-      font-size: 22px;
-      font-weight: 700;
-      color: var(--text);
-      letter-spacing: -0.4px;
-      line-height: 1.1;
-    }
-    .kpi-path {
-      font-size: 12px;
-      margin-top: 8px;
-      line-height: 1.35;
-      color: var(--text); /* PRETO (era “lavado”) */
-      overflow-wrap: anywhere;
-      word-break: break-word;
-      font-weight: 400;
-    }
+    .chip b { color: #0f172a; }
 
-    /* ========= Status ========= */
-    .status-bar {
-      margin: 10px 0 14px 0;
-      padding: 10px 12px;
-      background: var(--soft);
-      border: 1px solid var(--border-2);
-      border-radius: 12px;
-    }
-    .status-chip {
-      display: inline-block;
-      font-weight: 700;
-      color: var(--muted);
-      margin-right: 12px;
-      font-size: 11px;
-      letter-spacing: 0.2px;
-    }
-    .status-val { color: var(--text); font-weight: 700; padding-left: 4px; }
+    /* Charts cards */
+    .charts { display: table; width: 100%; border-spacing: 14px; margin: 0 -14px 18px -14px; }
+    .chart { display: table-cell; width: 50%; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px 14px 14px 14px; vertical-align: top; }
+    .chart-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin-bottom: 10px; }
+    .chart-img { width: 100%; height: auto; display: block; border: 1px solid #eef2f7; border-radius: 8px; }
 
-    /* ========= Titles ========= */
+    .chart-wide { display: block; width: 100%; margin-top: 14px; }
+
+    /* Section titles */
     h2 {
+      margin: 18px 0 12px 0;
       font-size: 13px;
       font-weight: 700;
-      color: var(--text);
       text-transform: uppercase;
-      letter-spacing: 0.8px;
-      margin: 16px 0 10px 0;
+      letter-spacing: 0.7px;
+      color: #0f172a;
       padding-left: 10px;
-      border-left: 4px solid var(--accent);
-    }
-    .hint {
-      margin-top: -6px;
-      margin-bottom: 10px;
-      color: var(--muted);
-      font-size: 11px;
+      border-left: 4px solid {{ o.theme.accent }};
     }
 
-    /* ========= Tables ========= */
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-bottom: 14px;
-      font-size: 11.5px;
-    }
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
     thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
     tr { page-break-inside: avoid; }
 
     thead th {
       text-align: left;
-      padding: 10px 10px;
+      padding: 10px;
       background: #f8fafc;
-      color: var(--muted);
+      color: #64748b;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.7px;
-      font-size: 9.5px;
-      border-bottom: 2px solid var(--border);
+      font-size: 9px;
+      border-bottom: 2px solid #e5e7eb;
     }
+
     tbody td {
-      padding: 10px 10px;
-      border-bottom: 1px solid var(--border-2);
-      vertical-align: middle;
-      color: var(--text); /* PRETO */
+      padding: 10px;
+      border-bottom: 1px solid #eef2f7;
+      vertical-align: top;
+      color: #334155;
     }
-    tbody tr:nth-child(even) td { background: #fbfdff; }
+
+    tbody tr:nth-child(even) td { background: {{ o.theme.rowAlt }}; }
 
     .right { text-align: right; }
-    .bold { font-weight: 700; color: var(--text); }
+    .bold { font-weight: 700; color: #0f172a; }
 
-    /* ========= Pills / mini bars ========= */
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 10.5px;
+      color: #475569;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .rank { width: 28px; color: #94a3b8; text-align: center; }
+
     .pill-ext {
+      display: inline-block;
       background: #eef2ff;
       color: #3730a3;
       padding: 2px 8px;
@@ -242,160 +187,36 @@
       font-weight: 700;
       font-size: 10px;
       border: 1px solid #e0e7ff;
-      display: inline-block;
-      min-width: 44px;
+    }
+
+    .empty {
       text-align: center;
+      color: #64748b;
+      padding: 24px;
+      border: 1px dashed #e2e8f0;
+      border-radius: 10px;
+      margin-bottom: 12px;
     }
-    .mini-bar {
-      height: 8px;
-      background: #e2e8f0;
-      border-radius: 999px;
-      overflow: hidden;
-    }
-    .mini-fill {
-      height: 100%;
-      background: var(--accent);
-      border-radius: 999px;
-    }
-    .pct {
-      color: var(--muted);
-      font-size: 10px;
-      margin-left: 6px;
-      white-space: nowrap;
-    }
-
-    /* ========= “Insights” cards ========= */
-    .insights-row {
-      display: table;
-      width: 100%;
-      border-spacing: 14px 0;
-      margin: 0 -14px 14px -14px;
-    }
-    .insight-col {
-      display: table-cell;
-      width: 50%;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 12px 12px 10px 12px;
-      vertical-align: top;
-    }
-    .insight-title {
-      font-size: 10px;
-      font-weight: 700;
-      text-transform: uppercase;
-      color: var(--muted);
-      letter-spacing: 0.8px;
-      margin-bottom: 10px;
-    }
-    .insight-row {
-      display: table;
-      width: 100%;
-      padding: 8px 0;
-      border-bottom: 1px solid var(--border-2);
-    }
-    .insight-row:last-child { border-bottom: none; }
-    .insight-a, .insight-b, .insight-c { display: table-cell; vertical-align: middle; }
-    .insight-a { width: 70px; }
-    .insight-b { width: auto; padding-right: 10px; }
-    .insight-c { width: 90px; text-align: right; font-weight: 700; }
-
-    .path {
-      color: var(--text);
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-    .path-sub {
-      color: var(--muted);
-      font-size: 10.5px;
-      margin-top: 2px;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-
-    /* ========= “Maiores arquivos” como lista SaaS ========= */
-    .file-list {
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-      background: var(--surface);
-    }
-    .file-row {
-      display: table;
-      width: 100%;
-      border-bottom: 1px solid var(--border-2);
-      padding: 10px 12px;
-    }
-    .file-row:last-child { border-bottom: none; }
-
-    .file-rank, .file-main, .file-size {
-      display: table-cell;
-      vertical-align: top;
-    }
-    .file-rank {
-      width: 46px;
-      text-align: center;
-      padding-top: 2px;
-    }
-    .rank-badge {
-      display: inline-block;
-      min-width: 28px;
-      padding: 4px 8px;
-      border-radius: 999px;
-      background: #f1f5f9;
-      border: 1px solid var(--border);
-      color: var(--text);
-      font-weight: 700;
-      font-size: 11px;
-    }
-
-    .file-main { padding: 0 10px; }
-    .file-name { font-weight: 700; color: var(--text); font-size: 12px; }
-    .file-path { color: var(--text); font-size: 11px; margin-top: 2px; overflow-wrap: anywhere; word-break: break-word; }
-    .file-size { width: 110px; text-align: right; font-weight: 700; color: var(--accent); }
-
-    .bar {
-      margin-top: 8px;
-      height: 8px;
-      background: #e2e8f0;
-      border-radius: 999px;
-      overflow: hidden;
-    }
-    .bar-fill {
-      height: 100%;
-      background: var(--accent);
-      border-radius: 999px;
-    }
-
-    .empty-state { text-align: center; color: var(--muted-2); padding: 26px; }
-
-    /* ========= SVG (se você insistir em usar) ========= */
-    .svg-wrapper { width: 100%; overflow: hidden; }
-    .svg-wrapper svg { width: 100%; height: auto; display: block; }
-    /* tenta forçar texto do SVG a ficar escuro (depende do gerador) */
-    .svg-wrapper svg text { fill: #0f172a !important; }
-
   </style>
 </head>
 
 <body>
-  <div class="header-section">
+  <div class="header">
     <div class="header-grid">
-      <div class="header-left">
+      <div class="h-left">
         <div class="brand">KEEPLY ANALYTICS</div>
-        <div class="report-title">Relatório de Inventário</div>
+        <div class="title">Relatório de Inventário</div>
       </div>
-
-      <div class="header-right">
-        <div class="meta-box">
+      <div class="h-right">
+        <div class="meta">
           <div class="meta-label">Gerado em</div>
           <div class="meta-value">{{ fmt.now() }}</div>
         </div>
-        <div class="meta-box">
+        <div class="meta">
           <div class="meta-label">Snapshot</div>
           <div class="meta-value">#{{ m.summary.scanId | default("1") }}</div>
         </div>
-        <div class="meta-box">
+        <div class="meta">
           <div class="meta-label">Total Arq.</div>
           <div class="meta-value">{{ fmt.format(m.summary.totalFiles) }}</div>
         </div>
@@ -403,170 +224,115 @@
     </div>
   </div>
 
-  <div class="main-content">
-    <div class="page-surface">
+  <div class="content">
 
-      <div class="kpi-container no-break">
-        <div class="kpi-card">
-          <div class="kpi-title">Arquivos Totais</div>
-          <div class="kpi-number">{{ fmt.format(m.summary.totalFiles) }}</div>
-        </div>
-
-        <div class="kpi-card">
-          <div class="kpi-title">Tamanho Total</div>
-          <div class="kpi-number">{{ fmt.bytes(m.summary.totalBytes) }}</div>
-        </div>
-
-        <div class="kpi-card">
-          <div class="kpi-title">Pasta Raiz</div>
-          <div class="kpi-path">{{ m.summary.rootPath }}</div>
-        </div>
+    <div class="kpis">
+      <div class="kpi">
+        <div class="kpi-label">Arquivos totais</div>
+        <div class="kpi-value">{{ fmt.format(m.summary.totalFiles) }}</div>
+        <div class="kpi-sub">Inventário do snapshot atual</div>
       </div>
 
-      <div class="status-bar no-break">
-        <span class="status-chip">NEW <span class="status-val">{{ fmt.format(m.statusCounts["NEW"] | default(0)) }}</span></span>
-        <span class="status-chip">MODIFIED <span class="status-val">{{ fmt.format(m.statusCounts["MODIFIED"] | default(0)) }}</span></span>
-        <span class="status-chip">STABLE <span class="status-val">{{ fmt.format(m.statusCounts["STABLE"] | default(0)) }}</span></span>
-        <span class="status-chip">OTHER <span class="status-val">{{ fmt.format(m.statusCounts["OTHER"] | default(0)) }}</span></span>
+      <div class="kpi">
+        <div class="kpi-label">Tamanho total</div>
+        <div class="kpi-value">{{ fmt.bytes(m.summary.totalBytes) }}</div>
+        <div class="kpi-sub">Soma de todos os arquivos</div>
       </div>
 
-      <!-- INSIGHTS (BARRAS HTML = sempre legível) -->
-      <div class="insights-row no-break">
-        <div class="insight-col">
-          <div class="insight-title">Top Extensões por Tamanho (share do total)</div>
-
-          {% set totalBytes = m.summary.totalBytes | default(0) %}
-          {% for t in m.topTypes|slice(0, 8) %}
-            {% set pct = (totalBytes > 0) ? ((t.bytes * 100) / totalBytes) : 0 %}
-            <div class="insight-row">
-              <div class="insight-a"><span class="pill-ext">{{ t.ext }}</span></div>
-              <div class="insight-b">
-                <div class="mini-bar"><div class="mini-fill" style="width: {{ pct|round(0) }}%;"></div></div>
-                <div class="path-sub">{{ fmt.format(t.count) }} arquivos <span class="pct">• {{ pct|round(0) }}%</span></div>
-              </div>
-              <div class="insight-c">{{ fmt.bytes(t.bytes) }}</div>
-            </div>
-          {% else %}
-            <div class="empty-state">Sem dados</div>
-          {% endfor %}
-        </div>
-
-        <div class="insight-col">
-          <div class="insight-title">Top Pastas por Tamanho (comparativo)</div>
-
-          {% set firstFolder = m.topFolders|first %}
-          {% set maxFolder = firstFolder ? firstFolder.bytes : 0 %}
-
-          {% for f in m.topFolders|slice(0, 6) %}
-            {% set w = (maxFolder > 0) ? ((f.bytes * 100) / maxFolder) : 0 %}
-            <div class="insight-row">
-              <div class="insight-a"></div>
-              <div class="insight-b">
-                <div class="path">{{ f.folder }}</div>
-                <div class="mini-bar" style="margin-top:6px;"><div class="mini-fill" style="width: {{ w|round(0) }}%;"></div></div>
-              </div>
-              <div class="insight-c">{{ fmt.bytes(f.bytes) }}</div>
-            </div>
-          {% else %}
-            <div class="empty-state">Sem dados</div>
-          {% endfor %}
-        </div>
+      <div class="kpi">
+        <div class="kpi-label">Pasta raiz</div>
+        <div class="kpi-value" style="font-size: 14px;">&nbsp;</div>
+        <div class="kpi-sub mono">{{ m.summary.rootPath }}</div>
       </div>
-
-      <!-- Se você quiser manter os SVGs, deixa aqui (mas agora você não depende deles) -->
-      <div class="section no-break">
-        <h2>Distribuição por Tipo</h2>
-        <div class="hint">Pode representar <b>tamanho</b> (MB/GB) por extensão — compare com “Top Extensões por Tamanho” acima.</div>
-        <div class="svg-wrapper">
-          {% if c.typesSvg is not empty %}
-            {{ c.typesSvg | raw }}
-          {% else %}
-            <div class="empty-state">Sem gráfico SVG (usando barras acima).</div>
-          {% endif %}
-        </div>
-      </div>
-
-      <div class="section no-break">
-        <h2>Tipos de Arquivo</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Extensão</th>
-              <th class="right">Contagem</th>
-              <th class="right">Tamanho</th>
-              <th>Share</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% set totalBytes2 = m.summary.totalBytes | default(0) %}
-            {% for t in m.topTypes %}
-              {% set pct2 = (totalBytes2 > 0) ? ((t.bytes * 100) / totalBytes2) : 0 %}
-              <tr>
-                <td><span class="pill-ext">{{ t.ext }}</span></td>
-                <td class="right">{{ fmt.format(t.count) }}</td>
-                <td class="right bold">{{ fmt.bytes(t.bytes) }}</td>
-                <td>
-                  <div class="mini-bar"><div class="mini-fill" style="width: {{ pct2|round(0) }}%;"></div></div>
-                  <span class="pct">{{ pct2|round(0) }}%</span>
-                </td>
-              </tr>
-            {% else %}
-              <tr><td colspan="4" class="empty-state">Nenhum dado</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-
-      <div class="section no-break">
-        <h2>Pastas Mais Pesadas</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Caminho</th>
-              <th class="right">Arquivos</th>
-              <th class="right">Tamanho</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for f in m.topFolders %}
-              <tr>
-                <td class="path">{{ f.folder }}</td>
-                <td class="right">{{ fmt.format(f.count) }}</td>
-                <td class="right bold">{{ fmt.bytes(f.bytes) }}</td>
-              </tr>
-            {% else %}
-              <tr><td colspan="3" class="empty-state">Nenhum dado</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-
-      <div class="section">
-        <h2>Maiores Arquivos Individuais</h2>
-        <div class="hint">Lista estilo SaaS: rank + caminho legível + barra proporcional ao maior arquivo.</div>
-
-        {% set firstFile = m.topFiles|first %}
-        {% set maxFile = firstFile ? firstFile.sizeBytes : 0 %}
-
-        <div class="file-list">
-          {% for f in m.topFiles %}
-            {% set w = (maxFile > 0) ? ((f.sizeBytes * 100) / maxFile) : 0 %}
-            <div class="file-row">
-              <div class="file-rank"><span class="rank-badge">{{ loop.index }}</span></div>
-              <div class="file-main">
-                <div class="file-name">{{ f.name }}</div>
-                <div class="file-path">{{ f.pathRel }}</div>
-                <div class="bar"><div class="bar-fill" style="width: {{ w|round(0) }}%;"></div></div>
-              </div>
-              <div class="file-size">{{ fmt.bytes(f.sizeBytes) }}</div>
-            </div>
-          {% else %}
-            <div class="empty-state">Nenhum dado</div>
-          {% endfor %}
-        </div>
-      </div>
-
     </div>
+
+    <div class="status-row">
+      <span class="chip">NEW <b>{{ fmt.format(m.statusCounts["NEW"]) }}</b></span>
+      <span class="chip">MODIFIED <b>{{ fmt.format(m.statusCounts["MODIFIED"]) }}</b></span>
+      <span class="chip">STABLE <b>{{ fmt.format(m.statusCounts["STABLE"]) }}</b></span>
+      <span class="chip">OTHER <b>{{ fmt.format(m.statusCounts["OTHER"]) }}</b></span>
+    </div>
+
+    <div class="charts">
+      <div class="chart">
+        <div class="chart-title">Tamanho por extensão</div>
+        {% if c.typesSizePng is empty %}
+          <div class="empty">Sem dados para gerar gráfico.</div>
+        {% else %}
+          <img class="chart-img" src="{{ c.typesSizePng }}" alt="Tamanho por extensão"/>
+        {% endif %}
+      </div>
+
+      <div class="chart">
+        <div class="chart-title">Arquivos por extensão</div>
+        {% if c.typesCountPng is empty %}
+          <div class="empty">Sem dados para gerar gráfico.</div>
+        {% else %}
+          <img class="chart-img" src="{{ c.typesCountPng }}" alt="Arquivos por extensão"/>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="chart chart-wide">
+      <div class="chart-title">Distribuição por status</div>
+      {% if c.statusPng is empty %}
+        <div class="empty">Sem dados para gerar gráfico.</div>
+      {% else %}
+        <img class="chart-img" src="{{ c.statusPng }}" alt="Distribuição por status"/>
+      {% endif %}
+    </div>
+
+    <h2>Pastas mais pesadas</h2>
+    {% if m.topFolders is empty %}
+      <div class="empty">Nenhuma pasta encontrada.</div>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>Caminho</th>
+            <th class="right">Arquivos</th>
+            <th class="right">Tamanho</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in m.topFolders %}
+          <tr>
+            <td class="mono">{{ f.folder }}</td>
+            <td class="right bold">{{ fmt.format(f.count) }}</td>
+            <td class="right bold">{{ fmt.bytes(f.bytes) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    <h2>Maiores arquivos individuais</h2>
+    {% if m.topFiles is empty %}
+      <div class="empty">Nenhum arquivo encontrado.</div>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th class="rank">#</th>
+            <th>Arquivo</th>
+            <th class="right">Tamanho</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in m.topFiles %}
+          <tr>
+            <td class="rank">{{ loop.index }}</td>
+            <td>
+              <div class="bold">{{ t.name }}</div>
+              <div class="mono">{{ fmt.pathFull(t.rootPath, t.pathRel) }}</div>
+            </td>
+            <td class="right bold">{{ fmt.bytes(t.sizeBytes) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
   </div>
 </body>
 </html>
