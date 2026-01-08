@@ -16,119 +16,63 @@ import io.github.cdimascio.dotenv.Dotenv;
  * fornecer credenciais de segurança para o banco de dados.
  */
 public final class Config {
-
     private static final String APP_NAME = "Keeply";
-    
-    // Extensão personalizada para "disfarçar" o arquivo
     private static final String DEFAULT_DB_NAME = "data.keeply";
-    
-    // Variáveis de ambiente a serem checadas (ordem de prioridade)
     private static final String ENV_DB_NAME = "KEEPLY_DB_NAME";
     private static final String ENV_DB_ENCRYPTION = "KEEPLY_DB_ENCRYPTION";
     private static final String ENV_KEY_PRIMARY = "KEEPLY_SECRET_KEY";
     private static final String ENV_KEY_SECONDARY = "SECRET_KEY";
     private static final String ENV_DATA_DIR = "KEEPLY_DATA_DIR";
-
-    // System property overrides (useful for tests/CI)
     private static final String PROP_DB_NAME = "keeply.dbName";
     private static final String PROP_DB_ENCRYPTION = "keeply.dbEncryption";
     private static final String PROP_SECRET_KEY = "keeply.secretKey";
     private static final String PROP_DATA_DIR = "keeply.dataDir";
-
-    // O caminho e a chave são calculados estaticamente na inicialização da classe
-    // Logger must be initialized before any static initializer that may use it
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Config.class);
     private static final Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
-
     private static final Preferences prefs = Preferences.userNodeForPackage(Main.class);
-
     private static volatile String cachedDbPathKey;
     private static volatile Path cachedDbPath;
-
-    // Construtor privado para impedir instanciação (Utility Class)
     private Config() {}
-
-    /**
-     * Retorna a URL de Conexão JDBC.
-     */
     public static String getDbUrl() {
-        // IMPORTANTE:
-        // - Sem criptografia: conecta direto no arquivo base.
-        // - Com criptografia de arquivo (AES): conecta no arquivo runtime (plaintext) e persiste cifrado em *.enc.
-        return "jdbc:sqlite:" + getRuntimeDbFilePath().toAbsolutePath();
-    }
-
-    /**
-     * Caminho do arquivo de banco (usado para operações de limpeza/backup).
-     */
+        return "jdbc:sqlite:" + getRuntimeDbFilePath().toAbsolutePath();}
     public static Path getDbFilePath() {
-        return getEncryptedDbFilePath();
-    }
-
+        return getEncryptedDbFilePath();}
     public static Path getEncryptedDbFilePath() {
         Path dbPath = getResolvedDbPath();
         if (!isDbEncryptionEnabled()) return dbPath;
-        // Não sobrescreve o banco atual (data.keeply). Cria um novo arquivo cifrado ao lado.
-        return dbPath.resolveSibling(dbPath.getFileName().toString() + ".enc");
-    }
-
+        return dbPath.resolveSibling(dbPath.getFileName().toString() + ".enc");}
     public static Path getRuntimeDbFilePath() {
         Path dbPath = getResolvedDbPath();
         if (!isDbEncryptionEnabled()) return dbPath;
-        // Arquivo plaintext temporário usado somente durante execução.
-        return dbPath.resolveSibling(dbPath.getFileName().toString() + ".runtime.sqlite");
-    }
-
+        return dbPath.resolveSibling(dbPath.getFileName().toString() + ".runtime.sqlite");}
     public static boolean isDbEncryptionEnabled() {
-        return resolveDbEncryptionEnabled();
-    }
-
-    /**
-     * Retorna a chave para desbloquear o arquivo data.keeply.
-     */
+        return resolveDbEncryptionEnabled();}
     public static String getSecretKey() {
         if (!isDbEncryptionEnabled()) return "";
-        return resolveSecretKey();
-    }
-
+        return resolveSecretKey();}
     private static Path getResolvedDbPath() {
         String dbFileName = resolveDbFileName();
         String overrideDir = getEnvOrDotenv(ENV_DATA_DIR);
-
         String key = (overrideDir == null ? "" : overrideDir.trim()) + "|" + dbFileName;
         Path current = cachedDbPath;
         if (current != null && key.equals(cachedDbPathKey)) {
-            return current;
-        }
-
+            return current;}
         synchronized (Config.class) {
             current = cachedDbPath;
             if (current != null && key.equals(cachedDbPathKey)) {
-                return current;
-            }
+                return current;}
             Path resolved = resolveDbPath(dbFileName);
             cachedDbPathKey = key;
             cachedDbPath = resolved;
-            return resolved;
-        }
-    }
-
-    // Métodos de compatibilidade
+            return resolved;}}
     public static String getDbUser() { return ""; }
     public static String getDbPass() { return ""; }
-
     public static void saveLastPath(String path) {
-        prefs.put("last_scan_path", path);
-    }
-
+        prefs.put("last_scan_path", path);}
     public static String getLastPath() {
-        return prefs.get("last_scan_path", System.getProperty("user.home"));
-    }
-
+        return prefs.get("last_scan_path", System.getProperty("user.home"));}
     public static void saveLastBackupDestination(String path) {
-        prefs.put("last_backup_dest", path);
-    }
-
+        prefs.put("last_backup_dest", path);}
     public static String getLastBackupDestination() {
         String home = System.getProperty("user.home");
         String fallback = (home == null || home.isBlank())

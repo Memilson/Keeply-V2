@@ -6,11 +6,14 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.*;
+import javafx.scene.control.OverrunStyle;
 import javafx.scene.layout.*;
 import javafx.scene.shape.SVGPath;
 
 import java.util.*;
 import java.util.function.Consumer;
+
+import org.apache.commons.lang3.StringUtils;
 
 import com.keeply.app.database.DatabaseBackup.FileHistoryRow;
 import com.keeply.app.database.DatabaseBackup.InventoryRow;
@@ -41,8 +44,12 @@ public final class InventoryScreen {
     // Tabelas
     private final TreeTableView<FileNode> tree = new TreeTableView<>();
     private final TabPane dataTabs = new TabPane();
-    private final TableView<FileSizeRow> largestFilesTable = new TableView<>();
-    private final TableView<FolderSizeRow> largestFoldersTable = new TableView<>();
+
+    // Top views (blocos)
+    private final TilePane topFilesTiles = new TilePane();
+    private final ScrollPane topFilesScroll = new ScrollPane(topFilesTiles);
+    private final TilePane topFoldersTiles = new TilePane();
+    private final ScrollPane topFoldersScroll = new ScrollPane(topFoldersTiles);
 
     private Consumer<String> onFileSelected;
     private Consumer<String> onShowHistory;
@@ -50,7 +57,7 @@ public final class InventoryScreen {
 
     public Node content() {
         configureTree();
-        configureLargestTables();
+        configureLargestViews();
 
         VBox layout = new VBox();
         layout.setFillWidth(true);
@@ -111,8 +118,8 @@ public final class InventoryScreen {
         dataTabs.getStyleClass().add("modern-tabs");
         
         Tab treeTab = new Tab("Estrutura de Arquivos", tree);
-        Tab filesTab = new Tab("Top Arquivos", largestFilesTable);
-        Tab foldersTab = new Tab("Top Pastas", largestFoldersTable);
+        Tab filesTab = new Tab("Top Arquivos", topFilesScroll);
+        Tab foldersTab = new Tab("Top Pastas", topFoldersScroll);
         
         dataTabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
         dataTabs.getTabs().setAll(treeTab, filesTab, foldersTab);
@@ -237,54 +244,114 @@ public final class InventoryScreen {
 
     // --- Outros Componentes (Tabelas e Diálogos) ---
 
-    private void configureLargestTables() {
-        // Configuração simples, o CSS trata do visual
-        largestFilesTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
-        largestFilesTable.setPlaceholder(new Label("Nenhum arquivo encontrado."));
+    private void configureLargestViews() {
+        configureTilePane(topFilesTiles);
+        configureTilePane(topFoldersTiles);
 
-        TableColumn<FileSizeRow, String> fName = new TableColumn<>("Arquivo");
-        fName.setCellValueFactory(p -> new SimpleStringProperty(p.getValue().name()));
+        topFilesScroll.setFitToWidth(true);
+        topFilesScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        topFilesScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        topFilesScroll.setPannable(true);
 
-        TableColumn<FileSizeRow, String> fPath = new TableColumn<>("Caminho Relativo");
-        fPath.setCellValueFactory(p -> new SimpleStringProperty(p.getValue().path()));
+        topFoldersScroll.setFitToWidth(true);
+        topFoldersScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        topFoldersScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        topFoldersScroll.setPannable(true);
 
-        TableColumn<FileSizeRow, String> fSize = new TableColumn<>("Tamanho");
-        fSize.setCellValueFactory(p -> new SimpleStringProperty(humanSize(p.getValue().sizeBytes())));
-        fSize.setCellFactory(c -> new TableCell<>() {
-            {
-                getStyleClass().add("cell-right");
-            }
+        topFilesScroll.setContent(topFilesTiles);
+        topFoldersScroll.setContent(topFoldersTiles);
+    }
 
-            @Override
-            protected void updateItem(String item, boolean empty) {
-                super.updateItem(item, empty);
-                setText(empty ? null : item);
-            }
-        });
+    private static void configureTilePane(TilePane pane) {
+        pane.setPadding(new Insets(14));
+        pane.setHgap(12);
+        pane.setVgap(12);
+        pane.setPrefTileWidth(420);
+        pane.setPrefTileHeight(120);
+        pane.setTileAlignment(Pos.TOP_LEFT);
+    }
 
-        largestFilesTable.getColumns().setAll(List.of(fName, fPath, fSize));
+    private Node buildTopFileCard(FileSizeRow row) {
+        Label name = new Label(StringUtils.firstNonBlank(row.name(), "(sem nome)"));
+        name.getStyleClass().add("flow-title");
+        name.setTextOverrun(OverrunStyle.ELLIPSIS);
+        name.setMaxWidth(Double.MAX_VALUE);
 
-        largestFoldersTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
-        largestFoldersTable.setPlaceholder(new Label("Nenhuma pasta encontrada."));
+        Label size = new Label(humanSize(row.sizeBytes()));
+        size.getStyleClass().add("card-h2");
 
-        TableColumn<FolderSizeRow, String> dPath = new TableColumn<>("Pasta");
-        dPath.setCellValueFactory(p -> new SimpleStringProperty(p.getValue().path()));
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        HBox header = new HBox(10, name, spacer, size);
+        header.setAlignment(Pos.CENTER_LEFT);
 
-        TableColumn<FolderSizeRow, String> dSize = new TableColumn<>("Tamanho Total");
-        dSize.setCellValueFactory(p -> new SimpleStringProperty(humanSize(p.getValue().sizeBytes())));
-        dSize.setCellFactory(c -> new TableCell<>() {
-            {
-                getStyleClass().add("cell-right");
-            }
+        String dir = extractParentDir(row.path());
+        Label path = new Label(dir.isBlank() ? "(raiz)" : dir);
+        path.getStyleClass().add("flow-subtitle");
+        path.setTextOverrun(OverrunStyle.ELLIPSIS);
+        path.setMaxWidth(Double.MAX_VALUE);
 
-            @Override
-            protected void updateItem(String item, boolean empty) {
-                super.updateItem(item, empty);
-                setText(empty ? null : item);
-            }
-        });
+        VBox card = new VBox(6, header, path);
+        card.getStyleClass().add("card");
+        card.setPadding(new Insets(12));
+        card.setMinHeight(Region.USE_PREF_SIZE);
+        return card;
+    }
 
-        largestFoldersTable.getColumns().setAll(List.of(dPath, dSize));
+    private Node buildTopFolderCard(FolderSizeRow row) {
+        String p = row.path();
+        String nameText = extractLastSegment(p);
+        if (nameText.isBlank()) nameText = "(raiz)";
+
+        Label name = new Label(nameText);
+        name.getStyleClass().add("flow-title");
+        name.setTextOverrun(OverrunStyle.ELLIPSIS);
+        name.setMaxWidth(Double.MAX_VALUE);
+
+        Label size = new Label(humanSize(row.sizeBytes()));
+        size.getStyleClass().add("card-h2");
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        HBox header = new HBox(10, name, spacer, size);
+        header.setAlignment(Pos.CENTER_LEFT);
+
+        Label path = new Label(p == null ? "" : p);
+        path.getStyleClass().add("flow-subtitle");
+        path.setTextOverrun(OverrunStyle.ELLIPSIS);
+        path.setMaxWidth(Double.MAX_VALUE);
+
+        double pct = Math.max(0, Math.min(1, row.percentOfTotal()));
+        Label pctLabel = new Label(String.format(Locale.US, "%.0f%%", pct * 100.0));
+        pctLabel.getStyleClass().add("flow-subtitle");
+
+        ProgressBar bar = new ProgressBar(pct);
+        bar.getStyleClass().addAll("metric-progress", "metric-progress-soft");
+        bar.setMaxWidth(Double.MAX_VALUE);
+
+        HBox pctRow = new HBox(10, pctLabel, bar);
+        pctRow.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(bar, Priority.ALWAYS);
+
+        VBox card = new VBox(6, header, path, pctRow);
+        card.getStyleClass().add("card");
+        card.setPadding(new Insets(12));
+        card.setMinHeight(Region.USE_PREF_SIZE);
+        return card;
+    }
+
+    private static String extractParentDir(String pathRel) {
+        if (pathRel == null) return "";
+        String p = pathRel.replace('\\', '/');
+        int i = p.lastIndexOf('/');
+        return (i <= 0) ? "" : p.substring(0, i);
+    }
+
+    private static String extractLastSegment(String path) {
+        if (path == null) return "";
+        String p = path.replace('\\', '/');
+        int i = p.lastIndexOf('/');
+        return (i >= 0 && i + 1 < p.length()) ? p.substring(i + 1) : p;
     }
 
     // [O RESTO DO CÓDIGO (renderLargest, renderTree, showHistoryDialog, etc) MANTÉM-SE IGUAL AO ORIGINAL]
@@ -295,9 +362,11 @@ public final class InventoryScreen {
     // --- Mantendo os métodos lógicos para o código compilar ---
     
     public void renderLargest(List<InventoryRow> rows) {
-        largestFilesTable.getItems().clear();
-        largestFoldersTable.getItems().clear();
+        topFilesTiles.getChildren().clear();
+        topFoldersTiles.getChildren().clear();
         if (rows == null || rows.isEmpty()) return;
+
+        long totalBytes = rows.stream().mapToLong(InventoryRow::sizeBytes).sum();
 
         var fileRows = rows.stream()
                 .sorted(Comparator.comparingLong(InventoryRow::sizeBytes).reversed()
@@ -305,7 +374,7 @@ public final class InventoryScreen {
                 .limit(TOP_LIMIT)
                 .map(r -> new FileSizeRow(r.name(), r.pathRel(), r.sizeBytes()))
                 .toList();
-        largestFilesTable.getItems().setAll(fileRows);
+        for (FileSizeRow r : fileRows) topFilesTiles.getChildren().add(buildTopFileCard(r));
 
         Map<String, Long> folderSizes = new HashMap<>();
         for (InventoryRow row : rows) {
@@ -326,9 +395,9 @@ public final class InventoryScreen {
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed()
                         .thenComparing(Map.Entry.comparingByKey(String.CASE_INSENSITIVE_ORDER)))
                 .limit(TOP_LIMIT)
-                .map(e -> new FolderSizeRow(e.getKey(), e.getValue()))
+            .map(e -> new FolderSizeRow(e.getKey(), e.getValue(), totalBytes <= 0 ? 0.0 : (double) e.getValue() / (double) totalBytes))
                 .toList();
-        largestFoldersTable.getItems().setAll(folderRows);
+        for (FolderSizeRow r : folderRows) topFoldersTiles.getChildren().add(buildTopFolderCard(r));
     }
 
     public void renderTree(List<InventoryRow> rows, ScanSummary scan) {
@@ -505,7 +574,7 @@ public final class InventoryScreen {
     public record FileNode(String name, String path, boolean directory, long sizeBytes, String status, long modifiedMillis) {}
     public record SelectedNode(String pathRel, boolean directory) {}
     public record FileSizeRow(String name, String path, long sizeBytes) {}
-    public record FolderSizeRow(String path, long sizeBytes) {}
+    public record FolderSizeRow(String path, long sizeBytes, double percentOfTotal) {}
     
     private static class ScanListCell extends ListCell<ScanSummary> {
         @Override protected void updateItem(ScanSummary item, boolean e) {

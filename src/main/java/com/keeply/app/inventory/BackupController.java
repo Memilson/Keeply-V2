@@ -94,6 +94,8 @@ public final class BackupController {
                 view.clearConsole();
                 model.reset();
                 view.setScanningState(true);
+                model.phaseProperty.set("Preparando...");
+                model.progressProperty.set(-1);
             });
 
             // Cria a configuração simplificada (sem hash)
@@ -135,20 +137,33 @@ public final class BackupController {
         setScanningState(true);
 
         Thread.ofVirtual().name("keeply-db-wipe").start(() -> {
-            log("!!! INICIANDO WIPE (LIMPEZA) !!!");
+            log("!!! APAGANDO BACKUPS (DB + COFRE) !!!");
             try {
+                ui(() -> {
+                    model.phaseProperty.set("Apagando backups...");
+                    model.progressProperty.set(-1);
+                });
                 requestStopAndWait(5, TimeUnit.SECONDS);
                 var t = scanThread;
                 if (t != null && t.isAlive()) {
                     throw new IllegalStateException("Backup ainda está rodando. Aguarde finalizar/cancelar e tente novamente.");
                 }
+
+                // 1) Delete backup vault binaries (.keeply/storage) under the configured destination(s)
+                wipeBackupStorageBestEffort();
+
+                // 2) Delete SQLite DB files (history/metadata)
                 performWipeLogic();
-                log(">> SUCESSO: Banco de dados limpo e otimizado.");
+                log(">> SUCESSO: Backups apagados (banco + cofre). O app recria o DB no próximo backup.");
             } catch (Exception e) {
                 log(">> ERRO NO WIPE: " + safeMsg(e));
                 logger.error("Erro no wipe do banco", e);
             } finally {
                 setScanningState(false);
+                ui(() -> {
+                    model.phaseProperty.set("Idle");
+                    model.progressProperty.set(0);
+                });
                 ui(() -> view.getStopButton().setDisable(false));
             }
         });
@@ -166,9 +181,8 @@ public final class BackupController {
     }
 
     private void performWipeLogic() throws Exception {
-        // First: delete backup storage, because user asked DB wipe == backup wipe.
-        // Best-effort: do not abort DB wipe if some storage path is locked/missing.
-        wipeBackupStorageBestEffort();
+        // Wipe only the Keeply database files (history/metadata).
+        // Backup vault deletion is handled separately.
 
         Path encrypted = Config.getEncryptedDbFilePath();
         Path runtime = Config.getRuntimeDbFilePath();
@@ -238,17 +252,20 @@ public final class BackupController {
             if (txt != null && !txt.isBlank()) baseDirs.add(Path.of(txt).toAbsolutePath().normalize());
         } catch (Exception ignored) {}
 
-        // 3) From DB base dir (historical default)
+        // 3) Legacy/default location: alongside the DB directory.
+        // Older code paths may have stored the vault under %APPDATA%\Keeply\.keeply\storage.
         try {
             Path p = Config.getEncryptedDbFilePath();
-            if (p != null && p.toAbsolutePath().getParent() != null) baseDirs.add(p.toAbsolutePath().getParent().normalize());
+            Path parent = (p == null) ? null : p.toAbsolutePath().getParent();
+            if (parent != null) baseDirs.add(parent.normalize());
         } catch (Exception ignored) {}
 
         if (baseDirs.isEmpty()) {
             baseDirs.add(Path.of(".").toAbsolutePath().normalize());
         }
 
-        log(">> Apagando backups locais (BlobStore)...");
+        log(">> Apagando backups locais (BlobStore/.keeply/storage)...");
+        log(">> Locais candidatos: " + baseDirs);
 
         boolean anyDeleted = false;
         boolean anyFailed = false;
@@ -424,7 +441,9 @@ public final class BackupController {
         model.errorsProperty.set(Long.toString(m.walkErrors.sum()));
         
         // Feedback visual de atividade
-        model.mbPerSecProperty.set(m.running.get() ? "Validating Metadata..." : "Idle");
+        String phase = m.running.get() ? "Validando metadados..." : "Idle";
+        model.mbPerSecProperty.set(phase);
+        model.phaseProperty.set(phase);
     }
 
     // --- WORKER ---
@@ -459,6 +478,10 @@ public final class BackupController {
 
             try {
                 log(">> Conectando ao Banco de Dados...");
+                ui(() -> {
+                    model.phaseProperty.set("Validando metadados...");
+                    model.progressProperty.set(-1);
+                });
                 // Pool pequeno é suficiente, pois agora só temos 1 Writer e a UI
                 DatabaseBackup.init();
                 pool = new DatabaseBackup.SimplePool(Config.getDbUrl(), 4);
@@ -468,13 +491,27 @@ public final class BackupController {
 
                 // Depois que o scan terminou, aciona o Backup (BlobStore).
                 if (!cancelRequested.get()) {
+                    ui(() -> {
+                        model.phaseProperty.set("Backup: comprimindo/gravando...");
+                        model.progressProperty.set(-1);
+                    });
                     BlobStore.runBackupIncremental(
                             java.nio.file.Path.of(rootPath),
                             config,
                             java.nio.file.Path.of(backupDest),
                             scanId,
                             cancelRequested,
-                            BackupController.this::log
+                            BackupController.this::log,
+                            (done, total) -> ui(() -> {
+                                if (total == null || total <= 0) {
+                                    model.progressProperty.set(1);
+                                    model.phaseProperty.set("Backup: nada para enviar");
+                                } else {
+                                    double p = Math.min(1.0, Math.max(0.0, done.doubleValue() / total.doubleValue()));
+                                    model.progressProperty.set(p);
+                                    model.phaseProperty.set("Backup: " + done + "/" + total);
+                                }
+                            })
                     );
                 }
 
@@ -490,6 +527,8 @@ public final class BackupController {
                     stopUiUpdater();
                     view.setScanningState(false);
                     view.getStopButton().setDisable(false);
+                    model.phaseProperty.set("Idle");
+                    model.progressProperty.set(0);
                 });
                 currentTask = null;
             }

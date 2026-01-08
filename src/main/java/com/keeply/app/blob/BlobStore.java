@@ -24,6 +24,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 public class BlobStore {
@@ -202,6 +203,18 @@ public class BlobStore {
      * Also writes the produced SHA-256 hash back into file_history.content_hash.
      */
     public static BackupResult runBackupIncremental(Path root, Backup.ScanConfig cfg, Path baseDir, long scanId, AtomicBoolean cancel, Consumer<String> uiLogger) throws Exception {
+        return runBackupIncremental(root, cfg, baseDir, scanId, cancel, uiLogger, null);
+        }
+
+        public static BackupResult runBackupIncremental(
+            Path root,
+            Backup.ScanConfig cfg,
+            Path baseDir,
+            long scanId,
+            AtomicBoolean cancel,
+            Consumer<String> uiLogger,
+            BiConsumer<Long, Long> progress
+        ) throws Exception {
         Path rootAbs = root.toAbsolutePath().normalize();
 
         if (baseDir == null) {
@@ -211,13 +224,18 @@ public class BlobStore {
         DatabaseBackup.init();
         List<String> changed = DatabaseBackup.jdbi().withExtension(KeeplyDao.class, dao -> dao.fetchChangedFilesForScan(scanId));
 
-        uiLogger.accept(">> Backup incremental: scanId=" + scanId + ", arquivos alterados=" + changed.size());
+        long total = changed.size();
+        if (progress != null) progress.accept(0L, total);
+
+        uiLogger.accept(">> Backup incremental: scanId=" + scanId + ", arquivos alterados=" + total);
         uiLogger.accept(">> Backup: destino = " + baseDir.resolve(".keeply").resolve("storage").toAbsolutePath());
 
         BlobStore store = new BlobStore(baseDir);
 
         final long[] files = {0};
         final long[] errors = {0};
+
+        long done = 0;
 
         for (String pathRel : changed) {
             if (cancel.get()) break;
@@ -232,8 +250,12 @@ public class BlobStore {
                 String hash = store.put(source);
                 DatabaseBackup.jdbi().useExtension(KeeplyDao.class, dao -> dao.setHistoryContentHash(scanId, pathRel, hash));
                 files[0]++;
+                done++;
+                if (progress != null) progress.accept(done, total);
             } catch (Exception e) {
                 errors[0]++;
+                done++;
+                if (progress != null) progress.accept(done, total);
             }
         }
 

@@ -5,6 +5,8 @@ import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
 
 import javafx.application.Platform;
+import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.StringProperty;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -45,12 +47,17 @@ public final class BackupScreen {
     // Botões de Ação
     private final Button btnScan   = new Button("Iniciar backup");
     private final Button btnStop   = new Button("Parar");
-    private final Button btnWipe   = new Button("Limpar dados");
+    private final Button btnWipe   = new Button("Apagar backups");
     private final Button btnBrowse = new Button("Alterar origem");
     private final Button btnBrowseDest = new Button("Alterar destino");
     private final Button btnDbOptions = new Button("Opções DB");
 
     private final HBox backupFooterActions = new HBox(10);
+    private final BooleanProperty scanning = new SimpleBooleanProperty(false);
+
+    private final ProgressIndicator progressRing = new ProgressIndicator();
+    private final ProgressBar progressBar = new ProgressBar(0);
+    private final Label progressLabel = new Label("Idle");
 
     public BackupScreen(Stage stage, ScanModel model) {
         this.stage = Objects.requireNonNull(stage, "stage");
@@ -146,10 +153,35 @@ public final class BackupScreen {
         TitledPane options = createOptionsPane();
         options.setExpanded(false);
 
-        card.getChildren().addAll(header, flow, options);
+        Node progress = createProgressPanel();
+
+        card.getChildren().addAll(header, flow, options, progress);
 
         root.getChildren().addAll(pageTitle, card);
         return root;
+    }
+
+    private Node createProgressPanel() {
+        progressRing.setMaxSize(20, 20);
+        progressRing.setMinSize(20, 20);
+        progressRing.progressProperty().bind(model.progressProperty);
+
+        progressBar.getStyleClass().add("metric-progress");
+        progressBar.setMaxWidth(Double.MAX_VALUE);
+        progressBar.progressProperty().bind(model.progressProperty);
+
+        progressLabel.getStyleClass().add("muted");
+        progressLabel.textProperty().bind(model.phaseProperty);
+
+        HBox top = new HBox(10, progressRing, progressLabel);
+        top.setAlignment(Pos.CENTER_LEFT);
+
+        VBox box = new VBox(8, top, progressBar);
+        box.setPadding(new Insets(8, 0, 0, 0));
+        box.visibleProperty().bind(scanning);
+        box.managedProperty().bind(scanning);
+        HBox.setHgrow(progressBar, Priority.ALWAYS);
+        return box;
     }
 
     public Node footer() {
@@ -177,6 +209,8 @@ public final class BackupScreen {
         btnDbOptions.getStyleClass().addAll("btn", "btn-secondary");
 
         btnStop.setMinWidth(92);
+
+        btnWipe.setTooltip(new Tooltip("Apaga o histórico (SQLite) e o cofre de backups (.keeply/storage)."));
 
         backupFooterActions.getChildren().setAll(btnStop, btnWipe, btnDbOptions);
         root.getChildren().addAll(btnScan, spacer, backupFooterActions);
@@ -284,7 +318,7 @@ public final class BackupScreen {
 
         btnBrowseDest.getStyleClass().addAll("btn", "btn-secondary");
         btnBrowseDest.setMinWidth(140);
-        btnBrowseDest.disableProperty().bind(destinationTypeGroup.selectedToggleProperty().isEqualTo(btnCloud));
+        btnBrowseDest.disableProperty().bind(scanning.or(destinationTypeGroup.selectedToggleProperty().isEqualTo(btnCloud)));
 
         panel.getChildren().addAll(top, destText, btnBrowseDest);
         return panel;
@@ -423,11 +457,11 @@ public final class BackupScreen {
     public String getBackupDestinationText() { return destField.getText(); }
 
     public void setScanningState(boolean isScanning) {
+        scanning.set(isScanning);
         btnScan.setDisable(isScanning);
         btnWipe.setDisable(isScanning);
         btnBrowse.setDisable(isScanning);
         pathField.setDisable(isScanning);
-        btnBrowseDest.setDisable(isScanning);
         destField.setDisable(isScanning);
         btnStop.setDisable(!isScanning);
 
@@ -447,9 +481,13 @@ public final class BackupScreen {
 
     public boolean confirmWipe() {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
-        alert.setTitle("Confirmar limpeza");
-        alert.setHeaderText("Apagar todos os dados e backups?");
-        alert.setContentText("Isso removerá o histórico e os arquivos do cofre (.keeply/storage).");
+        alert.setTitle("Confirmar remoção");
+        alert.setHeaderText("Apagar backups do Keeply?");
+        alert.setContentText(
+                "Isso apagará:\n" +
+                "• O histórico/banco de dados (SQLite)\n" +
+                "• Os binários armazenados no cofre (.keeply/storage)\n\n" +
+                "Isso NÃO apaga os arquivos originais da sua pasta de origem.");
         Optional<ButtonType> res = alert.showAndWait();
         return res.isPresent() && res.get() == ButtonType.OK;
     }

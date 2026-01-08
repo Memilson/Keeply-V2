@@ -351,6 +351,10 @@
     -fx-accent: -fx-primary;
 }
 
+.metric-progress-soft {
+    -fx-accent: derive(-fx-primary, 35%);
+}
+
 .status-text.status-ok {
     -fx-text-fill: -fx-success;
     -fx-font-weight: 700;

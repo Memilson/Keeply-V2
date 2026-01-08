@@ -1,6 +1,8 @@
 package com.keeply.app.templates;
 
 import javafx.application.Platform;
+import javafx.beans.property.DoubleProperty;
+import javafx.beans.property.SimpleDoubleProperty;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.beans.property.StringProperty;
 import javafx.geometry.Insets;
@@ -52,6 +54,10 @@ public final class KeeplyTemplate {
         public final StringProperty dbBatchesProperty    = new SimpleStringProperty("0");
         public final StringProperty errorsProperty       = new SimpleStringProperty("0");
 
+        // -1 = indeterminate (spinning)
+        public final DoubleProperty progressProperty     = new SimpleDoubleProperty(0);
+        public final StringProperty phaseProperty        = new SimpleStringProperty("Idle");
+
         public void reset() {
             Platform.runLater(() -> {
                 filesScannedProperty.set("0");
@@ -59,6 +65,9 @@ public final class KeeplyTemplate {
                 rateProperty.set("0");
                 dbBatchesProperty.set("0");
                 errorsProperty.set("0");
+
+                progressProperty.set(0);
+                phaseProperty.set("Idle");
             });
         }
     }

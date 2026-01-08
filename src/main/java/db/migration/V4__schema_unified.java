@@ -7,28 +7,30 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-public final class V2__legacy_fixups extends BaseJavaMigration {
+public final class V4__schema_unified extends BaseJavaMigration {
 
     @Override
     public void migrate(Context context) throws Exception {
         Connection conn = context.getConnection();
+
         ensureSchema(conn);
-        if (tableExists(conn, "scans")) {
-            addColumnIfMissing(conn, "scans", "total_usage", "INTEGER");
-            addColumnIfMissing(conn, "scans", "status", "TEXT");
-        }
 
-        if (tableExists(conn, "file_inventory")) {
-            addColumnIfMissing(conn, "file_inventory", "root_path", "TEXT");
-            addColumnIfMissing(conn, "file_inventory", "last_scan_id", "INTEGER");
-        }
+        // Ensure expected columns exist (idempotent upgrades)
+        addColumnIfMissing(conn, "scans", "total_usage", "INTEGER");
+        addColumnIfMissing(conn, "scans", "status", "TEXT");
 
-        if (tableExists(conn, "file_history")) {
-            addColumnIfMissing(conn, "file_history", "root_path", "TEXT");
-            addColumnIfMissing(conn, "file_history", "created_millis", "INTEGER");
-            addColumnIfMissing(conn, "file_history", "modified_millis", "INTEGER");
-        }
+        addColumnIfMissing(conn, "file_inventory", "root_path", "TEXT");
+        addColumnIfMissing(conn, "file_inventory", "last_scan_id", "INTEGER");
+        addColumnIfMissing(conn, "file_inventory", "status", "TEXT");
+        addColumnIfMissing(conn, "file_inventory", "created_millis", "INTEGER");
+        addColumnIfMissing(conn, "file_inventory", "modified_millis", "INTEGER");
 
+        addColumnIfMissing(conn, "file_history", "root_path", "TEXT");
+        addColumnIfMissing(conn, "file_history", "created_millis", "INTEGER");
+        addColumnIfMissing(conn, "file_history", "modified_millis", "INTEGER");
+        addColumnIfMissing(conn, "file_history", "content_hash", "TEXT");
+
+        // Best-effort data hygiene for older schemas
         backfillRootPaths(conn);
         normalizeStatuses(conn);
         backfillScanStatus(conn);
@@ -71,7 +73,8 @@ public final class V2__legacy_fixups extends BaseJavaMigration {
                     status_event TEXT,
                     created_at TEXT,
                     created_millis INTEGER,
-                    modified_millis INTEGER
+                    modified_millis INTEGER,
+                    content_hash TEXT
                 )
                 """);
 
@@ -90,10 +93,9 @@ public final class V2__legacy_fixups extends BaseJavaMigration {
     }
 
     private void addColumnIfMissing(Connection conn, String table, String column, String type) throws SQLException {
-        if (!columnExists(conn, table, column)) {
-            try (var st = conn.createStatement()) {
-                st.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
-            }
+        if (!tableExists(conn, table) || columnExists(conn, table, column)) return;
+        try (var st = conn.createStatement()) {
+            st.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
         }
     }
 
