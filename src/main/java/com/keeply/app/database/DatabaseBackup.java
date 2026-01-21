@@ -17,13 +17,15 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.Arrays;
 
+/**
+ * Gerencia banco de dados, migrações e criptografia.
+ */
 public final class DatabaseBackup {
 
     private static final Logger logger = LoggerFactory.getLogger(DatabaseBackup.class);
 
     private DatabaseBackup() {}
 
-    // --- RECORDS (Data Models) ---
     public record InventoryRow(String rootPath, String pathRel, String name, long sizeBytes, long modifiedMillis,
                                long createdMillis, String status) {}
     public record ScanSummary(long scanId, String rootPath, String startedAt, String finishedAt) {}
@@ -32,7 +34,6 @@ public final class DatabaseBackup {
     public record SnapshotBlobRow(String pathRel, String contentHash) {}
     public record CapacityReport(String date, long totalBytes, long growthBytes) {}
 
-    // --- CONNECTION POOL (HikariCP singleton) ---
     private static HikariDataSource dataSource;
     private static Jdbi jdbi;
     private static boolean migrated = false;
@@ -100,7 +101,6 @@ public final class DatabaseBackup {
         StringBuilder r = new StringBuilder();
         boolean ok = true;
 
-        // 1) Status básico do DB at-rest
         try {
             DbEncryptionStatus s = getEncryptionStatus();
             r.append("Criptografia habilitada: ").append(s.encryptionEnabled()).append('\n');
@@ -121,7 +121,6 @@ public final class DatabaseBackup {
             r.append("[FAIL] Status do DB falhou: ").append(e.getMessage()).append('\n');
         }
 
-        // 2) Teste de roundtrip do AES-GCM (sem mexer no AppData)
         try {
             Path dir = Files.createTempDirectory("keeply-selftest-");
             Path runtime = dir.resolve("self.runtime.sqlite");
@@ -146,7 +145,6 @@ public final class DatabaseBackup {
                 r.append("[OK] Roundtrip AES-GCM passou\n");
             }
 
-            // senha errada deve falhar
             try {
                 DbFileCrypto.decryptToRuntime(enc, dir.resolve("wrong.sqlite"), "wrong");
                 ok = false;
@@ -188,10 +186,8 @@ public final class DatabaseBackup {
         config.setConnectionTestQuery("SELECT 1");
         config.setMaximumPoolSize(10);
         if (Config.isDbEncryptionEnabled()) {
-            // Prefer no-WAL when using at-rest file encryption to avoid leaving -wal/-shm plaintext artifacts.
             config.setConnectionInitSql("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA busy_timeout=10000;");
         } else {
-            // WAL and synchronous NORMAL keep DbWriter fast on SQLite.
             config.setConnectionInitSql("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=10000;");
         }
 
@@ -199,9 +195,6 @@ public final class DatabaseBackup {
     }
 
     public static synchronized void init() {
-        // Only prepare/create the runtime DB file when starting the datasource.
-        // Re-running prepareRuntimeDbFile() while the pool is active can delete the underlying SQLite file
-        // and cause different connections to read/write different physical files.
         if (dataSource == null) {
             if (Config.isDbEncryptionEnabled()) {
                 ensureShutdownHook();
@@ -224,7 +217,6 @@ public final class DatabaseBackup {
             var runtimeWal = runtime.resolveSibling(runtime.getFileName().toString() + "-wal");
             var runtimeShm = runtime.resolveSibling(runtime.getFileName().toString() + "-shm");
 
-            // Se sobrou runtime plaintext de uma execução anterior, remove.
             try { Files.deleteIfExists(runtime); } catch (Exception ignored) {}
             try { Files.deleteIfExists(runtimeWal); } catch (Exception ignored) {}
             try { Files.deleteIfExists(runtimeShm); } catch (Exception ignored) {}
@@ -249,7 +241,6 @@ public final class DatabaseBackup {
             try (PreparedStatement ps = c.prepareStatement("PRAGMA wal_checkpoint(TRUNCATE);");) {
                 ps.execute();
             } catch (Exception ignored) {
-                // Se estiver em journal_mode=DELETE, isso pode falhar/ser ignorado.
             }
         } catch (Exception ignored) {
         }
@@ -280,7 +271,6 @@ public final class DatabaseBackup {
 
     public static synchronized void shutdown() {
         if (Config.isDbEncryptionEnabled()) {
-            // Best-effort: flush WAL into main DB file before encrypting.
             checkpointSqliteIfPossible();
         }
 
@@ -309,6 +299,18 @@ public final class DatabaseBackup {
         }
     }
 
+    public static synchronized void persistEncryptedSnapshot() {
+        if (!Config.isDbEncryptionEnabled()) return;
+        try {
+            checkpointSqliteIfPossible();
+            var runtime = Config.getRuntimeDbFilePath();
+            var encrypted = Config.getEncryptedDbFilePath();
+            DbFileCrypto.encryptFromRuntime(runtime, encrypted, Config.getSecretKey());
+        } catch (Exception e) {
+            logger.warn("Falha ao persistir snapshot criptografado", e);
+        }
+    }
+
     public static Jdbi jdbi() {
         init();
         return jdbi;
@@ -316,7 +318,6 @@ public final class DatabaseBackup {
 
     public static final class SimplePool implements AutoCloseable {
         public SimplePool(String jdbcUrl, int poolSize) {
-            // Pool size is managed by the shared Hikari pool.
         }
 
         public Connection borrow() throws SQLException {
