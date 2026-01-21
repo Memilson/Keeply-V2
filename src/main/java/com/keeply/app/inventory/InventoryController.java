@@ -33,6 +33,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+/**
+ * Controla inventário, exportação e restauração.
+ */
 public final class InventoryController {
 
     private final InventoryScreen view;
@@ -64,10 +67,7 @@ public final class InventoryController {
             if (newScan != null) loadSnapshot(newScan);
         });
 
-        // Evento vazio para seleção simples
-        view.onFileSelected(path -> {}); 
-        
-        // Evento de menu de contexto -> Abre Dialog
+        view.onFileSelected(path -> {});
         view.onShowHistory(this::loadDialogHistory);
     }
 
@@ -144,7 +144,6 @@ public final class InventoryController {
             return;
         }
 
-        // Limite: até 10 itens
         if (selected.size() > 10) {
             view.showError("Selecione no máximo 10 itens para restaurar. Selecionados=" + selected.size());
             return;
@@ -230,12 +229,10 @@ public final class InventoryController {
                 Platform.runLater(() -> {
                     view.showLoading(false);
                     
-                    // Atualiza Combo sem disparar evento
                     suppressSelection = true;
                     view.scanSelector().getItems().setAll(allScans);
                     
                     if (!allScans.isEmpty()) {
-                        // Seleciona o último e carrega via Snapshot (consistência)
                         view.scanSelector().getSelectionModel().select(0); 
                         suppressSelection = false;
                         loadSnapshot(allScans.get(0));
@@ -304,7 +301,6 @@ public final class InventoryController {
         try {
             new ReportService().exportPdf(allRows, file, currentScanData);
         } catch (Exception e) {
-            e.printStackTrace(); // mostra o erro completo no console
             logger.error("Erro ao exportar PDF", e);
             Platform.runLater(() -> view.showError("Erro ao exportar PDF: " + e.getMessage()));
         }
@@ -392,7 +388,6 @@ public final class InventoryController {
         double gb = latest.totalBytes() / (1024.0 * 1024.0 * 1024.0);
         logger.info(String.format("Total: %.2f GB", gb));
         
-        // Uso dos records diretos, sem getters
         if (latest.growthBytes() > 0) logger.info(String.format("Crescimento: +%.2f MB", latest.growthBytes() / (1024.0 * 1024.0)));
         else if (latest.growthBytes() < 0) logger.info(String.format("Redução: %.2f MB", latest.growthBytes() / (1024.0 * 1024.0)));
         else logger.info("Estável.");
@@ -400,5 +395,3 @@ public final class InventoryController {
     }
     
 }
-
-

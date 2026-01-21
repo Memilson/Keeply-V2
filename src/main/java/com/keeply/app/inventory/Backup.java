@@ -18,10 +18,12 @@ import com.keeply.app.database.KeeplyDao;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Executa varredura de metadados e persistência no banco.
+ */
 public final class Backup {
 
     Backup() {}
-    // Configuração simplificada (somente metadados)
     public record ScanConfig(int dbBatchSize, List<String> excludeGlobs) {
         public static ScanConfig defaults() {
             return new ScanConfig(10000, 
@@ -29,7 +31,6 @@ public final class Backup {
         }
     }
 
-    // Apenas metadados essenciais
     public record FileSeen(long scanId, String pathRel, String name, long size, long mtime, long ctime) {}
 
     public static final class ScanMetrics {
@@ -42,8 +43,6 @@ public final class Backup {
     }
 
     private static final Logger logger = LoggerFactory.getLogger(Backup.class);
-
-    // --- ENGINE PRINCIPAL ---
 
         public static long runScan(
             Path root, 
@@ -62,7 +61,6 @@ public final class Backup {
                 KeeplyDao.class,
                 dao -> dao.startScanLog(rootAbs.toString())
         );
-        // 2. Walk & Metadata Check (validação por metadados e SQL)
         uiLogger.accept(">> Fase 1: Validando metadados (Tamanho/Data/Nome)...");
         try (var writer = new DbWriter(pool, scanId, rootAbs.toString(), cfg.dbBatchSize(), metrics)) {
             walk(rootAbs, scanId, cfg, metrics, cancel, writer);
@@ -78,19 +76,16 @@ public final class Backup {
             }
             uiLogger.accept(">> Cancelado pelo usuário.");
             metrics.running.set(false);
+            DatabaseBackup.persistEncryptedSnapshot();
             return scanId;
         }
 
-        // 3. Limpeza (Detecta arquivos deletados)
         uiLogger.accept(">> Fase 2: Sincronizando banco (Limpeza)...");
         int deleted = DatabaseBackup.jdbi().withExtension(
                 KeeplyDao.class,
                 dao -> dao.deleteStaleFiles(scanId, rootAbs.toString())
         );
         if (deleted > 0) uiLogger.accept(">> Removidos " + deleted + " arquivos que não existem mais.");
-        // Nota: a validação ocorre inteiramente na inserção do banco.
-        // 4. Histórico (Time Lapse)
-        // Agora copiamos para o historico baseados apenas na flag MODIFIED/NEW definida pelos metadados
         int hist = DatabaseBackup.jdbi().inTransaction(handle -> {
             KeeplyDao dao = handle.attach(KeeplyDao.class);
             int count = dao.copyToHistory(scanId);
@@ -103,11 +98,11 @@ public final class Backup {
         uiLogger.accept("[SCAN] Finalizado.");
         uiLogger.accept(">> FINALIZADO! Total de arquivos validados: " + metrics.filesSeen.sum());
         metrics.running.set(false);
+        DatabaseBackup.persistEncryptedSnapshot();
         return scanId;
     }
 
     private static void walk(Path root, long scanId, ScanConfig cfg, ScanMetrics metrics, AtomicBoolean cancel, DbWriter writer) throws IOException {
-        // Compila os matchers apenas uma vez
         var matchers = cfg.excludeGlobs.stream().map(g -> FileSystems.getDefault().getPathMatcher("glob:" + g)).toList();
         
         Files.walkFileTree(root, java.util.EnumSet.noneOf(FileVisitOption.class), Integer.MAX_VALUE, new SimpleFileVisitor<>() {
@@ -139,8 +134,6 @@ public final class Backup {
 
                     String relString = relativePath.toString().replace('\\', '/');
                     
-                    // Aqui está a mágica: Enviamos os metadados. 
-                    // O DbWriter compara (SQL) se 'size' ou 'mtime' mudaram vs o histórico.
                     writer.add(new FileSeen(
                         scanId, 
                         relString, 
@@ -161,7 +154,6 @@ public final class Backup {
             }
         });
     }
-    // --- WRITER (Validação via SQL) ---
     private static class DbWriter implements AutoCloseable {
         private final DatabaseBackup.SimplePool pool;
         private final long scanId;
@@ -184,7 +176,7 @@ public final class Backup {
 
         void add(FileSeen f) { 
             try { 
-                queue.put(f); // Backpressure natural se o DB for lento
+                queue.put(f);
             } catch (InterruptedException e) { 
                 Thread.currentThread().interrupt(); 
             } 
@@ -205,10 +197,6 @@ public final class Backup {
 
         private void run() {
             try (Connection c = pool.borrow()) {
-                // Validação por metadados:
-                // Se o arquivo já existe (ON CONFLICT path_rel), verificamos se mudou.
-                // Se size != old.size OR mtime != old.mtime -> MODIFIED
-                // Senão -> mantém o status atual (ex: STABLE)
                 var sql = """
                     INSERT INTO file_inventory (root_path, path_rel, name, size_bytes, modified_millis, created_millis, last_scan_id, status)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 'NEW')
@@ -260,7 +248,5 @@ public final class Backup {
         }
     }
 }
-
-
 
 

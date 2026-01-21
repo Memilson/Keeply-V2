@@ -11,9 +11,7 @@ import com.keeply.app.Main;
 import io.github.cdimascio.dotenv.Dotenv;
 
 /**
- * Configuração Central do Keeply.
- * Responsável por resolver caminhos de sistema operacional e
- * fornecer credenciais de segurança para o banco de dados.
+ * Configuração central do Keeply.
  */
 public final class Config {
     private static final String APP_NAME = "Keeply";
@@ -33,46 +31,74 @@ public final class Config {
     private static volatile String cachedDbPathKey;
     private static volatile Path cachedDbPath;
     private Config() {}
+
     public static String getDbUrl() {
-        return "jdbc:sqlite:" + getRuntimeDbFilePath().toAbsolutePath();}
+        return "jdbc:sqlite:" + getRuntimeDbFilePath().toAbsolutePath();
+    }
+
     public static Path getDbFilePath() {
-        return getEncryptedDbFilePath();}
+        return getEncryptedDbFilePath();
+    }
+
     public static Path getEncryptedDbFilePath() {
         Path dbPath = getResolvedDbPath();
         if (!isDbEncryptionEnabled()) return dbPath;
-        return dbPath.resolveSibling(dbPath.getFileName().toString() + ".enc");}
+        return dbPath.resolveSibling(dbPath.getFileName().toString() + ".enc");
+    }
+
     public static Path getRuntimeDbFilePath() {
         Path dbPath = getResolvedDbPath();
         if (!isDbEncryptionEnabled()) return dbPath;
-        return dbPath.resolveSibling(dbPath.getFileName().toString() + ".runtime.sqlite");}
+        return dbPath.resolveSibling(dbPath.getFileName().toString() + ".runtime.sqlite");
+    }
+
     public static boolean isDbEncryptionEnabled() {
-        return resolveDbEncryptionEnabled();}
+        return resolveDbEncryptionEnabled();
+    }
+
     public static String getSecretKey() {
         if (!isDbEncryptionEnabled()) return "";
-        return resolveSecretKey();}
+        return resolveSecretKey();
+    }
     private static Path getResolvedDbPath() {
         String dbFileName = resolveDbFileName();
         String overrideDir = getEnvOrDotenv(ENV_DATA_DIR);
         String key = (overrideDir == null ? "" : overrideDir.trim()) + "|" + dbFileName;
         Path current = cachedDbPath;
         if (current != null && key.equals(cachedDbPathKey)) {
-            return current;}
+            return current;
+        }
         synchronized (Config.class) {
             current = cachedDbPath;
             if (current != null && key.equals(cachedDbPathKey)) {
-                return current;}
+                return current;
+            }
             Path resolved = resolveDbPath(dbFileName);
             cachedDbPathKey = key;
             cachedDbPath = resolved;
-            return resolved;}}
-    public static String getDbUser() { return ""; }
-    public static String getDbPass() { return ""; }
+            return resolved;
+        }
+    }
+
+    public static String getDbUser() {
+        return "";
+    }
+
+    public static String getDbPass() {
+        return "";
+    }
+
     public static void saveLastPath(String path) {
-        prefs.put("last_scan_path", path);}
+        prefs.put("last_scan_path", path);
+    }
+
     public static String getLastPath() {
-        return prefs.get("last_scan_path", System.getProperty("user.home"));}
+        return prefs.get("last_scan_path", System.getProperty("user.home"));
+    }
+
     public static void saveLastBackupDestination(String path) {
-        prefs.put("last_backup_dest", path);}
+        prefs.put("last_backup_dest", path);
+    }
     public static String getLastBackupDestination() {
         String home = System.getProperty("user.home");
         String fallback = (home == null || home.isBlank())
@@ -81,10 +107,7 @@ public final class Config {
         return prefs.get("last_backup_dest", fallback);
     }
 
-    // --- Lógica de Resolução ---
-
     private static String resolveDbFileName() {
-        // Tenta pegar do ambiente ou .env, se não, usa o padrão
         String name = getEnvOrDotenv(ENV_DB_NAME);
         if (name == null) {
             name = getEnvOrDotenv("DB_NAME");
@@ -93,7 +116,6 @@ public final class Config {
     }
 
     private static String resolveSecretKey() {
-        // Tenta KEEPLY_SECRET_KEY, depois SECRET_KEY
         String key = getEnvOrDotenv(ENV_KEY_PRIMARY);
         if (key == null || key.isBlank()) {
             key = getEnvOrDotenv(ENV_KEY_SECONDARY);
@@ -114,12 +136,7 @@ public final class Config {
         return norm.equals("1") || norm.equals("true") || norm.equals("yes") || norm.equals("on") || norm.equals("file");
     }
 
-    /**
-     * Tenta obter o valor de uma variável de ambiente.
-     * Se não existir, tenta ler do arquivo .env local via java-dotenv.
-     */
     private static String getEnvOrDotenv(String key) {
-        // 0. System properties override (tests/CI)
         String propKey = mapToSystemPropertyKey(key);
         if (propKey != null) {
             String propVal = System.getProperty(propKey);
@@ -128,13 +145,11 @@ public final class Config {
             }
         }
 
-        // 1. Tenta Variável de Ambiente do SO
         String envVal = System.getenv(key);
         if (envVal != null && !envVal.isBlank()) {
             return envVal.trim();
         }
 
-        // 2. Tenta ler do arquivo .env
         String fileVal = dotenv.get(key);
         if (fileVal == null || fileVal.isBlank()) {
             return null;
@@ -154,11 +169,7 @@ public final class Config {
         };
     }
 
-    /**
-     * Lógica resiliente para determinar o local de armazenamento.
-     */
     private static Path resolveDbPath(String dbFileName) {
-        // Test/CI override: allow forcing a specific data dir.
         String overrideDir = getEnvOrDotenv(ENV_DATA_DIR);
         if (overrideDir != null && !overrideDir.isBlank()) {
             Path p = Paths.get(overrideDir.trim());
@@ -187,7 +198,6 @@ public final class Config {
         } else if (os.contains("mac")) {
             appDataDir = Paths.get(userHome, "Library", "Application Support", APP_NAME);
         } else {
-            // Linux/Unix: Padrão XDG (~/.local/share/Keeply)
             String xdgData = System.getenv("XDG_DATA_HOME");
             if (xdgData != null && !xdgData.isBlank()) {
                 appDataDir = Paths.get(xdgData, APP_NAME);
@@ -196,22 +206,17 @@ public final class Config {
             }
         }
 
-        // Tenta criar o diretório
         try {
             if (!Files.exists(appDataDir)) {
                 Files.createDirectories(appDataDir);
             }
-            // Sucesso: retorna caminho no AppData
             logger.info("Banco de dados localizado em: {}", appDataDir.toAbsolutePath());
             return appDataDir.resolve(dbFileName);
         } catch (IOException e) {
-            // Falha: Fallback para diretório local (onde o jar está)
             Path localPath = Paths.get(dbFileName).toAbsolutePath();
             logger.warn("ERRO PERMISSÃO: Não foi possível usar {}. Usando diretório local como fallback: {}", appDataDir, localPath);
             return localPath;
         }
     }
 }
-
-
 
