@@ -1,12 +1,17 @@
 package com.keeply.app.config;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.prefs.Preferences;
+import java.security.MessageDigest;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.time.Instant;
 
-import com.keeply.app.Main;
 
 import io.github.cdimascio.dotenv.Dotenv;
 
@@ -27,9 +32,10 @@ public final class Config {
     private static final String PROP_DATA_DIR = "keeply.dataDir";
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Config.class);
     private static final Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
-    private static final Preferences prefs = Preferences.userNodeForPackage(Main.class);
     private static volatile String cachedDbPathKey;
     private static volatile Path cachedDbPath;
+    private static volatile String sessionBackupPassword;
+    private static volatile boolean sessionDbInitialized = false;
     private Config() {}
 
     public static String getDbUrl() {
@@ -38,6 +44,13 @@ public final class Config {
 
     public static Path getDbFilePath() {
         return getEncryptedDbFilePath();
+    }
+
+    public static Path getSessionDbFilePath() {
+        Path dbPath = getResolvedDbPath();
+        Path dir = dbPath.getParent();
+        if (dir == null) return Path.of("session.keeply");
+        return dir.resolve("session.keeply");
     }
 
     public static Path getEncryptedDbFilePath() {
@@ -58,7 +71,7 @@ public final class Config {
 
     public static String getSecretKey() {
         if (!isDbEncryptionEnabled()) return "";
-        return resolveSecretKey();
+        return resolveSecretKeyInternal();
     }
     private static Path getResolvedDbPath() {
         String dbFileName = resolveDbFileName();
@@ -89,22 +102,57 @@ public final class Config {
     }
 
     public static void saveLastPath(String path) {
-        prefs.put("last_scan_path", path);
+        prefsPut("last_scan_path", path);
     }
 
     public static String getLastPath() {
-        return prefs.get("last_scan_path", System.getProperty("user.home"));
+        return prefsGet("last_scan_path", System.getProperty("user.home"));
     }
 
     public static void saveLastBackupDestination(String path) {
-        prefs.put("last_backup_dest", path);
+        prefsPut("last_backup_dest", path);
     }
     public static String getLastBackupDestination() {
         String home = System.getProperty("user.home");
         String fallback = (home == null || home.isBlank())
                 ? "."
                 : Paths.get(home, "Documents", APP_NAME, "Backup").toString();
-        return prefs.get("last_backup_dest", fallback);
+        return prefsGet("last_backup_dest", fallback);
+    }
+
+    public static void saveBackupEncryptionEnabled(boolean enabled) {
+        prefsPutBoolean("backup_encryption_enabled", enabled);
+    }
+
+    public static boolean isBackupEncryptionEnabled() {
+        return prefsGetBoolean("backup_encryption_enabled", true);
+    }
+
+    public static void setBackupEncryptionPassword(String password) {
+        sessionBackupPassword = (password == null) ? null : password;
+        if (password != null && !password.isBlank()) {
+            cacheBackupPasswordHash(password);
+        }
+    }
+
+    public static String getBackupEncryptionPassword() {
+        return sessionBackupPassword;
+    }
+
+    public static String getSessionValue(String key) {
+        return sessionGet(key);
+    }
+
+    public static void putSessionValue(String key, String value) {
+        sessionPut(key, value);
+    }
+
+    public static String getBackupPasswordHash() {
+        return sessionGet("backup_password_hash");
+    }
+
+    public static String getBackupPasswordSetAt() {
+        return sessionGet("backup_password_set_at");
     }
 
     private static String resolveDbFileName() {
@@ -115,7 +163,7 @@ public final class Config {
         return name == null || name.isBlank() ? DEFAULT_DB_NAME : name.trim();
     }
 
-    private static String resolveSecretKey() {
+    private static String resolveSecretKeyInternal() {
         String key = getEnvOrDotenv(ENV_KEY_PRIMARY);
         if (key == null || key.isBlank()) {
             key = getEnvOrDotenv(ENV_KEY_SECONDARY);
@@ -127,6 +175,21 @@ public final class Config {
             );
         }
         return key;
+    }
+
+    public static String requireBackupPassword() {
+        String pass = getBackupEncryptionPassword();
+        if (pass == null || pass.isBlank()) {
+            throw new IllegalStateException("Senha do backup não configurada.");
+        }
+        return pass;
+    }
+
+    public static String requireBackupPasswordForEncryption() {
+        if (!isBackupEncryptionEnabled()) {
+            return "";
+        }
+        return requireBackupPassword();
     }
 
     private static boolean resolveDbEncryptionEnabled() {
@@ -218,5 +281,134 @@ public final class Config {
             return localPath;
         }
     }
-}
 
+    private static void cacheBackupPasswordHash(String password) {
+        if (password == null || password.isBlank()) return;
+        try {
+            sessionPut("backup_password_hash", sha256Hex(password));
+            sessionPut("backup_password_set_at", Instant.now().toString());
+        } catch (Exception ignored) {
+            // Best-effort cache.
+        }
+    }
+
+    private static String sessionGet(String key) {
+        if (key == null || key.isBlank()) return null;
+        try {
+            sessionInit();
+            try (Connection c = sessionOpen();
+                 PreparedStatement ps = c.prepareStatement("SELECT value FROM session_kv WHERE key = ?")) {
+                ps.setString(1, key);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) return rs.getString(1);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private static void sessionPut(String key, String value) {
+        if (key == null || key.isBlank()) return;
+        try {
+            sessionInit();
+            try (Connection c = sessionOpen();
+                 PreparedStatement ps = c.prepareStatement(
+                         "INSERT INTO session_kv(key, value, updated_at) VALUES(?,?,?) " +
+                                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+                 )) {
+                ps.setString(1, key);
+                ps.setString(2, value);
+                ps.setString(3, Instant.now().toString());
+                ps.executeUpdate();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static synchronized void sessionInit() {
+        if (sessionDbInitialized) return;
+        try (Connection c = sessionOpen();
+             PreparedStatement ps = c.prepareStatement(
+                     "CREATE TABLE IF NOT EXISTS session_kv (" +
+                             "key TEXT PRIMARY KEY, " +
+                             "value TEXT, " +
+                             "updated_at TEXT" +
+                             ")"
+             )) {
+            ps.execute();
+            try (PreparedStatement ps2 = c.prepareStatement(
+                    "CREATE TABLE IF NOT EXISTS prefs_kv (" +
+                            "key TEXT PRIMARY KEY, " +
+                            "value TEXT, " +
+                            "updated_at TEXT" +
+                            ")"
+            )) {
+                ps2.execute();
+            }
+            sessionDbInitialized = true;
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static Connection sessionOpen() throws Exception {
+        return DriverManager.getConnection("jdbc:sqlite:" + getSessionDbFilePath().toAbsolutePath());
+    }
+
+    private static String prefsGet(String key, String fallback) {
+        if (key == null || key.isBlank()) return fallback;
+        try {
+            sessionInit();
+            try (Connection c = sessionOpen();
+                 PreparedStatement ps = c.prepareStatement("SELECT value FROM prefs_kv WHERE key = ?")) {
+                ps.setString(1, key);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        String v = rs.getString(1);
+                        return (v == null || v.isBlank()) ? fallback : v;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return fallback;
+    }
+
+    private static void prefsPut(String key, String value) {
+        if (key == null || key.isBlank()) return;
+        try {
+            sessionInit();
+            try (Connection c = sessionOpen();
+                 PreparedStatement ps = c.prepareStatement(
+                         "INSERT INTO prefs_kv(key, value, updated_at) VALUES(?,?,?) " +
+                                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+                 )) {
+                ps.setString(1, key);
+                ps.setString(2, value);
+                ps.setString(3, Instant.now().toString());
+                ps.executeUpdate();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static boolean prefsGetBoolean(String key, boolean fallback) {
+        String v = prefsGet(key, null);
+        if (v == null || v.isBlank()) return fallback;
+        return v.equalsIgnoreCase("true") || v.equalsIgnoreCase("1") || v.equalsIgnoreCase("yes");
+    }
+
+    private static void prefsPutBoolean(String key, boolean value) {
+        prefsPut(key, value ? "true" : "false");
+    }
+
+    private static String sha256Hex(String input) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] out = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder(out.length * 2);
+        for (byte b : out) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+}

@@ -59,6 +59,10 @@ public final class BackupScreen {
     private final ProgressBar progressBar = new ProgressBar(0);
     private final Label progressLabel = new Label("Idle");
 
+    // Opções de Backup
+    private final CheckBox encryptionCheckbox = new CheckBox();
+    private final PasswordField backupPasswordField = new PasswordField();
+
     public BackupScreen(Stage stage, ScanModel model) {
         this.stage = Objects.requireNonNull(stage, "stage");
         this.model = Objects.requireNonNull(model, "model");
@@ -102,6 +106,13 @@ public final class BackupScreen {
         // Console
         consoleArea.setEditable(false);
         consoleArea.setWrapText(true);
+
+        // Criptografia de backup (senha única)
+        backupPasswordField.setPromptText("Digite a senha do backup");
+
+        backupPasswordField.textProperty().addListener((obs, oldVal, newVal) -> {
+            if (encryptionCheckbox.isSelected()) Config.setBackupEncryptionPassword(newVal);
+        });
     }
 
     public Node content() {
@@ -333,9 +344,10 @@ public final class BackupScreen {
         grid.setHgap(10);
         grid.setVgap(10);
 
-        addOptionRow(grid, 0, "M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11z", "Agendamento");
-        addOptionRow(grid, 1, "M4 6h16v2H4zm0 5h10v2H4zm0 5h16v2H4z", "Retenção");
-        addOptionRow(grid, 2, "M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 0 1 6 0v3H9z", "Criptografia");
+        addOptionRow(grid, 0, "M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11z", "Agendamento", null);
+        addOptionRow(grid, 1, "M4 6h16v2H4zm0 5h10v2H4zm0 5h16v2H4z", "Retenção", null);
+        addOptionRow(grid, 2, "M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 0 1 6 0v3H9z", "Criptografar backups", encryptionCheckbox);
+        addEncryptionDetailsRow(grid, 3);
 
         TitledPane pane = new TitledPane();
         pane.setText(null);
@@ -345,7 +357,7 @@ public final class BackupScreen {
         return pane;
     }
 
-    private void addOptionRow(GridPane grid, int row, String iconPath, String label) {
+    private void addOptionRow(GridPane grid, int row, String iconPath, String label, CheckBox controlCheckbox) {
         HBox left = new HBox(8);
         left.setAlignment(Pos.CENTER_LEFT);
 
@@ -361,12 +373,52 @@ public final class BackupScreen {
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        CheckBox sw = new CheckBox();
+        CheckBox sw = controlCheckbox != null ? controlCheckbox : new CheckBox();
         sw.getStyleClass().add("switch");
-        if ("Criptografia".equals(label)) sw.setSelected(true);
+        
+        // Carregar estado salvo para Criptografia
+        if (controlCheckbox == encryptionCheckbox) {
+            sw.setSelected(Config.isBackupEncryptionEnabled());
+            sw.selectedProperty().addListener((obs, oldVal, newVal) -> {
+                Config.saveBackupEncryptionEnabled(newVal);
+            });
+        }
 
         HBox right = new HBox(10, spacer, sw);
         right.setAlignment(Pos.CENTER_RIGHT);
+
+        grid.add(left, 0, row);
+        grid.add(right, 1, row);
+        GridPane.setHgrow(right, Priority.ALWAYS);
+    }
+
+    private void addEncryptionDetailsRow(GridPane grid, int row) {
+        HBox left = new HBox(8);
+        left.setAlignment(Pos.CENTER_LEFT);
+
+        SVGPath icon = new SVGPath();
+        icon.setContent("M7 10h10v2H7zm0 4h6v2H7zm2-12h6v2H9zm-5 8h2v6h12v-6h2v8H4z");
+        icon.getStyleClass().add("option-icon");
+
+        Label label = new Label("Senha do backup");
+        label.getStyleClass().add("option-label");
+
+        left.getChildren().addAll(icon, label);
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        HBox right = new HBox(10, spacer, backupPasswordField);
+        right.setAlignment(Pos.CENTER_RIGHT);
+
+        left.visibleProperty().bind(encryptionCheckbox.selectedProperty());
+        left.managedProperty().bind(encryptionCheckbox.selectedProperty());
+        right.visibleProperty().bind(encryptionCheckbox.selectedProperty());
+        right.managedProperty().bind(encryptionCheckbox.selectedProperty());
+
+        backupPasswordField.disableProperty().bind(
+                encryptionCheckbox.selectedProperty().not()
+        );
 
         grid.add(left, 0, row);
         grid.add(right, 1, row);
@@ -455,6 +507,7 @@ public final class BackupScreen {
 
     public String getRootPathText() { return pathField.getText(); }
     public String getBackupDestinationText() { return destField.getText(); }
+    public String getBackupEncryptionPassword() { return backupPasswordField.getText(); }
 
     public void setScanningState(boolean isScanning) {
         scanning.set(isScanning);
@@ -477,6 +530,10 @@ public final class BackupScreen {
             consoleArea.appendText("• " + message + "\n");
             consoleArea.positionCaret(consoleArea.getLength());
         });
+    }
+
+    public boolean isEncryptionEnabled() {
+        return encryptionCheckbox.isSelected();
     }
 
     public boolean confirmWipe() {

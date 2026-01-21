@@ -11,6 +11,15 @@ import com.keeply.app.database.DatabaseBackup.ScanSummary;
 import com.keeply.app.report.ReportService;
 
 import javafx.application.Platform;
+import javafx.beans.binding.Bindings;
+import javafx.scene.control.ButtonBar;
+import javafx.scene.control.ButtonType;
+import javafx.scene.control.Dialog;
+import javafx.scene.control.PasswordField;
+import javafx.scene.control.RadioButton;
+import javafx.scene.control.ToggleGroup;
+import javafx.scene.layout.VBox;
+import javafx.geometry.Insets;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
@@ -92,32 +101,50 @@ public final class InventoryController {
             return;
         }
 
-        DirectoryChooser chooser = new DirectoryChooser();
-        chooser.setTitle("Restaurar Snapshot #" + scan.scanId() + " (somente NEW/MODIFIED)");
+        RestoreOptions options = promptRestoreOptions("Restaurar Snapshot #" + scan.scanId());
+        if (options == null) return;
+        Config.setBackupEncryptionPassword(options.password());
 
-        File initialDir = new File(Config.getLastPath());
-        if (initialDir.exists() && initialDir.isDirectory()) {
-            chooser.setInitialDirectory(initialDir);
+        Path destinationDir = null;
+        Path originalRoot = null;
+        if (options.mode() == BlobStore.RestoreMode.ORIGINAL_PATH) {
+            if (scan.rootPath() == null || scan.rootPath().isBlank()) {
+                view.showError("Caminho original não disponível neste snapshot.");
+                return;
+            }
+            originalRoot = Path.of(scan.rootPath());
+        } else {
+            DirectoryChooser chooser = new DirectoryChooser();
+            chooser.setTitle("Restaurar Snapshot #" + scan.scanId() + " (somente NEW/MODIFIED)");
+
+            File initialDir = new File(Config.getLastPath());
+            if (initialDir.exists() && initialDir.isDirectory()) {
+                chooser.setInitialDirectory(initialDir);
+            }
+
+            Window window = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
+            File destDir = chooser.showDialog(window);
+            if (destDir == null) return;
+
+            Config.saveLastPath(destDir.getAbsolutePath());
+            destinationDir = destDir.toPath();
         }
 
-        Window window = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
-        File destDir = chooser.showDialog(window);
-        if (destDir == null) return;
-
-        Config.saveLastPath(destDir.getAbsolutePath());
-
+        final Path finalDestinationDir = destinationDir;
+        final Path finalOriginalRoot = originalRoot;
+        final BlobStore.RestoreMode finalMode = options.mode();
         Window owner = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
         RestoreLogWindow log = RestoreLogWindow.open(owner, "Restaurando Snapshot #" + scan.scanId());
         log.appendLine(">> Snapshot #" + scan.scanId() + " (somente NEW/MODIFIED)");
-
-        Path destinationDir = destDir.toPath();
 
         Thread.ofVirtual().name("keeply-restore-snapshot").start(() -> {
             try {
                 BlobStore.RestoreResult result = BlobStore.restoreChangedFilesFromScan(
                         scan.scanId(),
                         baseDir,
-                        destinationDir,
+                        finalDestinationDir,
+                        finalOriginalRoot,
+                        finalMode,
                         log.cancelFlag(),
                         log.logger()
                 );
@@ -163,18 +190,33 @@ public final class InventoryController {
             return;
         }
 
-        DirectoryChooser chooser = new DirectoryChooser();
-        chooser.setTitle("Restaurar Selecionados (Snapshot #" + scan.scanId() + ")");
+        RestoreOptions options = promptRestoreOptions("Restaurar Selecionados (Snapshot #" + scan.scanId() + ")");
+        if (options == null) return;
+        Config.setBackupEncryptionPassword(options.password());
 
-        File initialDir = new File(Config.getLastPath());
-        if (initialDir.exists() && initialDir.isDirectory()) {
-            chooser.setInitialDirectory(initialDir);
+        Path destinationDir = null;
+        Path originalRoot = null;
+        if (options.mode() == BlobStore.RestoreMode.ORIGINAL_PATH) {
+            if (scan.rootPath() == null || scan.rootPath().isBlank()) {
+                view.showError("Caminho original não disponível neste snapshot.");
+                return;
+            }
+            originalRoot = Path.of(scan.rootPath());
+        } else {
+            DirectoryChooser chooser = new DirectoryChooser();
+            chooser.setTitle("Restaurar Selecionados (Snapshot #" + scan.scanId() + ")");
+
+            File initialDir = new File(Config.getLastPath());
+            if (initialDir.exists() && initialDir.isDirectory()) {
+                chooser.setInitialDirectory(initialDir);
+            }
+
+            Window window = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
+            File destDir = chooser.showDialog(window);
+            if (destDir == null) return;
+            Config.saveLastPath(destDir.getAbsolutePath());
+            destinationDir = destDir.toPath();
         }
-
-        Window window = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
-        File destDir = chooser.showDialog(window);
-        if (destDir == null) return;
-        Config.saveLastPath(destDir.getAbsolutePath());
 
         List<String> filePaths = new ArrayList<>();
         List<String> dirPrefixes = new ArrayList<>();
@@ -186,12 +228,13 @@ public final class InventoryController {
             else filePaths.add(p);
         }
 
+        final Path finalDestinationDir = destinationDir;
+        final Path finalOriginalRoot = originalRoot;
+        final BlobStore.RestoreMode finalMode = options.mode();
         Window owner = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
         RestoreLogWindow log = RestoreLogWindow.open(owner, "Restaurando Seleção (Snapshot #" + scan.scanId() + ")");
         log.appendLine(">> Snapshot #" + scan.scanId());
         log.appendLine(">> Seleção: arquivos=" + filePaths.size() + ", pastas=" + dirPrefixes.size());
-
-        Path destinationDir = destDir.toPath();
 
         Thread.ofVirtual().name("keeply-restore-selected").start(() -> {
             try {
@@ -200,7 +243,9 @@ public final class InventoryController {
                         filePaths,
                         dirPrefixes,
                         baseDir,
-                        destinationDir,
+                        finalDestinationDir,
+                        finalOriginalRoot,
+                        finalMode,
                         log.cancelFlag(),
                         log.logger()
                 );
@@ -250,6 +295,53 @@ public final class InventoryController {
             }
         });
     }
+
+    private RestoreOptions promptRestoreOptions(String title) {
+        Dialog<RestoreOptions> dialog = new Dialog<>();
+        dialog.setTitle(title);
+        dialog.setHeaderText("Escolha o modo de restauração e informe a senha.");
+        ButtonType ok = new ButtonType("OK", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(ok, ButtonType.CANCEL);
+
+        ToggleGroup group = new ToggleGroup();
+        RadioButton original = new RadioButton("Restaurar no caminho original");
+        original.setToggleGroup(group);
+        original.setUserData(BlobStore.RestoreMode.ORIGINAL_PATH);
+
+        RadioButton withStructure = new RadioButton("Restaurar mantendo a estrutura de pastas");
+        withStructure.setToggleGroup(group);
+        withStructure.setUserData(BlobStore.RestoreMode.DEST_WITH_STRUCTURE);
+
+        RadioButton flat = new RadioButton("Restaurar somente no destino (sem estrutura)");
+        flat.setToggleGroup(group);
+        flat.setUserData(BlobStore.RestoreMode.DEST_FLAT);
+
+        withStructure.setSelected(true);
+
+        PasswordField field = new PasswordField();
+        field.setPromptText("Senha do backup");
+
+        VBox content = new VBox(10, original, withStructure, flat, field);
+        content.setPadding(new Insets(8));
+        dialog.getDialogPane().setContent(content);
+
+        var okButton = dialog.getDialogPane().lookupButton(ok);
+        okButton.disableProperty().bind(Bindings.createBooleanBinding(() -> {
+            String v = field.getText();
+            return v == null || v.isBlank();
+        }, field.textProperty()));
+
+        dialog.setResultConverter(btn -> {
+            if (btn != ok) return null;
+            var toggle = group.getSelectedToggle();
+            if (toggle == null) return null;
+            return new RestoreOptions((BlobStore.RestoreMode) toggle.getUserData(), field.getText());
+        });
+
+        return dialog.showAndWait().orElse(null);
+    }
+
+    private record RestoreOptions(BlobStore.RestoreMode mode, String password) {}
 
     private void loadSnapshot(ScanSummary scan) {
         view.showLoading(true);

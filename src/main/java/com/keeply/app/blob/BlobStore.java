@@ -37,6 +37,7 @@ public class BlobStore {
 
     private final Path rootDir;
     private static final Logger logger = LoggerFactory.getLogger(BlobStore.class);
+    private static final String ENCRYPTED_EXT = ".kply";
 
     public BlobStore(Path baseDir) throws IOException {
         this.rootDir = baseDir.resolve(".keeply").resolve("storage");
@@ -48,7 +49,9 @@ public class BlobStore {
 
         String prefix = hash.substring(0, 2);
         Path bucketDir = rootDir.resolve(prefix);
-        Path targetBlob = bucketDir.resolve(hash);
+        boolean encrypt = Config.isBackupEncryptionEnabled();
+        String fileName = encrypt ? (hash + ENCRYPTED_EXT) : hash;
+        Path targetBlob = bucketDir.resolve(fileName);
 
         if (Files.exists(targetBlob)) {
             return hash; 
@@ -56,32 +59,40 @@ public class BlobStore {
 
         Files.createDirectories(bucketDir);
         
-        Path tempFile = rootDir.resolve(hash + ".tmp");
+        Path tempFile = rootDir.resolve(fileName + ".tmp");
+
+        String passphrase = encrypt ? Config.requireBackupPasswordForEncryption() : null;
 
         try (InputStream is = Files.newInputStream(sourceFile);
-             OutputStream fos = Files.newOutputStream(tempFile);
-             ZstdOutputStream zos = new ZstdOutputStream(fos, 3)) {
-            
+             OutputStream base = Files.newOutputStream(tempFile);
+             OutputStream out = encrypt ? BlobCrypto.openEncryptingStream(base, passphrase) : base;
+             ZstdOutputStream zos = new ZstdOutputStream(out, 3)) {
             is.transferTo(zos);
         }
 
         Files.move(tempFile, targetBlob, StandardCopyOption.ATOMIC_MOVE);
+        if (encrypt && !BlobCrypto.looksEncrypted(targetBlob)) {
+            throw new IOException("Falha ao verificar criptografia do backup: " + targetBlob);
+        }
 
         return hash;
     }
 
     public void get(String hash, Path destination) throws IOException {
         String prefix = hash.substring(0, 2);
-        Path blobPath = rootDir.resolve(prefix).resolve(hash);
+        Path blobPath = resolveBlobPath(prefix, hash);
 
         if (!Files.exists(blobPath)) {
             throw new IOException("Arquivo corrompido ou ausente no cofre: " + hash);
         }
 
+        boolean encrypted = BlobCrypto.looksEncrypted(blobPath);
+        String passphrase = encrypted ? Config.requireBackupPassword() : null;
+
         try (InputStream fis = Files.newInputStream(blobPath);
-             ZstdInputStream zis = new ZstdInputStream(fis);
+             InputStream in = encrypted ? safeDecryptStream(fis, passphrase) : fis;
+             ZstdInputStream zis = new ZstdInputStream(in);
              OutputStream fos = Files.newOutputStream(destination)) {
-            
             zis.transferTo(fos);
         }
     }
@@ -101,6 +112,12 @@ public class BlobStore {
     public record BackupResult(long filesProcessed, long errors) {}
 
     public record RestoreResult(long filesRestored, long errors) {}
+
+    public enum RestoreMode {
+        ORIGINAL_PATH,
+        DEST_WITH_STRUCTURE,
+        DEST_FLAT
+    }
 
     public static BackupResult runBackup(Path root, Backup.ScanConfig cfg, AtomicBoolean cancel, Consumer<String> uiLogger) throws Exception {
         Path baseDir = Config.getEncryptedDbFilePath().toAbsolutePath().getParent();
@@ -240,21 +257,39 @@ public class BlobStore {
         return new BackupResult(files[0], errors[0]);
     }
 
-    public static RestoreResult restoreChangedFilesFromScan(long scanId, Path baseDir, Path destinationDir, AtomicBoolean cancel, Consumer<String> uiLogger) throws Exception {
-        if (baseDir == null || destinationDir == null) {
-            throw new IllegalArgumentException("baseDir and destinationDir are required");
+    public static RestoreResult restoreChangedFilesFromScan(
+            long scanId,
+            Path baseDir,
+            Path destinationDir,
+            Path originalRoot,
+            RestoreMode mode,
+            AtomicBoolean cancel,
+            Consumer<String> uiLogger
+    ) throws Exception {
+        if (baseDir == null) {
+            throw new IllegalArgumentException("baseDir is required");
         }
         DatabaseBackup.init();
         List<DatabaseBackup.SnapshotBlobRow> blobs = DatabaseBackup.jdbi().withExtension(
                 KeeplyDao.class,
                 dao -> dao.fetchChangedBlobsForScan(scanId)
         );
-        return restoreBlobs(blobs, baseDir, destinationDir, cancel, uiLogger);
+        return restoreBlobs(blobs, baseDir, destinationDir, originalRoot, mode, cancel, uiLogger);
     }
 
-    public static RestoreResult restoreSelectionFromSnapshot(long scanId, List<String> filePaths, List<String> dirPrefixes, Path baseDir, Path destinationDir, AtomicBoolean cancel, Consumer<String> uiLogger) throws Exception {
-        if (baseDir == null || destinationDir == null) {
-            throw new IllegalArgumentException("baseDir and destinationDir are required");
+    public static RestoreResult restoreSelectionFromSnapshot(
+            long scanId,
+            List<String> filePaths,
+            List<String> dirPrefixes,
+            Path baseDir,
+            Path destinationDir,
+            Path originalRoot,
+            RestoreMode mode,
+            AtomicBoolean cancel,
+            Consumer<String> uiLogger
+    ) throws Exception {
+        if (baseDir == null) {
+            throw new IllegalArgumentException("baseDir is required");
         }
         filePaths = (filePaths == null) ? List.of() : filePaths;
         dirPrefixes = (dirPrefixes == null) ? List.of() : dirPrefixes;
@@ -288,17 +323,40 @@ public class BlobStore {
             }
         }
 
-        return restoreBlobs(List.copyOf(toRestore), baseDir, destinationDir, cancel, uiLogger);
+        return restoreBlobs(List.copyOf(toRestore), baseDir, destinationDir, originalRoot, mode, cancel, uiLogger);
     }
 
-    private static RestoreResult restoreBlobs(List<DatabaseBackup.SnapshotBlobRow> blobs, Path baseDir, Path destinationDir, AtomicBoolean cancel, Consumer<String> uiLogger) throws Exception {
+    private static RestoreResult restoreBlobs(
+            List<DatabaseBackup.SnapshotBlobRow> blobs,
+            Path baseDir,
+            Path destinationDir,
+            Path originalRoot,
+            RestoreMode mode,
+            AtomicBoolean cancel,
+            Consumer<String> uiLogger
+    ) throws Exception {
         List<DatabaseBackup.SnapshotBlobRow> safe = (blobs == null) ? List.of() : blobs;
 
         uiLogger.accept(">> Restore: arquivos encontrados=" + safe.size());
         uiLogger.accept(">> Restore: origem (cofre)=" + baseDir.resolve(".keeply").resolve("storage").toAbsolutePath());
-        uiLogger.accept(">> Restore: destino=" + destinationDir.toAbsolutePath());
+        uiLogger.accept(">> Restore: modo=" + mode);
+        if (mode == RestoreMode.ORIGINAL_PATH) {
+            uiLogger.accept(">> Restore: destino(original)=" + originalRoot.toAbsolutePath());
+        } else {
+            uiLogger.accept(">> Restore: destino=" + destinationDir.toAbsolutePath());
+        }
 
-        Files.createDirectories(destinationDir);
+        if (mode == RestoreMode.ORIGINAL_PATH) {
+            if (originalRoot == null) {
+                throw new IllegalArgumentException("originalRoot is required for ORIGINAL_PATH");
+            }
+            Files.createDirectories(originalRoot);
+        } else {
+            if (destinationDir == null) {
+                throw new IllegalArgumentException("destinationDir is required for restore");
+            }
+            Files.createDirectories(destinationDir);
+        }
         BlobStore store = new BlobStore(baseDir);
 
         long restored = 0;
@@ -314,7 +372,7 @@ public class BlobStore {
                 continue;
             }
 
-            Path out = destinationDir.resolve(pathRel);
+            Path out = resolveOutputPath(pathRel, destinationDir, originalRoot, mode);
             try {
                 Path parent = out.getParent();
                 if (parent != null) Files.createDirectories(parent);
@@ -340,6 +398,53 @@ public class BlobStore {
         }
         if (!Files.isWritable(baseDir)) {
             throw new IOException("Sem permissão de escrita no destino do backup: " + baseDir);
+        }
+    }
+
+    private Path resolveBlobPath(String prefix, String hash) {
+        Path encrypted = rootDir.resolve(prefix).resolve(hash + ENCRYPTED_EXT);
+        if (Files.exists(encrypted)) return encrypted;
+        return rootDir.resolve(prefix).resolve(hash);
+    }
+
+    private static InputStream safeDecryptStream(InputStream in, String passphrase) throws IOException {
+        try {
+            return BlobCrypto.openDecryptingStream(in, passphrase);
+        } catch (Exception e) {
+            throw new IOException(e.getMessage(), e);
+        }
+    }
+
+    private static Path resolveOutputPath(String pathRel, Path destinationDir, Path originalRoot, RestoreMode mode) throws IOException {
+        return switch (mode) {
+            case ORIGINAL_PATH -> {
+                if (originalRoot == null) throw new IOException("Destino original não resolvido");
+                yield originalRoot.resolve(pathRel);
+            }
+            case DEST_WITH_STRUCTURE -> destinationDir.resolve(pathRel);
+            case DEST_FLAT -> resolveFlatPath(destinationDir, pathRel);
+        };
+    }
+
+    private static Path resolveFlatPath(Path destinationDir, String pathRel) throws IOException {
+        if (destinationDir == null) throw new IOException("Destino não resolvido");
+        String name = Path.of(pathRel).getFileName().toString();
+        Path out = destinationDir.resolve(name);
+        if (!Files.exists(out)) return out;
+
+        String base = name;
+        String ext = "";
+        int idx = name.lastIndexOf('.');
+        if (idx > 0 && idx < name.length() - 1) {
+            base = name.substring(0, idx);
+            ext = name.substring(idx);
+        }
+
+        int i = 1;
+        while (true) {
+            Path candidate = destinationDir.resolve(base + " (" + i + ")" + ext);
+            if (!Files.exists(candidate)) return candidate;
+            i++;
         }
     }
 }

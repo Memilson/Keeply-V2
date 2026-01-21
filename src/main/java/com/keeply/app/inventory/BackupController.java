@@ -89,6 +89,16 @@ public final class BackupController {
             return;
         }
 
+        if (view.isEncryptionEnabled()) {
+            String pass = view.getBackupEncryptionPassword();
+            if (pass == null || pass.isBlank()) {
+                log(">> Erro: informe uma senha para criptografar os backups.");
+                return;
+            }
+            Config.setBackupEncryptionPassword(pass);
+            log(">> Criptografia ativa: senha personalizada.");
+        }
+
         try {
             ui(() -> {
                 view.clearConsole();
