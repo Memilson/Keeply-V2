@@ -11,6 +11,8 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.time.Instant;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 
 import io.github.cdimascio.dotenv.Dotenv;
@@ -32,6 +34,8 @@ public final class Config {
     private static final String PROP_DATA_DIR = "keeply.dataDir";
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Config.class);
     private static final Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
+    private static final String PREFS_FILE_NAME = "preferences.json";
+    private static final Pattern JSON_ENTRY_PATTERN = Pattern.compile("\"([^\"]+)\"\\s*:\\s*(\"([^\"]*)\"|true|false|null)");
     private static volatile String cachedDbPathKey;
     private static volatile Path cachedDbPath;
     private static volatile String sessionBackupPassword;
@@ -121,18 +125,21 @@ public final class Config {
     }
 
     public static void saveBackupEncryptionEnabled(boolean enabled) {
+        savePreferencesValue("backup_encryption_enabled", enabled ? "true" : "false");
         prefsPutBoolean("backup_encryption_enabled", enabled);
+        if (!enabled) {
+            savePreferencesValue("backup_password_active", "false");
+        }
     }
 
     public static boolean isBackupEncryptionEnabled() {
+        Preferences prefs = loadPreferences();
+        if (prefs.backupEncryptionEnabled != null) return prefs.backupEncryptionEnabled;
         return prefsGetBoolean("backup_encryption_enabled", true);
     }
 
     public static void setBackupEncryptionPassword(String password) {
         sessionBackupPassword = (password == null) ? null : password;
-        if (password != null && !password.isBlank()) {
-            cacheBackupPasswordHash(password);
-        }
     }
 
     public static String getBackupEncryptionPassword() {
@@ -148,11 +155,45 @@ public final class Config {
     }
 
     public static String getBackupPasswordHash() {
-        return sessionGet("backup_password_hash");
+        Preferences prefs = loadPreferences();
+        return prefs.backupPasswordHash;
     }
 
     public static String getBackupPasswordSetAt() {
-        return sessionGet("backup_password_set_at");
+        Preferences prefs = loadPreferences();
+        return prefs.backupPasswordSetAt;
+    }
+
+    public static boolean hasBackupPasswordHash() {
+        String hash = getBackupPasswordHash();
+        return hash != null && !hash.isBlank();
+    }
+
+    public static boolean verifyAndCacheBackupPassword(String password) {
+        if (password == null || password.isBlank()) return false;
+        try {
+            String hash = sha256Hex(password);
+            Preferences prefs = loadPreferences();
+            if (prefs.backupPasswordHash == null || prefs.backupPasswordHash.isBlank()) {
+                prefs.backupPasswordHash = hash;
+                prefs.backupPasswordSetAt = Instant.now().toString();
+                prefs.backupPasswordActive = true;
+                savePreferences(prefs);
+                sessionBackupPassword = password;
+                return true;
+            }
+            if (prefs.backupPasswordHash.equals(hash)) {
+                prefs.backupPasswordActive = true;
+                savePreferences(prefs);
+                sessionBackupPassword = password;
+                return true;
+            }
+            sessionBackupPassword = null;
+            return false;
+        } catch (Exception e) {
+            sessionBackupPassword = null;
+            return false;
+        }
     }
 
     private static String resolveDbFileName() {
@@ -282,14 +323,141 @@ public final class Config {
         }
     }
 
-    private static void cacheBackupPasswordHash(String password) {
-        if (password == null || password.isBlank()) return;
+    private static Path getPreferencesFilePath() {
+        Path dbPath = getResolvedDbPath();
+        Path dir = dbPath.getParent();
+        if (dir == null) return Path.of(PREFS_FILE_NAME);
+        return dir.resolve(PREFS_FILE_NAME);
+    }
+
+    private static void savePreferencesValue(String key, String value) {
         try {
-            sessionPut("backup_password_hash", sha256Hex(password));
-            sessionPut("backup_password_set_at", Instant.now().toString());
+            Preferences prefs = loadPreferences();
+            if ("backup_encryption_enabled".equals(key)) {
+                prefs.backupEncryptionEnabled = "true".equalsIgnoreCase(value);
+            } else if ("backup_password_active".equals(key)) {
+                prefs.backupPasswordActive = "true".equalsIgnoreCase(value);
+            } else if ("backup_password_hash".equals(key)) {
+                prefs.backupPasswordHash = value;
+            } else if ("backup_password_set_at".equals(key)) {
+                prefs.backupPasswordSetAt = value;
+            }
+            savePreferences(prefs);
         } catch (Exception ignored) {
-            // Best-effort cache.
+            // Best-effort.
         }
+    }
+
+    private static Preferences loadPreferences() {
+        Preferences prefs = new Preferences();
+        prefs.backupEncryptionEnabled = prefsGetBoolean("backup_encryption_enabled", true);
+        prefs.backupPasswordHash = sessionGet("backup_password_hash");
+        prefs.backupPasswordSetAt = sessionGet("backup_password_set_at");
+        prefs.backupPasswordActive = null;
+
+        Path file = getPreferencesFilePath();
+        if (!Files.exists(file)) {
+            if (prefs.backupPasswordHash != null && !prefs.backupPasswordHash.isBlank()) {
+                prefs.backupPasswordActive = true;
+            }
+            return prefs;
+        }
+        try {
+            String content = Files.readString(file, StandardCharsets.UTF_8);
+            Matcher matcher = JSON_ENTRY_PATTERN.matcher(content);
+            while (matcher.find()) {
+                String key = matcher.group(1);
+                String raw = matcher.group(2);
+                String str = matcher.group(3);
+                if ("backup_encryption_enabled".equals(key)) {
+                    if ("true".equalsIgnoreCase(raw)) {
+                        prefs.backupEncryptionEnabled = true;
+                    } else if ("false".equalsIgnoreCase(raw)) {
+                        prefs.backupEncryptionEnabled = false;
+                    }
+                } else if ("backup_password_active".equals(key)) {
+                    if ("true".equalsIgnoreCase(raw)) {
+                        prefs.backupPasswordActive = true;
+                    } else if ("false".equalsIgnoreCase(raw)) {
+                        prefs.backupPasswordActive = false;
+                    }
+                } else if ("backup_password_hash".equals(key)) {
+                    prefs.backupPasswordHash = "null".equals(raw) ? null : str;
+                } else if ("backup_password_set_at".equals(key)) {
+                    prefs.backupPasswordSetAt = "null".equals(raw) ? null : str;
+                }
+            }
+        } catch (Exception ignored) {
+            // Best-effort.
+        }
+        if (prefs.backupPasswordActive == null) {
+            prefs.backupPasswordActive = prefs.backupPasswordHash != null && !prefs.backupPasswordHash.isBlank();
+        }
+        return prefs;
+    }
+
+    private static synchronized void savePreferences(Preferences prefs) {
+        Path file = getPreferencesFilePath();
+        Path dir = file.getParent();
+        try {
+            if (dir != null) {
+                Files.createDirectories(dir);
+            }
+        } catch (Exception ignored) {
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\n");
+        sb.append("  \"backup_encryption_enabled\": ").append(prefs.backupEncryptionEnabled != null && prefs.backupEncryptionEnabled ? "true" : "false").append(",\n");
+        sb.append("  \"backup_password_active\": ").append(prefs.backupPasswordActive != null && prefs.backupPasswordActive ? "true" : "false").append(",\n");
+        sb.append("  \"backup_password_hash\": ").append(jsonStringOrNull(prefs.backupPasswordHash)).append(",\n");
+        sb.append("  \"backup_password_set_at\": ").append(jsonStringOrNull(prefs.backupPasswordSetAt)).append("\n");
+        sb.append("}\n");
+
+        Path tmp = file.resolveSibling(file.getFileName().toString() + ".tmp");
+        try {
+            Files.writeString(tmp, sb.toString(), StandardCharsets.UTF_8);
+            try {
+                Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (Exception ignored) {
+                Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static String jsonStringOrNull(String value) {
+        if (value == null) return "null";
+        return "\"" + jsonEscape(value) + "\"";
+    }
+
+    private static String jsonEscape(String value) {
+        StringBuilder sb = new StringBuilder(value.length() + 8);
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '\\' -> sb.append("\\\\");
+                case '"' -> sb.append("\\\"");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    private static final class Preferences {
+        Boolean backupEncryptionEnabled;
+        Boolean backupPasswordActive;
+        String backupPasswordHash;
+        String backupPasswordSetAt;
     }
 
     private static String sessionGet(String key) {

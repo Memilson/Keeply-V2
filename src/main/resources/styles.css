@@ -1,13 +1,15 @@
 .root {
-    -fx-font-family: 'Segoe UI';
-    -fx-primary: #004488;
-    -fx-bg: #F0F2F5;
+    -fx-font-family: 'Noto Sans';
+    -fx-primary: #0B5FFF;
+    -fx-primary-50: #E9F1FF;
+    -fx-primary-600: #0A4ED6;
+    -fx-bg: #F6F8FB;
     -fx-card: #FFFFFF;
-    -fx-text-main: #333333;
-    -fx-text-muted: #666666;
+    -fx-text-main: #0F172A;
+    -fx-text-muted: #64748B;
     -fx-success: #28a745;
     -fx-danger: #dc3545;
-    -fx-border: #E0E0E0;
+    -fx-border: rgba(15, 23, 42, 0.12);
 
     /* Aliases/legado (mantém compatibilidade com regras antigas) */
     -fx-accent: -fx-primary;
@@ -20,7 +22,7 @@
 
 .keeply-root {
     -fx-background-color: -fx-bg;
-    -fx-font-family: 'Segoe UI';
+    -fx-font-family: 'Noto Sans';
     -fx-font-smoothing-type: lcd;
     -fx-border-color: -fx-border;
     -fx-border-width: 1;
@@ -88,28 +90,28 @@
 
 .card {
     -fx-background-color: -fx-card;
-    -fx-background-radius: 8;
+    -fx-background-radius: 14;
     -fx-border-color: -fx-border;
-    -fx-border-radius: 8;
+    -fx-border-radius: 14;
     -fx-border-width: 1;
-    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.06), 10, 0.20, 0, 2);
+    -fx-effect: dropshadow(gaussian, rgba(15, 23, 42, 0.08), 18, 0.16, 0, 6);
 }
 
 .btn {
     -fx-font-weight: 700;
-    -fx-background-radius: 10;
-    -fx-border-radius: 10;
+    -fx-background-radius: 12;
+    -fx-border-radius: 12;
     -fx-padding: 10 14;
     -fx-cursor: hand;
 }
 
 .btn-primary {
-    -fx-background-color: -fx-primary;
+    -fx-background-color: linear-gradient(to bottom right, -fx-primary, -fx-primary-600);
     -fx-text-fill: white;
 }
 
 .btn-primary:hover {
-    -fx-background-color: derive(-fx-primary, -8%);
+    -fx-background-color: linear-gradient(to bottom right, derive(-fx-primary, -6%), derive(-fx-primary-600, -6%));
 }
 
 .btn-secondary {
@@ -121,7 +123,18 @@
 
 .btn-secondary:hover {
     -fx-text-fill: -fx-primary;
-    -fx-background-color: rgba(0, 68, 136, 0.06);
+    -fx-background-color: rgba(11, 95, 255, 0.06);
+}
+
+.btn-outline {
+    -fx-background-color: rgba(11, 95, 255, 0.06);
+    -fx-text-fill: -fx-primary;
+    -fx-border-color: rgba(11, 95, 255, 0.25);
+    -fx-border-width: 1;
+}
+
+.btn-outline:hover {
+    -fx-background-color: rgba(11, 95, 255, 0.12);
 }
 
 .btn-icon {
@@ -139,15 +152,15 @@
 
 .text-input {
     -fx-background-color: white;
-    -fx-background-radius: 10;
-    -fx-border-color: rgba(17, 24, 39, 0.15);
-    -fx-border-radius: 10;
+    -fx-background-radius: 12;
+    -fx-border-color: rgba(15, 23, 42, 0.16);
+    -fx-border-radius: 12;
     -fx-padding: 10 12;
 }
 
 .text-input:focused {
     -fx-border-color: -fx-primary;
-    -fx-effect: dropshadow(gaussian, rgba(0, 68, 136, 0.14), 10, 0.25, 0, 0);
+    -fx-effect: dropshadow(gaussian, rgba(11, 95, 255, 0.18), 10, 0.25, 0, 0);
 }
 
 .mono-area {
@@ -221,15 +234,26 @@
 }
 
 .flow-panel {
-    -fx-background-color: -fx-card;
-    -fx-border-color: -fx-border;
+    -fx-background-color: linear-gradient(to bottom, #FFFFFF, #F8FAFF);
+    -fx-border-color: rgba(15, 23, 42, 0.10);
     -fx-border-width: 1;
-    -fx-border-radius: 8;
-    -fx-background-radius: 8;
+    -fx-border-radius: 14;
+    -fx-background-radius: 14;
+    -fx-effect: dropshadow(gaussian, rgba(15, 23, 42, 0.06), 12, 0.16, 0, 4);
+}
+
+.flow-icon-wrap {
+    -fx-background-radius: 999;
+    -fx-padding: 6;
+    -fx-background-color: rgba(11, 95, 255, 0.10);
+}
+
+.flow-icon-bg {
+    -fx-fill: transparent;
 }
 
 .flow-icon {
-    -fx-fill: -fx-text-muted;
+    -fx-fill: -fx-primary;
 }
 
 .flow-title {
@@ -246,37 +270,49 @@
 .flow-path {
     -fx-font-size: 12px;
     -fx-text-fill: -fx-text-main;
+    -fx-background-color: #F1F5FF;
+    -fx-padding: 8 10;
+    -fx-background-radius: 10;
+    -fx-border-color: rgba(11, 95, 255, 0.16);
+    -fx-border-radius: 10;
 }
 
 .flow-arrow {
-    -fx-font-size: 26px;
-    -fx-text-fill: -fx-text-muted;
+    -fx-font-size: 18px;
+    -fx-text-fill: -fx-primary;
+}
+
+.flow-arrow-wrap {
+    -fx-background-color: rgba(11, 95, 255, 0.10);
+    -fx-background-radius: 999;
+    -fx-padding: 8;
 }
 
 .segmented-host {
-    -fx-background-color: rgba(0, 0, 0, 0.03);
-    -fx-background-radius: 8;
-    -fx-padding: 2;
+    -fx-background-color: rgba(15, 23, 42, 0.06);
+    -fx-background-radius: 999;
+    -fx-padding: 3;
 }
 
 .segmented {
     -fx-background-color: transparent;
     -fx-text-fill: -fx-text-muted;
     -fx-font-weight: 600;
-    -fx-padding: 8 12;
+    -fx-padding: 8 14;
 }
 
 .segmented:selected {
-    -fx-background-color: -fx-primary;
-    -fx-text-fill: white;
+    -fx-background-color: white;
+    -fx-text-fill: -fx-primary;
+    -fx-effect: dropshadow(gaussian, rgba(11, 95, 255, 0.24), 8, 0.2, 0, 1);
 }
 
 .segmented-left {
-    -fx-background-radius: 6 0 0 6;
+    -fx-background-radius: 999 0 0 999;
 }
 
 .segmented-right {
-    -fx-background-radius: 0 6 6 0;
+    -fx-background-radius: 0 999 999 0;
 }
 
 .options-pane {
@@ -306,7 +342,7 @@
 }
 
 .switch .box {
-    -fx-background-color: rgba(0, 0, 0, 0.15);
+    -fx-background-color: rgba(15, 23, 42, 0.20);
     -fx-background-radius: 14;
     -fx-min-width: 42;
     -fx-min-height: 22;
@@ -325,6 +361,35 @@
 
 .switch:selected .mark {
     -fx-translate-x: 18;
+}
+
+.chip {
+    -fx-background-color: #EEF2FF;
+    -fx-text-fill: -fx-text-main;
+    -fx-font-size: 11px;
+    -fx-font-weight: 700;
+    -fx-padding: 4 10;
+    -fx-background-radius: 999;
+    -fx-border-radius: 999;
+}
+
+.chip-muted {
+    -fx-background-color: #F1F5F9;
+    -fx-text-fill: -fx-text-muted;
+}
+
+.chip-accent {
+    -fx-background-color: -fx-primary-50;
+    -fx-text-fill: -fx-primary;
+    -fx-border-color: rgba(11, 95, 255, 0.20);
+    -fx-border-width: 1;
+}
+
+.chip-cloud {
+    -fx-background-color: #EEF2FF;
+    -fx-text-fill: #4F46E5;
+    -fx-border-color: rgba(79, 70, 229, 0.20);
+    -fx-border-width: 1;
 }
 
 /* ---------------- Overview Screen ---------------- */
@@ -488,6 +553,3 @@
 /* Ícones */
 .icon-folder { -fx-fill: -fx-warn; }
 .icon-file { -fx-fill: -fx-text-muted; }
-
-
-

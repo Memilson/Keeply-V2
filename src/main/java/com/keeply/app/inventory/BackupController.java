@@ -95,8 +95,11 @@ public final class BackupController {
                 log(">> Erro: informe uma senha para criptografar os backups.");
                 return;
             }
-            Config.setBackupEncryptionPassword(pass);
-            log(">> Criptografia ativa: senha personalizada.");
+            if (!Config.verifyAndCacheBackupPassword(pass)) {
+                log(">> Erro: senha incorreta. Digite a senha configurada para desbloquear.");
+                return;
+            }
+            log(">> Criptografia ativa: senha validada.");
         }
 
         try {

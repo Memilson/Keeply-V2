@@ -108,7 +108,11 @@ public final class BackupScreen {
         consoleArea.setWrapText(true);
 
         // Criptografia de backup (senha única)
-        backupPasswordField.setPromptText("Digite a senha do backup");
+        if (Config.hasBackupPasswordHash()) {
+            backupPasswordField.setPromptText("Senha configurada (digite para desbloquear)");
+        } else {
+            backupPasswordField.setPromptText("Digite a senha do backup");
+        }
 
         backupPasswordField.textProperty().addListener((obs, oldVal, newVal) -> {
             if (encryptionCheckbox.isSelected()) Config.setBackupEncryptionPassword(newVal);
@@ -154,10 +158,12 @@ public final class BackupScreen {
 
         Label arrow = new Label("→");
         arrow.getStyleClass().add("flow-arrow");
+        StackPane arrowWrap = new StackPane(arrow);
+        arrowWrap.getStyleClass().add("flow-arrow-wrap");
 
         Node destPanel = createDestinationPanel();
 
-        flow.getChildren().addAll(originPanel, arrow, destPanel);
+        flow.getChildren().addAll(originPanel, arrowWrap, destPanel);
         HBox.setHgrow(originPanel, Priority.ALWAYS);
         HBox.setHgrow(destPanel, Priority.ALWAYS);
 
@@ -273,8 +279,11 @@ public final class BackupScreen {
         SVGPath icon = new SVGPath();
         icon.setContent(iconPath);
         icon.getStyleClass().add("flow-icon");
-        icon.setScaleX(1.2);
-        icon.setScaleY(1.2);
+
+        Circle iconBg = new Circle(16);
+        iconBg.getStyleClass().add("flow-icon-bg");
+        StackPane iconWrap = new StackPane(iconBg, icon);
+        iconWrap.getStyleClass().add("flow-icon-wrap");
 
         VBox titles = new VBox(2);
         Label t = new Label(title);
@@ -283,14 +292,20 @@ public final class BackupScreen {
         st.getStyleClass().add("flow-subtitle");
         titles.getChildren().addAll(t, st);
 
-        top.getChildren().addAll(icon, titles);
+        Region topSpacer = new Region();
+        HBox.setHgrow(topSpacer, Priority.ALWAYS);
+
+        Label chip = new Label("Origem");
+        chip.getStyleClass().addAll("chip", "chip-muted");
+
+        top.getChildren().addAll(iconWrap, titles, topSpacer, chip);
 
         Label path = new Label();
         path.getStyleClass().add("flow-path");
         path.textProperty().bind(boundPath.textProperty());
 
-        actionButton.getStyleClass().addAll("btn", "btn-secondary");
-        actionButton.setMinWidth(140);
+        actionButton.getStyleClass().addAll("btn", "btn-outline");
+        actionButton.setMinWidth(150);
 
         panel.getChildren().addAll(top, path, actionButton);
         return panel;
@@ -307,8 +322,11 @@ public final class BackupScreen {
         SVGPath icon = new SVGPath();
         icon.setContent("M6 19a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.6A4 4 0 0 1 18 19H6z");
         icon.getStyleClass().add("flow-icon");
-        icon.setScaleX(1.2);
-        icon.setScaleY(1.2);
+
+        Circle iconBg = new Circle(16);
+        iconBg.getStyleClass().add("flow-icon-bg");
+        StackPane iconWrap = new StackPane(iconBg, icon);
+        iconWrap.getStyleClass().add("flow-icon-wrap");
 
         VBox titles = new VBox(2);
         Label t = new Label("Destino");
@@ -317,7 +335,20 @@ public final class BackupScreen {
         st.getStyleClass().add("flow-subtitle");
         titles.getChildren().addAll(t, st);
 
-        top.getChildren().addAll(icon, titles);
+        Region topSpacer = new Region();
+        HBox.setHgrow(topSpacer, Priority.ALWAYS);
+
+        Label chip = new Label();
+        chip.getStyleClass().addAll("chip", "chip-accent");
+        chip.textProperty().bind(javafx.beans.binding.Bindings.createStringBinding(() -> {
+            return isCloudSelected() ? "Nuvem" : "Local";
+        }, destinationTypeGroup.selectedToggleProperty()));
+        destinationTypeGroup.selectedToggleProperty().addListener((obs, oldVal, newVal) -> {
+            chip.getStyleClass().removeAll("chip-accent", "chip-cloud");
+            chip.getStyleClass().add(isCloudSelected() ? "chip-cloud" : "chip-accent");
+        });
+
+        top.getChildren().addAll(iconWrap, titles, topSpacer, chip);
 
         Label destText = new Label();
         destText.getStyleClass().add("flow-path");
@@ -327,8 +358,8 @@ public final class BackupScreen {
             return (v == null || v.isBlank()) ? "-" : v;
         }, destinationTypeGroup.selectedToggleProperty(), destField.textProperty()));
 
-        btnBrowseDest.getStyleClass().addAll("btn", "btn-secondary");
-        btnBrowseDest.setMinWidth(140);
+        btnBrowseDest.getStyleClass().addAll("btn", "btn-outline");
+        btnBrowseDest.setMinWidth(150);
         btnBrowseDest.disableProperty().bind(scanning.or(destinationTypeGroup.selectedToggleProperty().isEqualTo(btnCloud)));
 
         panel.getChildren().addAll(top, destText, btnBrowseDest);
