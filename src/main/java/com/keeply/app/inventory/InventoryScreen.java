@@ -12,12 +12,16 @@ import javafx.scene.shape.SVGPath;
 
 import java.util.*;
 import java.util.function.Consumer;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
 import org.apache.commons.lang3.StringUtils;
 
 import com.keeply.app.database.DatabaseBackup.FileHistoryRow;
 import com.keeply.app.database.DatabaseBackup.InventoryRow;
 import com.keeply.app.database.DatabaseBackup.ScanSummary;
+import com.keeply.app.history.BackupHistoryDb;
 
 public final class InventoryScreen {
 
@@ -30,12 +34,12 @@ public final class InventoryScreen {
     private final Button btnRefresh = new Button("Recarregar");
     private final Button btnExpand = new Button("Expandir");
     private final Button btnCollapse = new Button("Colapsar");
-    private final Button btnRestoreSnapshot = new Button("Restaurar Snapshot");
+    private final Button btnRestoreSnapshot = new Button("Restaurar backup");
     private final MenuButton btnExport = new MenuButton("Report");
     private final MenuItem miExportCsv = new MenuItem("CSV");
     private final MenuItem miExportPdf = new MenuItem("PDF");
     private final TextField txtSearch = new TextField();
-    private final ComboBox<ScanSummary> cbScans = new ComboBox<>();
+    private final ListView<BackupHistoryDb.HistoryRow> scanList = new ListView<>();
     
     private final Label metaLabel = new Label("Aguardando dados...");
     private final Label errorLabel = new Label();
@@ -61,25 +65,30 @@ public final class InventoryScreen {
 
         VBox layout = new VBox();
         layout.setFillWidth(true);
-        layout.setPadding(new Insets(20));
+        layout.setPadding(new Insets(8, 0, 0, 0));
         layout.setSpacing(16);
 
         // --- 1. Header (Título) ---
-        Label title = new Label("Inventário de Arquivos");
-        title.getStyleClass().add("header-title");
-        
+        Label title = new Label("Armazenamento");
+        title.getStyleClass().add("page-title");
+
+        Label subtitle = new Label("Auditoria e estrutura do conteúdo protegido.");
+        subtitle.getStyleClass().add("page-subtitle");
+
         metaLabel.getStyleClass().add("header-subtitle");
-        VBox headerBox = new VBox(4, title, metaLabel);
+        VBox headerBox = new VBox(4, title, subtitle, metaLabel);
 
         // --- 2. Toolbar (Filtros e Ações) ---
         VBox toolbar = new VBox(8);
         toolbar.getStyleClass().add("toolbar-container");
         
-        // Inputs
-        cbScans.setPromptText("Selecione um Snapshot...");
-        cbScans.setPrefWidth(240);
-        cbScans.setButtonCell(new ScanListCell());
-        cbScans.setCellFactory(p -> new ScanListCell());
+        // Lista de backups (histórico)
+        scanList.setMinHeight(160);
+        scanList.setPrefHeight(190);
+        scanList.setMaxHeight(240);
+        scanList.getStyleClass().add("history-list");
+        scanList.setCellFactory(p -> new ScanListCell());
+        scanList.getSelectionModel().setSelectionMode(SelectionMode.SINGLE);
         
         txtSearch.setPromptText("Filtrar por nome...");
         txtSearch.setPrefWidth(220);
@@ -105,14 +114,18 @@ public final class InventoryScreen {
         txtSearch.setMaxWidth(Double.MAX_VALUE);
         HBox.setHgrow(txtSearch, Priority.ALWAYS);
 
-        HBox filterRow = new HBox(10, cbScans, txtSearch);
+        HBox filterRow = new HBox(10, txtSearch);
         filterRow.setAlignment(Pos.CENTER_LEFT);
 
-        HBox actionsRow = new HBox(10, btnExpand, btnCollapse, btnRefresh, btnRestoreSnapshot, btnExport);
-        actionsRow.setAlignment(Pos.CENTER_RIGHT);
+        HBox actionsRow = new HBox(10, btnRestoreSnapshot, btnExpand, btnCollapse, btnRefresh, btnExport);
+        actionsRow.setAlignment(Pos.CENTER_LEFT);
         actionsRow.setMaxWidth(Double.MAX_VALUE);
 
-        toolbar.getChildren().addAll(filterRow, actionsRow);
+        Label listTitle = new Label("Histórico de backups");
+        listTitle.getStyleClass().add("section-title");
+        VBox listBox = new VBox(6, listTitle, scanList);
+        listBox.setMinHeight(180);
+        toolbar.getChildren().addAll(listBox, filterRow, actionsRow);
 
         // --- 3. Tabs e Dados ---
         dataTabs.getStyleClass().add("modern-tabs");
@@ -139,13 +152,17 @@ public final class InventoryScreen {
         card.getStyleClass().add("card"); // Usa o estilo de card do styles.css
         VBox.setVgrow(card, Priority.ALWAYS);
 
-        layout.getChildren().add(card);
+        VBox content = new VBox(16, card);
+        content.getStyleClass().add("content-wrap");
+        content.setMaxWidth(980);
+
+        layout.getChildren().add(content);
         return layout;
     }
 
     // --- Configuração da Árvore (Visual Renovado) ---
     private void configureTree() {
-        tree.setShowRoot(true);
+        tree.setShowRoot(false);
         tree.setColumnResizePolicy(TreeTableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
         tree.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
         
@@ -401,34 +418,25 @@ public final class InventoryScreen {
     }
 
     public void renderTree(List<InventoryRow> rows, ScanSummary scan) {
-        if (rows == null || rows.isEmpty()) { tree.setRoot(null); tree.setPlaceholder(new Label("Nenhum dado disponível.")); return; }
-        String rootLabel = (scan != null) ? scan.rootPath() : "Root";
-        TreeItem<FileNode> root = new TreeItem<>(new FileNode(rootLabel, "", true, 0, "SYNCED", 0));
+        if (rows == null || rows.isEmpty()) {
+            tree.setRoot(null);
+            tree.setPlaceholder(new Label("Selecione um backup para visualizar os arquivos."));
+            metaLabel.setText("");
+            return;
+        }
+        TreeItem<FileNode> root = new TreeItem<>(new FileNode("root", "", true, 0, "SYNCED", 0));
         root.setExpanded(true);
-        Map<String, TreeItem<FileNode>> cache = new HashMap<>();
-        cache.put("", root);
 
         for (InventoryRow row : rows) {
-            String[] parts = row.pathRel().split("/");
-            TreeItem<FileNode> parent = root;
-            String current = "";
-            for (int i=0; i<parts.length-1; i++) {
-                current = current.isEmpty() ? parts[i] : current + "/" + parts[i];
-                TreeItem<FileNode> node = cache.get(current);
-                if (node == null) {
-                    node = new TreeItem<>(new FileNode(parts[i], current, true, 0, "SYNCED", 0));
-                    cache.put(current, node);
-                    parent.getChildren().add(node);
-                }
-                parent = node;
-            }
-            String name = parts[parts.length-1];
+            if (row.pathRel() == null || row.pathRel().isBlank()) continue;
+            // Lista plana de arquivos (sem pastas)
+            String name = row.pathRel();
             TreeItem<FileNode> item = new TreeItem<>(new FileNode(name, row.pathRel(), false, row.sizeBytes(), row.status(), row.modifiedMillis()));
-            parent.getChildren().add(item);
+            root.getChildren().add(item);
         }
-        sortTree(root);
+
         tree.setRoot(root);
-        metaLabel.setText(scan != null ? "Snapshot #" + scan.scanId() + " (" + scan.finishedAt() + ") • " + rows.size() + " itens" : "");
+        metaLabel.setText(scan != null ? "Backup #" + scan.scanId() + " (" + formatDate(scan.finishedAt()) + ") • " + rows.size() + " itens" : "");
     }
 
     public void showHistoryDialog(List<FileHistoryRow> rows, String pathRel) {
@@ -519,7 +527,7 @@ public final class InventoryScreen {
     public MenuItem exportPdfItem() { return miExportPdf; }
     public MenuButton exportMenuButton() { return btnExport; }
     public TextField searchField() { return txtSearch; }
-    public ComboBox<ScanSummary> scanSelector() { return cbScans; }
+    public ListView<BackupHistoryDb.HistoryRow> scanList() { return scanList; }
     public void onFileSelected(Consumer<String> c) { this.onFileSelected = c; }
     public void onShowHistory(Consumer<String> c) { this.onShowHistory = c; }
     public void onRestoreSelected(Runnable r) { this.onRestoreSelected = r; }
@@ -529,7 +537,7 @@ public final class InventoryScreen {
         dataTabs.setDisable(value);
         btnRefresh.setDisable(value);
         btnRestoreSnapshot.setDisable(value);
-        cbScans.setDisable(value);
+        scanList.setDisable(value);
     }
 
     public List<SelectedNode> getSelectedNodes() {
@@ -563,7 +571,12 @@ public final class InventoryScreen {
 
     private String formatDate(String dt) {
         if (dt == null || dt.isBlank()) return "-";
-        return dt.length() > 16 ? dt.substring(0, 16) : dt;
+        try {
+            Instant instant = Instant.parse(dt);
+            return TS_FMT.format(instant.atZone(ZoneId.systemDefault()));
+        } catch (Exception e) {
+            return dt.length() > 16 ? dt.substring(0, 16) : dt;
+        }
     }
 
     private void lockButtonWidth(Region r) {
@@ -576,10 +589,76 @@ public final class InventoryScreen {
     public record FileSizeRow(String name, String path, long sizeBytes) {}
     public record FolderSizeRow(String path, long sizeBytes, double percentOfTotal) {}
     
-    private static class ScanListCell extends ListCell<ScanSummary> {
-        @Override protected void updateItem(ScanSummary item, boolean e) {
+    private class ScanListCell extends ListCell<BackupHistoryDb.HistoryRow> {
+        @Override protected void updateItem(BackupHistoryDb.HistoryRow item, boolean e) {
             super.updateItem(item, e);
-            if (e||item==null) setText(null); else setText("Snapshot #"+item.scanId()+" ("+item.startedAt()+")");
+            if (e || item == null) {
+                setText(null);
+                setGraphic(null);
+                return;
+            }
+            String type = item.backupType() == null
+                    ? "Backup"
+                    : (item.backupType().equalsIgnoreCase("FULL") ? "Completo" : "Incremental");
+            String tsRaw = item.finishedAt() != null ? item.finishedAt() : item.startedAt();
+            String ts = formatIso(tsRaw);
+            Label title = new Label(ts);
+            title.getStyleClass().add("history-title");
+
+            Label pill = new Label(type);
+            pill.getStyleClass().addAll("history-pill", item.backupType() != null && item.backupType().equalsIgnoreCase("FULL") ? "pill-full" : "pill-incremental");
+
+            Label line1 = new Label("Plano: " + safeText(item.rootPath()));
+            line1.getStyleClass().add("muted");
+            Label line2 = new Label("Arquivos: " + item.filesProcessed() + " • Erros: " + item.errors());
+            line2.getStyleClass().add("muted");
+
+            Button restoreBtn = new Button("Recuperar arquivos/pastas");
+            restoreBtn.getStyleClass().addAll("btn", "btn-primary", "btn-mini");
+            restoreBtn.setOnAction(ev -> {
+                // Seleciona o backup para exibir a árvore abaixo
+                getListView().getSelectionModel().select(item);
+            });
+
+            Button actionsBtn = new Button("Ações");
+            actionsBtn.getStyleClass().addAll("btn", "btn-outline", "btn-mini");
+            actionsBtn.setOnAction(ev -> getListView().getSelectionModel().select(item));
+
+            HBox actions = new HBox(8, restoreBtn, actionsBtn);
+            actions.setAlignment(Pos.CENTER_LEFT);
+
+            VBox card = new VBox(6, title, line1, line2, actions);
+            card.getStyleClass().add("history-card");
+
+            Region line = new Region();
+            line.getStyleClass().add("history-line");
+            Region dot = new Region();
+            dot.getStyleClass().add("history-dot");
+            VBox rail = new VBox(dot, line);
+            rail.getStyleClass().add("history-rail");
+            VBox.setVgrow(line, Priority.ALWAYS);
+
+            HBox row = new HBox(10, rail, card, pill);
+            row.setAlignment(Pos.TOP_LEFT);
+            row.getStyleClass().add("history-row");
+            setGraphic(row);
         }
+    }
+
+    private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
+
+    private static String formatIso(String dt) {
+        if (dt == null || dt.isBlank()) return "-";
+        try {
+            Instant instant = Instant.parse(dt);
+            return TS_FMT.format(instant.atZone(ZoneId.systemDefault()));
+        } catch (Exception e) {
+            return dt.length() > 16 ? dt.substring(0, 16) : dt;
+        }
+    }
+
+    private static String safeText(String v) {
+        if (v == null || v.isBlank()) return "-";
+        return v.length() > 48 ? "…" + v.substring(v.length() - 47) : v;
     }
 }

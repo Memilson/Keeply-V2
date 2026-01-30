@@ -1,26 +1,28 @@
 package com.keeply.app.inventory;
-
 import java.io.IOException;
-import java.nio.file.*;
+import java.nio.file.FileSystems;
+import java.nio.file.FileVisitOption;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.sql.Connection;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 
-import com.keeply.app.database.DatabaseBackup;
-import com.keeply.app.database.KeeplyDao;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Executa varredura de metadados e persistência no banco.
- */
+import com.keeply.app.database.DatabaseBackup;
+import com.keeply.app.database.KeeplyDao;
 public final class Backup {
 
     Backup() {}
@@ -28,9 +30,7 @@ public final class Backup {
         public static ScanConfig defaults() {
             return new ScanConfig(10000, 
                 List.of("**/.git/**", "**/node_modules/**", "**/AppData/**", "**/Keeply/**", "**/*.iso", "**/*.vdi"));
-        }
-    }
-
+        }}
     public record FileSeen(long scanId, String pathRel, String name, long size, long mtime, long ctime) {}
 
     public static final class ScanMetrics {
@@ -237,16 +237,8 @@ public final class Backup {
                             c.commit(); 
                             metrics.dbBatches.increment();
                             pending = 0;
-                        }
-                    }
+}}
                     if (pending > 0) { ps.executeBatch(); c.commit(); metrics.dbBatches.increment(); }
-                }
-            } catch (Exception e) {
+                }}catch (Exception e) {
                 workerError = e;
-                logger.error("DbWriter error", e);
-            }
-        }
-    }
-}
-
-
+                logger.error("DbWriter error", e);}}}}

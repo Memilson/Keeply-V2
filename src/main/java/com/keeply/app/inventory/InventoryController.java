@@ -71,9 +71,11 @@ public final class InventoryController {
         view.exportPdfItem().setOnAction(e -> exportPdf());
         view.searchField().textProperty().addListener((obs, oldVal, newVal) -> applyFilter(newVal));
 
-        view.scanSelector().valueProperty().addListener((obs, oldScan, newScan) -> {
+        view.scanList().getSelectionModel().selectedItemProperty().addListener((obs, oldScan, newScan) -> {
             if (suppressSelection) return;
-            if (newScan != null) loadSnapshot(newScan);
+            if (newScan != null && newScan.scanId() != null) {
+                loadSnapshot(new ScanSummary(newScan.scanId(), newScan.rootPath(), newScan.startedAt(), newScan.finishedAt()));
+            }
         });
 
         view.onFileSelected(path -> {});
@@ -81,9 +83,12 @@ public final class InventoryController {
     }
 
     private void restoreSnapshot() {
-        ScanSummary scan = view.scanSelector().getValue();
+        var row = view.scanList().getSelectionModel().getSelectedItem();
+        ScanSummary scan = (row == null || row.scanId() == null)
+                ? null
+                : new ScanSummary(row.scanId(), row.rootPath(), row.startedAt(), row.finishedAt());
         if (scan == null) {
-            view.showError("Selecione um Snapshot antes de restaurar.");
+            view.showError("Selecione um backup antes de restaurar.");
             return;
         }
 
@@ -101,7 +106,7 @@ public final class InventoryController {
             return;
         }
 
-        RestoreOptions options = promptRestoreOptions("Restaurar Snapshot #" + scan.scanId());
+        RestoreOptions options = promptRestoreOptions("Restaurar Backup #" + scan.scanId());
         if (options == null) return;
         Config.setBackupEncryptionPassword(options.password());
 
@@ -115,7 +120,7 @@ public final class InventoryController {
             originalRoot = Path.of(scan.rootPath());
         } else {
             DirectoryChooser chooser = new DirectoryChooser();
-            chooser.setTitle("Restaurar Snapshot #" + scan.scanId() + " (somente NEW/MODIFIED)");
+            chooser.setTitle("Restaurar Backup #" + scan.scanId() + " (somente NEW/MODIFIED)");
 
             File initialDir = new File(Config.getLastPath());
             if (initialDir.exists() && initialDir.isDirectory()) {
@@ -134,8 +139,8 @@ public final class InventoryController {
         final Path finalOriginalRoot = originalRoot;
         final BlobStore.RestoreMode finalMode = options.mode();
         Window owner = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
-        RestoreLogWindow log = RestoreLogWindow.open(owner, "Restaurando Snapshot #" + scan.scanId());
-        log.appendLine(">> Snapshot #" + scan.scanId() + " (somente NEW/MODIFIED)");
+        RestoreLogWindow log = RestoreLogWindow.open(owner, "Restaurando Backup #" + scan.scanId());
+        log.appendLine(">> Backup #" + scan.scanId() + " (somente NEW/MODIFIED)");
 
         Thread.ofVirtual().name("keeply-restore-snapshot").start(() -> {
             try {
@@ -159,9 +164,12 @@ public final class InventoryController {
     }
 
     private void restoreSelected() {
-        ScanSummary scan = view.scanSelector().getValue();
+        var row = view.scanList().getSelectionModel().getSelectedItem();
+        ScanSummary scan = (row == null || row.scanId() == null)
+                ? null
+                : new ScanSummary(row.scanId(), row.rootPath(), row.startedAt(), row.finishedAt());
         if (scan == null) {
-            view.showError("Selecione um Snapshot antes de restaurar.");
+            view.showError("Selecione um backup antes de restaurar.");
             return;
         }
 
@@ -190,7 +198,7 @@ public final class InventoryController {
             return;
         }
 
-        RestoreOptions options = promptRestoreOptions("Restaurar Selecionados (Snapshot #" + scan.scanId() + ")");
+        RestoreOptions options = promptRestoreOptions("Restaurar Selecionados (Backup #" + scan.scanId() + ")");
         if (options == null) return;
         Config.setBackupEncryptionPassword(options.password());
 
@@ -204,7 +212,7 @@ public final class InventoryController {
             originalRoot = Path.of(scan.rootPath());
         } else {
             DirectoryChooser chooser = new DirectoryChooser();
-            chooser.setTitle("Restaurar Selecionados (Snapshot #" + scan.scanId() + ")");
+            chooser.setTitle("Restaurar Selecionados (Backup #" + scan.scanId() + ")");
 
             File initialDir = new File(Config.getLastPath());
             if (initialDir.exists() && initialDir.isDirectory()) {
@@ -232,8 +240,8 @@ public final class InventoryController {
         final Path finalOriginalRoot = originalRoot;
         final BlobStore.RestoreMode finalMode = options.mode();
         Window owner = view.exportMenuButton().getScene() != null ? view.exportMenuButton().getScene().getWindow() : null;
-        RestoreLogWindow log = RestoreLogWindow.open(owner, "Restaurando Seleção (Snapshot #" + scan.scanId() + ")");
-        log.appendLine(">> Snapshot #" + scan.scanId());
+        RestoreLogWindow log = RestoreLogWindow.open(owner, "Restaurando Seleção (Backup #" + scan.scanId() + ")");
+        log.appendLine(">> Backup #" + scan.scanId());
         log.appendLine(">> Seleção: arquivos=" + filePaths.size() + ", pastas=" + dirPrefixes.size());
 
         Thread.ofVirtual().name("keeply-restore-selected").start(() -> {
@@ -267,6 +275,16 @@ public final class InventoryController {
                 var rows = jdbi.withExtension(KeeplyDao.class, KeeplyDao::fetchInventory);
                 var lastScan = jdbi.withExtension(KeeplyDao.class, dao -> dao.fetchLastScan().orElse(null));
                 var allScans = jdbi.withExtension(KeeplyDao.class, KeeplyDao::fetchAllScans);
+                var history = com.keeply.app.history.BackupHistoryDb.listRecent(200);
+                var orderedHistory = new java.util.ArrayList<>(history);
+                orderedHistory.sort((a, b) -> {
+                    int ra = "FULL".equalsIgnoreCase(a.backupType()) ? 1 : 0;
+                    int rb = "FULL".equalsIgnoreCase(b.backupType()) ? 1 : 0;
+                    if (ra != rb) return Integer.compare(ra, rb);
+                    long ta = parseTs(a.finishedAt() != null ? a.finishedAt() : a.startedAt());
+                    long tb = parseTs(b.finishedAt() != null ? b.finishedAt() : b.startedAt());
+                    return Long.compare(tb, ta);
+                });
                 var reports = jdbi.withExtension(KeeplyDao.class, KeeplyDao::predictGrowth);
 
                 printCapacityAnalysis(reports);
@@ -275,12 +293,14 @@ public final class InventoryController {
                     view.showLoading(false);
                     
                     suppressSelection = true;
-                    view.scanSelector().getItems().setAll(allScans);
+                    view.scanList().getItems().setAll(orderedHistory);
                     
-                    if (!allScans.isEmpty()) {
-                        view.scanSelector().getSelectionModel().select(0); 
+                    if (!orderedHistory.isEmpty()) {
                         suppressSelection = false;
-                        loadSnapshot(allScans.get(0));
+                        this.allRows = List.of();
+                        this.currentScanData = null;
+                        view.renderTree(List.of(), null);
+                        view.renderLargest(List.of());
                     } else {
                         suppressSelection = false;
                         this.allRows = rows;
@@ -362,7 +382,7 @@ public final class InventoryController {
                 });
             } catch (Exception e) {
                 logger.error("Erro ao carregar snapshot", e);
-                Platform.runLater(() -> { view.showLoading(false); view.showError("Erro Snapshot: " + e.getMessage()); });
+                Platform.runLater(() -> { view.showLoading(false); view.showError("Erro no backup: " + e.getMessage()); });
             }
         });
     }
@@ -416,6 +436,15 @@ public final class InventoryController {
             Config.saveLastPath(file.getParentFile().getAbsolutePath());
         }
         return file;
+    }
+
+    private static long parseTs(String s) {
+        if (s == null || s.isBlank()) return 0L;
+        try {
+            return java.time.Instant.parse(s).toEpochMilli();
+        } catch (Exception e) {
+            return 0L;
+        }
     }
 
     private static File ensureExtension(File file, String extension) {

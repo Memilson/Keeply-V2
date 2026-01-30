@@ -80,6 +80,7 @@ public final class KeeplyTemplate {
     private final BorderPane root = new BorderPane();
     private final StackPane contentHost = new StackPane();
     private final StackPane footerHost  = new StackPane();
+    private final StackPane sidebarHost = new StackPane();
     private final Label screenTitle = new Label("");
 
     // Estado do Drag da Janela
@@ -110,6 +111,10 @@ public final class KeeplyTemplate {
         footerHost.getChildren().setAll(node);
     }
 
+    public void setSidebar(Node node) {
+        sidebarHost.getChildren().setAll(node);
+    }
+
     // --- Construção do Layout ---
 
     private void initLayout() {
@@ -118,19 +123,26 @@ public final class KeeplyTemplate {
 
         root.setTop(createTitleBar());
         root.setCenter(createBody());
+        root.setLeft(createSidebar());
         root.setBottom(createFooter());
     }
 
     private Node createTitleBar() {
         var bar = new HBox(12);
         bar.getStyleClass().add("keeply-titlebar-bar");
-        bar.setPadding(new Insets(10, 16, 10, 16));
+        bar.setPadding(new Insets(10, 20, 10, 20));
         bar.setAlignment(Pos.CENTER_LEFT);
 
-        var brand = new Label("Keeply |");
+        var brandIcon = new SVGPath();
+        brandIcon.setContent("M12 3a7 7 0 0 0-7 7c0 4.4 3.6 7 7 10 3.4-3 7-5.6 7-10a7 7 0 0 0-7-7zm0 9.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5z");
+        brandIcon.getStyleClass().add("brand-icon");
+
+        var brand = new Label("Keeply");
         brand.getStyleClass().add("keeply-brand");
 
-        screenTitle.getStyleClass().add("keeply-screen-title");
+        var brandBox = new HBox(8, brandIcon, brand);
+        brandBox.setAlignment(Pos.CENTER_LEFT);
+        brandBox.getStyleClass().add("brand-box");
 
         var spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -142,11 +154,11 @@ public final class KeeplyTemplate {
         var btnClose = createWindowButton(ICON_CLOSE, true);
         btnClose.setOnAction(e -> stage.close());
 
-        bar.getChildren().addAll(brand, screenTitle, spacer, btnMin, btnClose);
+        bar.getChildren().addAll(brandBox, spacer, btnMin, btnClose);
 
         // Linha fina colorida (Accent Line)
         var accentLine = new Region();
-        accentLine.setPrefHeight(2);
+        accentLine.setPrefHeight(1);
         accentLine.getStyleClass().add("keeply-titlebar-accent");
 
         var host = new VBox(bar, accentLine);
@@ -155,15 +167,22 @@ public final class KeeplyTemplate {
     }
 
     private Node createBody() {
-        contentHost.setPadding(new Insets(20));
+        contentHost.setPadding(new Insets(28, 20, 20, 20));
+        contentHost.setAlignment(Pos.TOP_LEFT);
         contentHost.getStyleClass().add("keeply-body");
         return contentHost;
     }
 
     private Node createFooter() {
-        footerHost.setPadding(new Insets(16, 20, 20, 20));
+        footerHost.setPadding(new Insets(14, 20, 18, 20));
         footerHost.getStyleClass().add("keeply-footer");
         return footerHost;
+    }
+
+    private Node createSidebar() {
+        sidebarHost.getStyleClass().add("keeply-sidebar");
+        sidebarHost.setPrefWidth(220);
+        return sidebarHost;
     }
 
     // --- Helpers de UI ---
@@ -197,5 +216,3 @@ public final class KeeplyTemplate {
         return btn;
     }
 }
-
-

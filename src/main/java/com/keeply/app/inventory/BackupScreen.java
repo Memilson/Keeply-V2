@@ -1,5 +1,11 @@
 package com.keeply.app.inventory;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Objects;
+import java.util.Optional;
+
 import com.keeply.app.config.Config;
 import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
@@ -7,22 +13,33 @@ import com.keeply.app.templates.KeeplyTemplate.ScanModel;
 import javafx.application.Platform;
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.SimpleBooleanProperty;
-import javafx.beans.property.StringProperty;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
-import javafx.scene.control.*;
-import javafx.scene.layout.*;
-import javafx.scene.shape.Circle;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckBox;
+import javafx.scene.control.ContentDisplay;
+import javafx.scene.control.Label;
+import javafx.scene.control.PasswordField;
+import javafx.scene.control.ProgressBar;
+import javafx.scene.control.ProgressIndicator;
+import javafx.scene.control.TextArea;
+import javafx.scene.control.TextField;
+import javafx.scene.control.TitledPane;
+import javafx.scene.control.ToggleButton;
+import javafx.scene.control.ToggleGroup;
+import javafx.scene.control.Tooltip;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
 import javafx.scene.shape.SVGPath;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.Stage;
-
-import java.io.File;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.Objects;
-import java.util.Optional;
 
 public final class BackupScreen {
 
@@ -120,12 +137,15 @@ public final class BackupScreen {
     }
 
     public Node content() {
-        var root = new VBox(14);
+        var root = new VBox(18);
         root.getStyleClass().add("backup-screen");
-        root.setPadding(new Insets(18, 0, 0, 0));
+        root.setPadding(new Insets(8, 0, 0, 0));
 
-        Label pageTitle = new Label("Backup");
+        Label pageTitle = new Label("Configurações");
         pageTitle.getStyleClass().add("page-title");
+
+        Label pageSubtitle = new Label("Parâmetros do plano de backup automatizado.");
+        pageSubtitle.getStyleClass().add("page-subtitle");
 
         VBox card = new VBox(14);
         card.getStyleClass().addAll("card", "backup-plan-card");
@@ -134,7 +154,7 @@ public final class BackupScreen {
         HBox header = new HBox(10);
         header.setAlignment(Pos.CENTER_LEFT);
 
-        Label h2 = new Label("Configuração do Plano de Backup");
+        Label h2 = new Label("Plano de Backup");
         h2.getStyleClass().add("card-h2");
 
         Region spacer = new Region();
@@ -173,8 +193,11 @@ public final class BackupScreen {
         Node progress = createProgressPanel();
 
         card.getChildren().addAll(header, flow, options, progress);
+        VBox content = new VBox(16, pageTitle, pageSubtitle, card);
+        content.getStyleClass().add("content-wrap");
+        content.setMaxWidth(980);
 
-        root.getChildren().addAll(pageTitle, card);
+        root.getChildren().add(content);
         return root;
     }
 
@@ -217,7 +240,6 @@ public final class BackupScreen {
 
         // Direita: ações
         backupFooterActions.setAlignment(Pos.CENTER_RIGHT);
-
         styleIconButton(btnStop, ICON_STOP);
         styleIconButton(btnWipe, ICON_TRASH);
 
@@ -280,11 +302,6 @@ public final class BackupScreen {
         icon.setContent(iconPath);
         icon.getStyleClass().add("flow-icon");
 
-        Circle iconBg = new Circle(16);
-        iconBg.getStyleClass().add("flow-icon-bg");
-        StackPane iconWrap = new StackPane(iconBg, icon);
-        iconWrap.getStyleClass().add("flow-icon-wrap");
-
         VBox titles = new VBox(2);
         Label t = new Label(title);
         t.getStyleClass().add("flow-title");
@@ -292,13 +309,7 @@ public final class BackupScreen {
         st.getStyleClass().add("flow-subtitle");
         titles.getChildren().addAll(t, st);
 
-        Region topSpacer = new Region();
-        HBox.setHgrow(topSpacer, Priority.ALWAYS);
-
-        Label chip = new Label("Origem");
-        chip.getStyleClass().addAll("chip", "chip-muted");
-
-        top.getChildren().addAll(iconWrap, titles, topSpacer, chip);
+        top.getChildren().addAll(icon, titles);
 
         Label path = new Label();
         path.getStyleClass().add("flow-path");
@@ -323,11 +334,6 @@ public final class BackupScreen {
         icon.setContent("M6 19a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.6A4 4 0 0 1 18 19H6z");
         icon.getStyleClass().add("flow-icon");
 
-        Circle iconBg = new Circle(16);
-        iconBg.getStyleClass().add("flow-icon-bg");
-        StackPane iconWrap = new StackPane(iconBg, icon);
-        iconWrap.getStyleClass().add("flow-icon-wrap");
-
         VBox titles = new VBox(2);
         Label t = new Label("Destino");
         t.getStyleClass().add("flow-title");
@@ -335,20 +341,7 @@ public final class BackupScreen {
         st.getStyleClass().add("flow-subtitle");
         titles.getChildren().addAll(t, st);
 
-        Region topSpacer = new Region();
-        HBox.setHgrow(topSpacer, Priority.ALWAYS);
-
-        Label chip = new Label();
-        chip.getStyleClass().addAll("chip", "chip-accent");
-        chip.textProperty().bind(javafx.beans.binding.Bindings.createStringBinding(() -> {
-            return isCloudSelected() ? "Nuvem" : "Local";
-        }, destinationTypeGroup.selectedToggleProperty()));
-        destinationTypeGroup.selectedToggleProperty().addListener((obs, oldVal, newVal) -> {
-            chip.getStyleClass().removeAll("chip-accent", "chip-cloud");
-            chip.getStyleClass().add(isCloudSelected() ? "chip-cloud" : "chip-accent");
-        });
-
-        top.getChildren().addAll(iconWrap, titles, topSpacer, chip);
+        top.getChildren().addAll(icon, titles);
 
         Label destText = new Label();
         destText.getStyleClass().add("flow-path");

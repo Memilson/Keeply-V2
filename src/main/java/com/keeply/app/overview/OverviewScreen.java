@@ -1,5 +1,4 @@
 package com.keeply.app.overview;
-
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -15,22 +14,19 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.scene.shape.SVGPath;
-
 public final class OverviewScreen {
-
     public Node content() {
         VBox root = new VBox(14);
         root.getStyleClass().add("overview-screen");
-        root.setPadding(new Insets(18, 0, 0, 0));
-
-        Label title = new Label("Visão Geral");
+        root.setPadding(new Insets(8, 0, 0, 0));
+        Label title = new Label("Status do Sistema");
         title.getStyleClass().add("page-title");
-
+        Label subtitle = new Label("Resumo operacional do ambiente de backup.");
+        subtitle.getStyleClass().add("page-subtitle");
         GridPane top = new GridPane();
         top.getStyleClass().add("metrics-grid");
         top.setHgap(12);
         top.setVgap(12);
-
         ColumnConstraints c1 = new ColumnConstraints();
         c1.setPercentWidth(33.33);
         c1.setHgrow(Priority.ALWAYS);
@@ -41,91 +37,65 @@ public final class OverviewScreen {
         c3.setPercentWidth(33.33);
         c3.setHgrow(Priority.ALWAYS);
         top.getColumnConstraints().setAll(c1, c2, c3);
-
         top.add(cardTotalBackups(), 0, 0);
         top.add(cardStorage(), 1, 0);
         top.add(cardRecentActivity(), 2, 0);
-
         VBox chartCard = cardChart();
         VBox healthCard = cardHealth();
-
-        root.getChildren().addAll(title, top, chartCard, healthCard);
-        return root;
-    }
-
+        VBox content = new VBox(16, title, subtitle, top, chartCard, healthCard);
+        content.getStyleClass().add("content-wrap");
+        content.setMaxWidth(980);
+        root.getChildren().add(content);
+        return root;}
     private VBox baseCard() {
         VBox card = new VBox(10);
         card.getStyleClass().add("card");
         card.setPadding(new Insets(14));
-        return card;
-    }
-
+        return card;}
     private Node cardTotalBackups() {
         VBox card = baseCard();
         card.getStyleClass().add("metric-card");
-
         HBox header = new HBox(8);
         header.setAlignment(Pos.CENTER_LEFT);
-
         Label t = new Label("Total Backups");
         t.getStyleClass().add("card-h2");
-
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-
         SVGPath icon = new SVGPath();
         icon.setContent("M4 18h16v2H4z M6 10h2v6H6z M11 6h2v10h-2z M16 12h2v4h-2z");
         icon.getStyleClass().add("mini-icon");
-
         header.getChildren().addAll(t, spacer, icon);
-
         Label big = new Label("124");
         big.getStyleClass().add("metric-value");
-
         card.getChildren().addAll(header, big);
-        return card;
-    }
-
+        return card;}
     private Node cardStorage() {
         VBox card = baseCard();
         card.getStyleClass().add("metric-card");
-
         HBox header = new HBox(8);
         header.setAlignment(Pos.CENTER_LEFT);
-
         Label t = new Label("Armazenamento Usado");
         t.getStyleClass().add("card-h2");
-
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-
         SVGPath icon = new SVGPath();
         icon.setContent("M6 19a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.6A4 4 0 0 1 18 19H6z");
         icon.getStyleClass().add("mini-icon");
-
         header.getChildren().addAll(t, spacer, icon);
-
         ProgressBar bar = new ProgressBar(0.24);
         bar.getStyleClass().add("metric-progress");
         bar.setMaxWidth(Double.MAX_VALUE);
-
         Label txt = new Label("1.2 TB / 5 TB (24%)");
         txt.getStyleClass().add("muted");
-
         card.getChildren().addAll(header, bar, txt);
-        return card;
-    }
-
+        return card;}
     private Node cardRecentActivity() {
         VBox card = baseCard();
         card.getStyleClass().add("metric-card");
-
         Label t = new Label("Atividade Recente");
         t.getStyleClass().add("card-h2");
-
         VBox list = new VBox(6);
         list.getStyleClass().add("activity-list");
-
         list.getChildren().add(activityRow("Backup Diário", "Sucesso", "Hoje, 02:00", "status-ok"));
         list.getChildren().add(activityRow("Backup Semanal", "Falha", "Ontem, 03:15", "status-bad"));
         list.getChildren().add(activityRow("Restauração", "Sucesso", "Ontem, 14:30", "status-ok"));

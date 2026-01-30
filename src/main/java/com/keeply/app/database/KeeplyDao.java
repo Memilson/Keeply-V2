@@ -74,6 +74,13 @@ public interface KeeplyDao {
     Optional<ScanSummary> fetchLastScan();
 
     @SqlQuery("""
+        SELECT MIN(scan_id)
+          FROM scans
+         WHERE root_path = :rootPath
+        """)
+    Long fetchFirstScanIdForRoot(@Bind("rootPath") String rootPath);
+
+    @SqlQuery("""
         SELECT started_at AS date,
                total_usage AS totalBytes,
                (total_usage - LAG(total_usage, 1, 0) OVER (ORDER BY scan_id)) AS growthBytes

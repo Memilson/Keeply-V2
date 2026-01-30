@@ -3,6 +3,7 @@ package com.keeply.app.inventory;
 import com.keeply.app.config.Config;
 import com.keeply.app.blob.BlobStore;
 import com.keeply.app.database.DatabaseBackup;
+import com.keeply.app.history.BackupHistoryDb;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
 
 import javafx.animation.KeyFrame;
@@ -489,6 +490,13 @@ public final class BackupController {
             metrics.running.set(true);
             ui(() -> startUiUpdater(metrics));
 
+            long historyId = BackupHistoryDb.start(rootPath, backupDest);
+            long scanId = -1;
+            BlobStore.BackupResult backupResult = null;
+            String historyStatus = "SUCCESS";
+            String historyMessage = null;
+            String backupType = null;
+
             try {
                 log(">> Conectando ao Banco de Dados...");
                 ui(() -> {
@@ -500,7 +508,19 @@ public final class BackupController {
                 pool = new DatabaseBackup.SimplePool(Config.getDbUrl(), 4);
 
                 log(">> Iniciando motor de metadados...");
-                long scanId = Backup.runScan(java.nio.file.Path.of(rootPath), config, pool, metrics, cancelRequested, BackupController.this::log);
+                scanId = Backup.runScan(java.nio.file.Path.of(rootPath), config, pool, metrics, cancelRequested, BackupController.this::log);
+                try {
+                    Long firstId = DatabaseBackup.jdbi().withExtension(
+                            com.keeply.app.database.KeeplyDao.class,
+                            dao -> dao.fetchFirstScanIdForRoot(rootPath)
+                    );
+                    if (firstId != null && firstId == scanId) {
+                        backupType = "FULL";
+                    } else {
+                        backupType = "INCREMENTAL";
+                    }
+                } catch (Exception ignored) {
+                }
 
                 // Depois que o scan terminou, aciona o Backup (BlobStore).
                 if (!cancelRequested.get()) {
@@ -508,7 +528,7 @@ public final class BackupController {
                         model.phaseProperty.set("Backup: comprimindo/gravando...");
                         model.progressProperty.set(-1);
                     });
-                    BlobStore.runBackupIncremental(
+                    backupResult = BlobStore.runBackupIncremental(
                             java.nio.file.Path.of(rootPath),
                             config,
                             java.nio.file.Path.of(backupDest),
@@ -526,14 +546,26 @@ public final class BackupController {
                                 }
                             })
                     );
+                } else {
+                    historyStatus = "CANCELED";
                 }
 
             } catch (InterruptedException ie) {
                 log(">> Operação interrompida.");
+                historyStatus = "CANCELED";
+                historyMessage = "Interrompido";
             } catch (Exception e) {
                 log(">> ERRO FATAL: " + safeMsg(e));
                 logger.error("Erro fatal durante o scan", e);
+                historyStatus = "ERROR";
+                historyMessage = safeMsg(e);
             } finally {
+                if (cancelRequested.get()) {
+                    historyStatus = "CANCELED";
+                }
+                long files = (backupResult == null) ? 0 : backupResult.filesProcessed();
+                long errors = (backupResult == null) ? 0 : backupResult.errors();
+                BackupHistoryDb.finish(historyId, historyStatus, files, errors, (scanId <= 0) ? null : scanId, historyMessage, backupType);
                 running.set(false);
                 cleanup();
                 ui(() -> {
