@@ -81,6 +81,7 @@ public final class BackupScreen {
     private final CheckBox encryptionCheckbox = new CheckBox();
     private final PasswordField backupPasswordField = new PasswordField();
     private boolean suppressEncryptionToggle = false;
+    private final BooleanProperty passwordRequired = new SimpleBooleanProperty(false);
 
     public BackupScreen(Stage stage, ScanModel model) {
         this.stage = Objects.requireNonNull(stage, "stage");
@@ -134,7 +135,10 @@ public final class BackupScreen {
         }
 
         backupPasswordField.textProperty().addListener((obs, oldVal, newVal) -> {
-            if (encryptionCheckbox.isSelected()) Config.setBackupEncryptionPassword(newVal);
+            Config.setBackupEncryptionPassword(newVal);
+            if (newVal != null && !newVal.isBlank()) {
+                passwordRequired.set(false);
+            }
         });
     }
 
@@ -395,6 +399,7 @@ public final class BackupScreen {
         l.getStyleClass().add("option-label");
 
         left.getChildren().addAll(icon, l);
+        left.getStyleClass().add("option-row");
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -407,6 +412,30 @@ public final class BackupScreen {
             sw.setSelected(Config.isBackupEncryptionEnabled());
             sw.selectedProperty().addListener((obs, oldVal, newVal) -> {
                 if (suppressEncryptionToggle) return;
+                if (!oldVal && newVal) {
+                    String pass = backupPasswordField.getText();
+                    if (pass == null || pass.isBlank()) {
+                        String entered = promptSetPassword();
+                        if (entered == null || entered.isBlank()) {
+                            passwordRequired.set(true);
+                            suppressEncryptionToggle = true;
+                            sw.setSelected(false);
+                            suppressEncryptionToggle = false;
+                            return;
+                        }
+                        if (Config.hasBackupPasswordHash() && !Config.verifyAndCacheBackupPassword(entered)) {
+                            showError("Senha inválida", "A senha informada não confere.");
+                            suppressEncryptionToggle = true;
+                            sw.setSelected(false);
+                            suppressEncryptionToggle = false;
+                            return;
+                        }
+                        Config.verifyAndCacheBackupPassword(entered);
+                        Config.setBackupEncryptionPassword(entered);
+                        backupPasswordField.setText(entered);
+                        passwordRequired.set(false);
+                    }
+                }
                 if (oldVal && !newVal) {
                     if (!confirmDisableEncryption()) {
                         suppressEncryptionToggle = true;
@@ -414,6 +443,9 @@ public final class BackupScreen {
                         suppressEncryptionToggle = false;
                         return;
                     }
+                    Config.clearBackupPassword();
+                    backupPasswordField.clear();
+                    passwordRequired.set(false);
                 }
                 Config.saveBackupEncryptionEnabled(newVal);
             });
@@ -421,6 +453,7 @@ public final class BackupScreen {
 
         HBox right = new HBox(10, spacer, sw);
         right.setAlignment(Pos.CENTER_RIGHT);
+        right.getStyleClass().add("option-row");
 
         grid.add(left, 0, row);
         grid.add(right, 1, row);
@@ -439,21 +472,26 @@ public final class BackupScreen {
         label.getStyleClass().add("option-label");
 
         left.getChildren().addAll(icon, label);
+        left.getStyleClass().add("option-row");
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        HBox right = new HBox(10, spacer, backupPasswordField);
+        Label hint = new Label("Digite uma senha para ativar a criptografia.");
+        hint.getStyleClass().addAll("input-hint", "hint-error");
+        hint.visibleProperty().bind(passwordRequired);
+        hint.managedProperty().bind(passwordRequired);
+
+        VBox rightContent = new VBox(4, backupPasswordField, hint);
+        rightContent.setAlignment(Pos.CENTER_RIGHT);
+
+        HBox right = new HBox(10, spacer, rightContent);
         right.setAlignment(Pos.CENTER_RIGHT);
+        right.getStyleClass().add("option-row");
 
-        left.visibleProperty().bind(encryptionCheckbox.selectedProperty());
-        left.managedProperty().bind(encryptionCheckbox.selectedProperty());
-        right.visibleProperty().bind(encryptionCheckbox.selectedProperty());
-        right.managedProperty().bind(encryptionCheckbox.selectedProperty());
-
-        backupPasswordField.disableProperty().bind(
-                encryptionCheckbox.selectedProperty().not()
-        );
+        backupPasswordField.setPromptText("Senha do backup");
+        backupPasswordField.setPrefWidth(220);
+        backupPasswordField.setMinWidth(200);
 
         grid.add(left, 0, row);
         grid.add(right, 1, row);
@@ -540,9 +578,18 @@ public final class BackupScreen {
         String pass = promptPassword("Desativar criptografia", "Confirme a senha do backup");
         if (pass == null) return false;
 
-        if (!Config.verifyAndCacheBackupPassword(pass)) {
-            showError("Senha inválida", "A senha informada não confere. Criptografia mantida.");
-            return false;
+        if (Config.hasBackupPasswordHash()) {
+            if (!Config.verifyAndCacheBackupPassword(pass)) {
+                showError("Senha inválida", "A senha informada não confere. Criptografia mantida.");
+                return false;
+            }
+        } else {
+            String session = Config.getBackupEncryptionPassword();
+            if (session == null || session.isBlank() || !session.equals(pass)) {
+                showError("Senha inválida", "A senha informada não confere. Criptografia mantida.");
+                return false;
+            }
+            Config.setBackupEncryptionPassword(pass);
         }
 
         if (!BlobStore.verifyBackupPassword(pass)) {
@@ -558,6 +605,7 @@ public final class BackupScreen {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
         alert.setTitle(title);
         alert.setHeaderText(header);
+        alert.setGraphic(null);
 
         PasswordField field = new PasswordField();
         field.setPromptText("Senha do backup");
@@ -565,6 +613,34 @@ public final class BackupScreen {
         VBox content = new VBox(8, field);
         content.setPadding(new Insets(6, 0, 0, 0));
         alert.getDialogPane().setContent(content);
+        try {
+            alert.getDialogPane().getStylesheets().add(getClass().getResource("/styles.css").toExternalForm());
+        } catch (Exception ignored) {}
+
+        var okButton = alert.getDialogPane().lookupButton(ButtonType.OK);
+        okButton.disableProperty().bind(field.textProperty().isEmpty());
+
+        Optional<ButtonType> res = alert.showAndWait();
+        if (res.isEmpty() || res.get() != ButtonType.OK) return null;
+        return field.getText();
+    }
+
+    private String promptSetPassword() {
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle("Definir senha");
+        alert.setHeaderText("Defina a senha do backup");
+        alert.setGraphic(null);
+
+        PasswordField field = new PasswordField();
+        field.setPromptText("Senha do backup");
+
+        VBox content = new VBox(8, field);
+        content.setPadding(new Insets(6, 0, 0, 0));
+        alert.getDialogPane().setContent(content);
+
+        try {
+            alert.getDialogPane().getStylesheets().add(getClass().getResource("/styles.css").toExternalForm());
+        } catch (Exception ignored) {}
 
         var okButton = alert.getDialogPane().lookupButton(ButtonType.OK);
         okButton.disableProperty().bind(field.textProperty().isEmpty());

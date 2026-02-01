@@ -9,6 +9,7 @@ import com.keeply.app.templates.KeeplyTemplate.ScanModel;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
+import javafx.scene.control.Alert;
 import javafx.util.Duration;
 
 import java.nio.file.Files;
@@ -60,6 +61,21 @@ public final class BackupController {
         ui(() -> view.appendLog(msg));
     }
 
+    private void showError(String message) {
+        ui(() -> {
+            Alert alert = new Alert(Alert.AlertType.ERROR);
+            alert.setTitle("Erro");
+            alert.setHeaderText("Não foi possível iniciar o backup");
+            alert.setContentText(message);
+            alert.showAndWait();
+        });
+    }
+
+    private void errorAndLog(String message) {
+        log(">> Erro: " + message);
+        showError(message);
+    }
+
     private void setScanningState(boolean scanning) {
         ui(() -> view.setScanningState(scanning));
     }
@@ -74,30 +90,30 @@ public final class BackupController {
         }
 
         if (view.isCloudSelected()) {
-            log(">> Nuvem ainda não implementado (placeholder). Selecione 'Disco local'.");
+            errorAndLog("Nuvem ainda não implementado (placeholder). Selecione 'Disco local'.");
             return;
         }
 
         var pathText = view.getRootPathText();
         if (pathText == null || pathText.isBlank()) {
-            log(">> Erro: Selecione uma pasta primeiro.");
+            errorAndLog("Selecione uma pasta de origem.");
             return;
         }
 
         var destText = view.getBackupDestinationText();
         if (destText == null || destText.isBlank()) {
-            log(">> Erro: Selecione uma pasta de destino para salvar os backups.");
+            errorAndLog("Selecione uma pasta de destino para salvar os backups.");
             return;
         }
 
         if (view.isEncryptionEnabled()) {
             String pass = view.getBackupEncryptionPassword();
             if (pass == null || pass.isBlank()) {
-                log(">> Erro: informe uma senha para criptografar os backups.");
+                errorAndLog("Informe uma senha para criptografar os backups.");
                 return;
             }
             if (!Config.verifyAndCacheBackupPassword(pass)) {
-                log(">> Erro: senha incorreta. Digite a senha configurada para desbloquear.");
+                errorAndLog("Senha incorreta. Digite a senha configurada para desbloquear.");
                 return;
             }
             log(">> Criptografia ativa: senha validada.");

@@ -125,17 +125,14 @@ public final class Config {
     }
 
     public static void saveBackupEncryptionEnabled(boolean enabled) {
-        savePreferencesValue("backup_encryption_enabled", enabled ? "true" : "false");
         prefsPutBoolean("backup_encryption_enabled", enabled);
         if (!enabled) {
-            savePreferencesValue("backup_password_active", "false");
+            prefsPutBoolean("backup_password_active", false);
         }
     }
 
     public static boolean isBackupEncryptionEnabled() {
-        Preferences prefs = loadPreferences();
-        if (prefs.backupEncryptionEnabled != null) return prefs.backupEncryptionEnabled;
-        return prefsGetBoolean("backup_encryption_enabled", true);
+        return prefsGetBoolean("backup_encryption_enabled", false);
     }
 
     public static void setBackupEncryptionPassword(String password) {
@@ -155,13 +152,11 @@ public final class Config {
     }
 
     public static String getBackupPasswordHash() {
-        Preferences prefs = loadPreferences();
-        return prefs.backupPasswordHash;
+        return prefsGet("backup_password_hash", null);
     }
 
     public static String getBackupPasswordSetAt() {
-        Preferences prefs = loadPreferences();
-        return prefs.backupPasswordSetAt;
+        return prefsGet("backup_password_set_at", null);
     }
 
     public static boolean hasBackupPasswordHash() {
@@ -173,18 +168,16 @@ public final class Config {
         if (password == null || password.isBlank()) return false;
         try {
             String hash = sha256Hex(password);
-            Preferences prefs = loadPreferences();
-            if (prefs.backupPasswordHash == null || prefs.backupPasswordHash.isBlank()) {
-                prefs.backupPasswordHash = hash;
-                prefs.backupPasswordSetAt = Instant.now().toString();
-                prefs.backupPasswordActive = true;
-                savePreferences(prefs);
+            String stored = prefsGet("backup_password_hash", null);
+            if (stored == null || stored.isBlank()) {
+                prefsPut("backup_password_hash", hash);
+                prefsPut("backup_password_set_at", Instant.now().toString());
+                prefsPutBoolean("backup_password_active", true);
                 sessionBackupPassword = password;
                 return true;
             }
-            if (prefs.backupPasswordHash.equals(hash)) {
-                prefs.backupPasswordActive = true;
-                savePreferences(prefs);
+            if (stored.equals(hash)) {
+                prefsPutBoolean("backup_password_active", true);
                 sessionBackupPassword = password;
                 return true;
             }
@@ -231,6 +224,13 @@ public final class Config {
             return "";
         }
         return requireBackupPassword();
+    }
+
+    public static void clearBackupPassword() {
+        sessionBackupPassword = null;
+        prefsPut("backup_password_hash", "");
+        prefsPut("backup_password_set_at", "");
+        prefsPutBoolean("backup_password_active", false);
     }
 
     private static boolean resolveDbEncryptionEnabled() {
@@ -332,17 +332,14 @@ public final class Config {
 
     private static void savePreferencesValue(String key, String value) {
         try {
-            Preferences prefs = loadPreferences();
             if ("backup_encryption_enabled".equals(key)) {
-                prefs.backupEncryptionEnabled = "true".equalsIgnoreCase(value);
-            } else if ("backup_password_active".equals(key)) {
-                prefs.backupPasswordActive = "true".equalsIgnoreCase(value);
-            } else if ("backup_password_hash".equals(key)) {
-                prefs.backupPasswordHash = value;
-            } else if ("backup_password_set_at".equals(key)) {
-                prefs.backupPasswordSetAt = value;
+                prefsPutBoolean("backup_encryption_enabled", "true".equalsIgnoreCase(value));
+                return;
             }
-            savePreferences(prefs);
+            if ("backup_password_active".equals(key)) {
+                prefsPutBoolean("backup_password_active", "true".equalsIgnoreCase(value));
+                return;
+            }
         } catch (Exception ignored) {
             // Best-effort.
         }
@@ -351,8 +348,8 @@ public final class Config {
     private static Preferences loadPreferences() {
         Preferences prefs = new Preferences();
         prefs.backupEncryptionEnabled = prefsGetBoolean("backup_encryption_enabled", true);
-        prefs.backupPasswordHash = sessionGet("backup_password_hash");
-        prefs.backupPasswordSetAt = sessionGet("backup_password_set_at");
+        prefs.backupPasswordHash = prefsGet("backup_password_hash", null);
+        prefs.backupPasswordSetAt = prefsGet("backup_password_set_at", null);
         prefs.backupPasswordActive = null;
 
         Path file = getPreferencesFilePath();
@@ -387,6 +384,17 @@ public final class Config {
                     prefs.backupPasswordSetAt = "null".equals(raw) ? null : str;
                 }
             }
+            if ((prefs.backupPasswordHash != null && !prefs.backupPasswordHash.isBlank())
+                    && (prefsGet("backup_password_hash", null) == null || prefsGet("backup_password_hash", "").isBlank())) {
+                prefsPut("backup_password_hash", prefs.backupPasswordHash);
+                if (prefs.backupPasswordSetAt != null && !prefs.backupPasswordSetAt.isBlank()) {
+                    prefsPut("backup_password_set_at", prefs.backupPasswordSetAt);
+                }
+                prefsPutBoolean("backup_password_active", true);
+                prefs.backupPasswordHash = null;
+                prefs.backupPasswordSetAt = null;
+                savePreferences(prefs);
+            }
         } catch (Exception ignored) {
             // Best-effort.
         }
@@ -409,9 +417,7 @@ public final class Config {
         StringBuilder sb = new StringBuilder();
         sb.append("{\n");
         sb.append("  \"backup_encryption_enabled\": ").append(prefs.backupEncryptionEnabled != null && prefs.backupEncryptionEnabled ? "true" : "false").append(",\n");
-        sb.append("  \"backup_password_active\": ").append(prefs.backupPasswordActive != null && prefs.backupPasswordActive ? "true" : "false").append(",\n");
-        sb.append("  \"backup_password_hash\": ").append(jsonStringOrNull(prefs.backupPasswordHash)).append(",\n");
-        sb.append("  \"backup_password_set_at\": ").append(jsonStringOrNull(prefs.backupPasswordSetAt)).append("\n");
+        sb.append("  \"backup_password_active\": ").append(prefs.backupPasswordActive != null && prefs.backupPasswordActive ? "true" : "false").append("\n");
         sb.append("}\n");
 
         Path tmp = file.resolveSibling(file.getFileName().toString() + ".tmp");

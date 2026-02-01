@@ -402,6 +402,28 @@
     -fx-background-color: transparent;
 }
 
+.options-pane > .title {
+    -fx-background-color: transparent;
+    -fx-padding: 0 0 6 0;
+    -fx-border-color: -fx-border;
+    -fx-border-width: 0 0 1 0;
+}
+
+.options-pane > .title > .arrow-button {
+    -fx-background-color: transparent;
+    -fx-padding: 0 6 0 0;
+}
+
+.options-pane > .title > .arrow-button > .arrow {
+    -fx-background-color: -fx-text-muted;
+}
+
+.options-pane > .content {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 10 0 0 0;
+}
+
 .options-grid {
     -fx-padding: 10 0 0 0;
 }
@@ -418,6 +440,12 @@
 .option-label {
     -fx-text-fill: -fx-text-main;
     -fx-font-weight: 500;
+}
+
+.option-row {
+    -fx-padding: 10 0;
+    -fx-border-color: -fx-border;
+    -fx-border-width: 0 0 1 0;
 }
 
 /* Switch (CheckBox) */
@@ -445,6 +473,53 @@
 
 .switch:selected .mark {
     -fx-translate-x: 18;
+}
+
+.input-hint {
+    -fx-font-size: 11px;
+    -fx-text-fill: -fx-text-muted;
+}
+
+.hint-error {
+    -fx-text-fill: #EF4444;
+}
+
+/* Dialogs (match app look) */
+.dialog-pane {
+    -fx-background-color: -fx-card;
+    -fx-border-color: -fx-border;
+    -fx-border-width: 1;
+    -fx-font-family: 'Noto Sans';
+}
+
+.dialog-pane > .header-panel {
+    -fx-background-color: transparent;
+    -fx-border-color: -fx-border;
+    -fx-border-width: 0 0 1 0;
+}
+
+.dialog-pane > .header-panel .label {
+    -fx-text-fill: -fx-text-main;
+    -fx-font-weight: 500;
+}
+
+.dialog-pane > .content {
+    -fx-background-color: transparent;
+}
+
+.dialog-pane .button-bar .button {
+    -fx-background-color: -fx-primary;
+    -fx-text-fill: white;
+    -fx-background-radius: 8;
+    -fx-padding: 6 14;
+}
+
+.dialog-pane .button-bar .button:cancel {
+    -fx-background-color: transparent;
+    -fx-text-fill: -fx-text-main;
+    -fx-border-color: -fx-border;
+    -fx-border-radius: 8;
+    -fx-border-width: 1;
 }
 
 /* ---------------- Overview Screen ---------------- */
