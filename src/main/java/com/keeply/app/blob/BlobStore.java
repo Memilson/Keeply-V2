@@ -119,6 +119,44 @@ public class BlobStore {
         DEST_FLAT
     }
 
+    public static boolean verifyBackupPassword(String passphrase) {
+        if (passphrase == null || passphrase.isBlank()) return false;
+        Path tmpDir = null;
+        Path enc = null;
+        Path dec = null;
+        try {
+            tmpDir = Files.createTempDirectory("keeply-crypto-test");
+            enc = tmpDir.resolve("test.kply");
+            dec = tmpDir.resolve("test.bin");
+
+            byte[] payload = "keeply-crypto-test".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            try (OutputStream out = Files.newOutputStream(enc);
+                 OutputStream encOut = BlobCrypto.openEncryptingStream(out, passphrase)) {
+                encOut.write(payload);
+            }
+
+            try (InputStream in = Files.newInputStream(enc);
+                 InputStream decIn = BlobCrypto.openDecryptingStream(in, passphrase);
+                 OutputStream out = Files.newOutputStream(dec)) {
+                decIn.transferTo(out);
+            }
+
+            byte[] restored = Files.readAllBytes(dec);
+            if (restored.length != payload.length) return false;
+            for (int i = 0; i < payload.length; i++) {
+                if (payload[i] != restored[i]) return false;
+            }
+            return true;
+        } catch (Exception e) {
+            logger.warn("Falha ao validar senha de backup (teste de criptografia).", e);
+            return false;
+        } finally {
+            try { if (dec != null) Files.deleteIfExists(dec); } catch (Exception ignored) {}
+            try { if (enc != null) Files.deleteIfExists(enc); } catch (Exception ignored) {}
+            try { if (tmpDir != null) Files.deleteIfExists(tmpDir); } catch (Exception ignored) {}
+        }
+    }
+
     public static BackupResult runBackup(Path root, Backup.ScanConfig cfg, AtomicBoolean cancel, Consumer<String> uiLogger) throws Exception {
         Path baseDir = Config.getEncryptedDbFilePath().toAbsolutePath().getParent();
         if (baseDir == null) throw new IllegalStateException("Base dir not resolved for BlobStore");

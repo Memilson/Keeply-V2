@@ -6,17 +6,18 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.*;
-import javafx.scene.control.OverrunStyle;
 import javafx.scene.layout.*;
 import javafx.scene.shape.SVGPath;
+import javafx.scene.Scene;
+import javafx.stage.Modality;
+import javafx.stage.Stage;
+import javafx.stage.Window;
 
 import java.util.*;
 import java.util.function.Consumer;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-
-import org.apache.commons.lang3.StringUtils;
 
 import com.keeply.app.database.DatabaseBackup.FileHistoryRow;
 import com.keeply.app.database.DatabaseBackup.InventoryRow;
@@ -28,32 +29,17 @@ public final class InventoryScreen {
     // Ícones SVG simplificados
     private static final String SVG_FOLDER = "M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z";
     private static final String SVG_FILE = "M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z";
-    private static final int TOP_LIMIT = 50;
-
     // Controles
     private final Button btnRefresh = new Button("Recarregar");
-    private final Button btnExpand = new Button("Expandir");
-    private final Button btnCollapse = new Button("Colapsar");
     private final Button btnRestoreSnapshot = new Button("Restaurar backup");
-    private final MenuButton btnExport = new MenuButton("Report");
-    private final MenuItem miExportCsv = new MenuItem("CSV");
-    private final MenuItem miExportPdf = new MenuItem("PDF");
-    private final TextField txtSearch = new TextField();
     private final ListView<BackupHistoryDb.HistoryRow> scanList = new ListView<>();
     
     private final Label metaLabel = new Label("Aguardando dados...");
     private final Label errorLabel = new Label();
     private final ProgressIndicator loading = new ProgressIndicator();
     
-    // Tabelas
+    // Tabela de arquivos (usada apenas na janela de arquivos)
     private final TreeTableView<FileNode> tree = new TreeTableView<>();
-    private final TabPane dataTabs = new TabPane();
-
-    // Top views (blocos)
-    private final TilePane topFilesTiles = new TilePane();
-    private final ScrollPane topFilesScroll = new ScrollPane(topFilesTiles);
-    private final TilePane topFoldersTiles = new TilePane();
-    private final ScrollPane topFoldersScroll = new ScrollPane(topFoldersTiles);
 
     private Consumer<String> onFileSelected;
     private Consumer<String> onShowHistory;
@@ -61,7 +47,6 @@ public final class InventoryScreen {
 
     public Node content() {
         configureTree();
-        configureLargestViews();
 
         VBox layout = new VBox();
         layout.setFillWidth(true);
@@ -90,34 +75,13 @@ public final class InventoryScreen {
         scanList.setCellFactory(p -> new ScanListCell());
         scanList.getSelectionModel().setSelectionMode(SelectionMode.SINGLE);
         
-        txtSearch.setPromptText("Filtrar por nome...");
-        txtSearch.setPrefWidth(220);
-
-
         // Estilização dos Botões via CSS
         btnRefresh.getStyleClass().add("button-action");
-        btnExpand.getStyleClass().add("button-secondary");
-        btnCollapse.getStyleClass().add("button-secondary");
         btnRestoreSnapshot.getStyleClass().add("button-action");
-
-        btnExport.getItems().setAll(miExportCsv, miExportPdf);
-        btnExport.getStyleClass().add("button-secondary");
-
-        lockButtonWidth(btnExpand);
-        lockButtonWidth(btnCollapse);
         lockButtonWidth(btnRefresh);
         lockButtonWidth(btnRestoreSnapshot);
-        lockButtonWidth(btnExport);
 
-
-        txtSearch.setMinWidth(140);
-        txtSearch.setMaxWidth(Double.MAX_VALUE);
-        HBox.setHgrow(txtSearch, Priority.ALWAYS);
-
-        HBox filterRow = new HBox(10, txtSearch);
-        filterRow.setAlignment(Pos.CENTER_LEFT);
-
-        HBox actionsRow = new HBox(10, btnRestoreSnapshot, btnExpand, btnCollapse, btnRefresh, btnExport);
+        HBox actionsRow = new HBox(10, btnRestoreSnapshot, btnRefresh);
         actionsRow.setAlignment(Pos.CENTER_LEFT);
         actionsRow.setMaxWidth(Double.MAX_VALUE);
 
@@ -125,22 +89,7 @@ public final class InventoryScreen {
         listTitle.getStyleClass().add("section-title");
         VBox listBox = new VBox(6, listTitle, scanList);
         listBox.setMinHeight(180);
-        toolbar.getChildren().addAll(listBox, filterRow, actionsRow);
-
-        // --- 3. Tabs e Dados ---
-        dataTabs.getStyleClass().add("modern-tabs");
-        
-        Tab treeTab = new Tab("Estrutura de Arquivos", tree);
-        Tab filesTab = new Tab("Top Arquivos", topFilesScroll);
-        Tab foldersTab = new Tab("Top Pastas", topFoldersScroll);
-        
-        dataTabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
-        dataTabs.getTabs().setAll(treeTab, filesTab, foldersTab);
-
-        // Container com Loading Overlay
-        StackPane dataWrapper = new StackPane(dataTabs, loading);
-        loading.setVisible(false);
-        VBox.setVgrow(dataWrapper, Priority.ALWAYS);
+        toolbar.getChildren().addAll(listBox, actionsRow);
 
         // Mensagem de Erro
         errorLabel.getStyleClass().add("error-banner"); // Definir no CSS se quiser um fundo vermelho
@@ -148,7 +97,7 @@ public final class InventoryScreen {
         errorLabel.setManaged(false);
 
         // Montagem Final dentro de um Card
-        VBox card = new VBox(10, headerBox, toolbar, errorLabel, dataWrapper);
+        VBox card = new VBox(10, headerBox, toolbar, errorLabel);
         card.getStyleClass().add("card"); // Usa o estilo de card do styles.css
         VBox.setVgrow(card, Priority.ALWAYS);
 
@@ -261,167 +210,10 @@ public final class InventoryScreen {
 
     // --- Outros Componentes (Tabelas e Diálogos) ---
 
-    private void configureLargestViews() {
-        configureTilePane(topFilesTiles);
-        configureTilePane(topFoldersTiles);
-
-        topFilesScroll.setFitToWidth(true);
-        topFilesScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
-        topFilesScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
-        topFilesScroll.setPannable(true);
-
-        topFoldersScroll.setFitToWidth(true);
-        topFoldersScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
-        topFoldersScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
-        topFoldersScroll.setPannable(true);
-
-        topFilesScroll.setContent(topFilesTiles);
-        topFoldersScroll.setContent(topFoldersTiles);
-    }
-
-    private static void configureTilePane(TilePane pane) {
-        pane.setPadding(new Insets(14));
-        pane.setHgap(12);
-        pane.setVgap(12);
-        pane.setPrefTileWidth(420);
-        pane.setPrefTileHeight(120);
-        pane.setTileAlignment(Pos.TOP_LEFT);
-    }
-
-    private Node buildTopFileCard(FileSizeRow row) {
-        Label name = new Label(StringUtils.firstNonBlank(row.name(), "(sem nome)"));
-        name.getStyleClass().add("flow-title");
-        name.setTextOverrun(OverrunStyle.ELLIPSIS);
-        name.setMaxWidth(Double.MAX_VALUE);
-
-        Label size = new Label(humanSize(row.sizeBytes()));
-        size.getStyleClass().add("card-h2");
-
-        Region spacer = new Region();
-        HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox header = new HBox(10, name, spacer, size);
-        header.setAlignment(Pos.CENTER_LEFT);
-
-        String dir = extractParentDir(row.path());
-        Label path = new Label(dir.isBlank() ? "(raiz)" : dir);
-        path.getStyleClass().add("flow-subtitle");
-        path.setTextOverrun(OverrunStyle.ELLIPSIS);
-        path.setMaxWidth(Double.MAX_VALUE);
-
-        VBox card = new VBox(6, header, path);
-        card.getStyleClass().add("card");
-        card.setPadding(new Insets(12));
-        card.setMinHeight(Region.USE_PREF_SIZE);
-        return card;
-    }
-
-    private Node buildTopFolderCard(FolderSizeRow row) {
-        String p = row.path();
-        String nameText = extractLastSegment(p);
-        if (nameText.isBlank()) nameText = "(raiz)";
-
-        Label name = new Label(nameText);
-        name.getStyleClass().add("flow-title");
-        name.setTextOverrun(OverrunStyle.ELLIPSIS);
-        name.setMaxWidth(Double.MAX_VALUE);
-
-        Label size = new Label(humanSize(row.sizeBytes()));
-        size.getStyleClass().add("card-h2");
-
-        Region spacer = new Region();
-        HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox header = new HBox(10, name, spacer, size);
-        header.setAlignment(Pos.CENTER_LEFT);
-
-        Label path = new Label(p == null ? "" : p);
-        path.getStyleClass().add("flow-subtitle");
-        path.setTextOverrun(OverrunStyle.ELLIPSIS);
-        path.setMaxWidth(Double.MAX_VALUE);
-
-        double pct = Math.max(0, Math.min(1, row.percentOfTotal()));
-        Label pctLabel = new Label(String.format(Locale.US, "%.0f%%", pct * 100.0));
-        pctLabel.getStyleClass().add("flow-subtitle");
-
-        ProgressBar bar = new ProgressBar(pct);
-        bar.getStyleClass().addAll("metric-progress", "metric-progress-soft");
-        bar.setMaxWidth(Double.MAX_VALUE);
-
-        HBox pctRow = new HBox(10, pctLabel, bar);
-        pctRow.setAlignment(Pos.CENTER_LEFT);
-        HBox.setHgrow(bar, Priority.ALWAYS);
-
-        VBox card = new VBox(6, header, path, pctRow);
-        card.getStyleClass().add("card");
-        card.setPadding(new Insets(12));
-        card.setMinHeight(Region.USE_PREF_SIZE);
-        return card;
-    }
-
-    private static String extractParentDir(String pathRel) {
-        if (pathRel == null) return "";
-        String p = pathRel.replace('\\', '/');
-        int i = p.lastIndexOf('/');
-        return (i <= 0) ? "" : p.substring(0, i);
-    }
-
-    private static String extractLastSegment(String path) {
-        if (path == null) return "";
-        String p = path.replace('\\', '/');
-        int i = p.lastIndexOf('/');
-        return (i >= 0 && i + 1 < p.length()) ? p.substring(i + 1) : p;
-    }
-
-    // [O RESTO DO CÓDIGO (renderLargest, renderTree, showHistoryDialog, etc) MANTÉM-SE IGUAL AO ORIGINAL]
-    // Apenas removi o código duplicado aqui para poupar espaço, mas você deve manter a lógica de
-    // preenchimento de dados (renderTree, renderLargest, etc.) exatamente como estava, 
-    // pois a mudança foi apenas visual (CSS e Layout).
-    
-    // --- Mantendo os métodos lógicos para o código compilar ---
-    
-    public void renderLargest(List<InventoryRow> rows) {
-        topFilesTiles.getChildren().clear();
-        topFoldersTiles.getChildren().clear();
-        if (rows == null || rows.isEmpty()) return;
-
-        long totalBytes = rows.stream().mapToLong(InventoryRow::sizeBytes).sum();
-
-        var fileRows = rows.stream()
-                .sorted(Comparator.comparingLong(InventoryRow::sizeBytes).reversed()
-                        .thenComparing(InventoryRow::pathRel, String.CASE_INSENSITIVE_ORDER))
-                .limit(TOP_LIMIT)
-                .map(r -> new FileSizeRow(r.name(), r.pathRel(), r.sizeBytes()))
-                .toList();
-        for (FileSizeRow r : fileRows) topFilesTiles.getChildren().add(buildTopFileCard(r));
-
-        Map<String, Long> folderSizes = new HashMap<>();
-        for (InventoryRow row : rows) {
-            String path = row.pathRel();
-            if (path == null || path.isBlank()) continue;
-            int lastSlash = path.lastIndexOf('/');
-            if (lastSlash <= 0) continue;
-            String dir = path.substring(0, lastSlash);
-            while (!dir.isEmpty()) {
-                folderSizes.merge(dir, row.sizeBytes(), Long::sum);
-                int slash = dir.lastIndexOf('/');
-                if (slash < 0) break;
-                dir = dir.substring(0, slash);
-            }
-        }
-
-        var folderRows = folderSizes.entrySet().stream()
-                .sorted(Map.Entry.<String, Long>comparingByValue().reversed()
-                        .thenComparing(Map.Entry.comparingByKey(String.CASE_INSENSITIVE_ORDER)))
-                .limit(TOP_LIMIT)
-            .map(e -> new FolderSizeRow(e.getKey(), e.getValue(), totalBytes <= 0 ? 0.0 : (double) e.getValue() / (double) totalBytes))
-                .toList();
-        for (FolderSizeRow r : folderRows) topFoldersTiles.getChildren().add(buildTopFolderCard(r));
-    }
-
     public void renderTree(List<InventoryRow> rows, ScanSummary scan) {
         if (rows == null || rows.isEmpty()) {
             tree.setRoot(null);
             tree.setPlaceholder(new Label("Selecione um backup para visualizar os arquivos."));
-            metaLabel.setText("");
             return;
         }
         TreeItem<FileNode> root = new TreeItem<>(new FileNode("root", "", true, 0, "SYNCED", 0));
@@ -436,7 +228,6 @@ public final class InventoryScreen {
         }
 
         tree.setRoot(root);
-        metaLabel.setText(scan != null ? "Backup #" + scan.scanId() + " (" + formatDate(scan.finishedAt()) + ") • " + rows.size() + " itens" : "");
     }
 
     public void showHistoryDialog(List<FileHistoryRow> rows, String pathRel) {
@@ -487,57 +278,60 @@ public final class InventoryScreen {
         dialog.show();
     }
 
-    public void expandAll() {
-        if (tree.getRoot() == null) return;
-        setExpandedRecursive(tree.getRoot(), true);
-    }
-
-    public void collapseAll() {
-        if (tree.getRoot() == null) return;
-        setExpandedRecursive(tree.getRoot(), false);
-    }
-
-    private void setExpandedRecursive(TreeItem<?> item, boolean expanded) {
-        if (item == null || item.isLeaf()) return;
-        item.setExpanded(expanded);
-        for (TreeItem<?> child : item.getChildren()) {
-            setExpandedRecursive(child, expanded);
-        }
-    }
-
-    private void sortTree(TreeItem<FileNode> item) {
-        if (item == null || item.isLeaf()) return;
-        var children = item.getChildren();
-        children.sort((a,b) -> {
-            if (a.getValue().directory && !b.getValue().directory) return -1;
-            if (!a.getValue().directory && b.getValue().directory) return 1;
-            return a.getValue().name.compareToIgnoreCase(b.getValue().name);
-        });
-        for (TreeItem<FileNode> child : children) {
-            sortTree(child);
-        }
-    }
-
     // Getters
     public Button refreshButton() { return btnRefresh; }
-    public Button expandButton() { return btnExpand; }
-    public Button collapseButton() { return btnCollapse; }
     public Button restoreSnapshotButton() { return btnRestoreSnapshot; }
-    public MenuItem exportCsvItem() { return miExportCsv; }
-    public MenuItem exportPdfItem() { return miExportPdf; }
-    public MenuButton exportMenuButton() { return btnExport; }
-    public TextField searchField() { return txtSearch; }
     public ListView<BackupHistoryDb.HistoryRow> scanList() { return scanList; }
+    public Node rootNode() { return scanList; }
+    public void setMeta(String text) { metaLabel.setText(text == null ? "" : text); }
     public void onFileSelected(Consumer<String> c) { this.onFileSelected = c; }
     public void onShowHistory(Consumer<String> c) { this.onShowHistory = c; }
     public void onRestoreSelected(Runnable r) { this.onRestoreSelected = r; }
     
     public void showLoading(boolean value) {
         loading.setVisible(value);
-        dataTabs.setDisable(value);
         btnRefresh.setDisable(value);
         btnRestoreSnapshot.setDisable(value);
         scanList.setDisable(value);
+    }
+
+    public void showFilesWindow(List<InventoryRow> rows, ScanSummary scan, Consumer<List<SelectedNode>> onRestore) {
+        if (rows == null) rows = List.of();
+        renderTree(rows, scan);
+
+        Label title = new Label("Arquivos do backup");
+        title.getStyleClass().add("section-title");
+
+        Label subtitle = new Label(scan == null ? "" : ("Backup #" + scan.scanId() + " • " + formatDate(scan.finishedAt())));
+        subtitle.getStyleClass().add("page-subtitle");
+
+        Button restoreBtn = new Button("Restaurar selecionados");
+        restoreBtn.getStyleClass().addAll("btn", "btn-primary");
+        restoreBtn.setOnAction(e -> {
+            List<SelectedNode> selected = getSelectedNodes();
+            if (selected.isEmpty()) {
+                showError("Selecione arquivos/pastas (até 10) para restaurar.");
+                return;
+            }
+            if (onRestore != null) onRestore.accept(selected);
+        });
+
+        VBox box = new VBox(10, title, subtitle, tree, restoreBtn);
+        box.setPadding(new Insets(14));
+        VBox.setVgrow(tree, Priority.ALWAYS);
+
+        Stage stage = new Stage();
+        stage.setTitle("Arquivos do backup");
+        Window owner = rootNode().getScene() != null ? rootNode().getScene().getWindow() : null;
+        if (owner != null) stage.initOwner(owner);
+        stage.initModality(Modality.NONE);
+
+        Scene scene = new Scene(box, 820, 520);
+        try {
+            scene.getStylesheets().add(getClass().getResource("/styles.css").toExternalForm());
+        } catch (Exception ignored) {}
+        stage.setScene(scene);
+        stage.show();
     }
 
     public List<SelectedNode> getSelectedNodes() {
@@ -586,8 +380,6 @@ public final class InventoryScreen {
 
     public record FileNode(String name, String path, boolean directory, long sizeBytes, String status, long modifiedMillis) {}
     public record SelectedNode(String pathRel, boolean directory) {}
-    public record FileSizeRow(String name, String path, long sizeBytes) {}
-    public record FolderSizeRow(String path, long sizeBytes, double percentOfTotal) {}
     
     private class ScanListCell extends ListCell<BackupHistoryDb.HistoryRow> {
         @Override protected void updateItem(BackupHistoryDb.HistoryRow item, boolean e) {
@@ -616,8 +408,8 @@ public final class InventoryScreen {
             Button restoreBtn = new Button("Recuperar arquivos/pastas");
             restoreBtn.getStyleClass().addAll("btn", "btn-primary", "btn-mini");
             restoreBtn.setOnAction(ev -> {
-                // Seleciona o backup para exibir a árvore abaixo
                 getListView().getSelectionModel().select(item);
+                btnRestoreSnapshot.fire();
             });
 
             Button actionsBtn = new Button("Ações");

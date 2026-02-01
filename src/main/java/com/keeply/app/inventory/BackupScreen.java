@@ -9,6 +9,7 @@ import java.util.Optional;
 import com.keeply.app.config.Config;
 import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
+import com.keeply.app.blob.BlobStore;
 
 import javafx.application.Platform;
 import javafx.beans.property.BooleanProperty;
@@ -79,6 +80,7 @@ public final class BackupScreen {
     // Opções de Backup
     private final CheckBox encryptionCheckbox = new CheckBox();
     private final PasswordField backupPasswordField = new PasswordField();
+    private boolean suppressEncryptionToggle = false;
 
     public BackupScreen(Stage stage, ScanModel model) {
         this.stage = Objects.requireNonNull(stage, "stage");
@@ -404,6 +406,15 @@ public final class BackupScreen {
         if (controlCheckbox == encryptionCheckbox) {
             sw.setSelected(Config.isBackupEncryptionEnabled());
             sw.selectedProperty().addListener((obs, oldVal, newVal) -> {
+                if (suppressEncryptionToggle) return;
+                if (oldVal && !newVal) {
+                    if (!confirmDisableEncryption()) {
+                        suppressEncryptionToggle = true;
+                        sw.setSelected(true);
+                        suppressEncryptionToggle = false;
+                        return;
+                    }
+                }
                 Config.saveBackupEncryptionEnabled(newVal);
             });
         }
@@ -522,6 +533,52 @@ public final class BackupScreen {
         area.setWrapText(true);
         area.setPrefRowCount(8);
         alert.getDialogPane().setContent(area);
+        alert.showAndWait();
+    }
+
+    private boolean confirmDisableEncryption() {
+        String pass = promptPassword("Desativar criptografia", "Confirme a senha do backup");
+        if (pass == null) return false;
+
+        if (!Config.verifyAndCacheBackupPassword(pass)) {
+            showError("Senha inválida", "A senha informada não confere. Criptografia mantida.");
+            return false;
+        }
+
+        if (!BlobStore.verifyBackupPassword(pass)) {
+            showError("Falha de verificação", "Não foi possível validar a senha em um teste de descriptografia.");
+            return false;
+        }
+
+        Config.setBackupEncryptionPassword(pass);
+        return true;
+    }
+
+    private String promptPassword(String title, String header) {
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle(title);
+        alert.setHeaderText(header);
+
+        PasswordField field = new PasswordField();
+        field.setPromptText("Senha do backup");
+
+        VBox content = new VBox(8, field);
+        content.setPadding(new Insets(6, 0, 0, 0));
+        alert.getDialogPane().setContent(content);
+
+        var okButton = alert.getDialogPane().lookupButton(ButtonType.OK);
+        okButton.disableProperty().bind(field.textProperty().isEmpty());
+
+        Optional<ButtonType> res = alert.showAndWait();
+        if (res.isEmpty() || res.get() != ButtonType.OK) return null;
+        return field.getText();
+    }
+
+    private void showError(String title, String message) {
+        Alert alert = new Alert(Alert.AlertType.ERROR);
+        alert.setTitle(title);
+        alert.setHeaderText(title);
+        alert.setContentText(message);
         alert.showAndWait();
     }
 
