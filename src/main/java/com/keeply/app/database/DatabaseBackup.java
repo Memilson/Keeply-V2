@@ -217,9 +217,9 @@ public final class DatabaseBackup {
             var runtimeWal = runtime.resolveSibling(runtime.getFileName().toString() + "-wal");
             var runtimeShm = runtime.resolveSibling(runtime.getFileName().toString() + "-shm");
 
-            try { Files.deleteIfExists(runtime); } catch (Exception ignored) {}
-            try { Files.deleteIfExists(runtimeWal); } catch (Exception ignored) {}
-            try { Files.deleteIfExists(runtimeShm); } catch (Exception ignored) {}
+            try { Files.deleteIfExists(runtime); } catch (java.io.IOException ignored) {}
+            try { Files.deleteIfExists(runtimeWal); } catch (java.io.IOException ignored) {}
+            try { Files.deleteIfExists(runtimeShm); } catch (java.io.IOException ignored) {}
 
             if (Files.exists(encrypted)) {
                 if (DbFileCrypto.looksLikePlainSqlite(encrypted)) {
@@ -230,7 +230,7 @@ public final class DatabaseBackup {
                 }
                 DbFileCrypto.decryptToRuntime(encrypted, runtime, Config.getSecretKey());
             }
-        } catch (Exception e) {
+        } catch (java.io.IOException | RuntimeException e) {
             throw new IllegalStateException("Falha ao preparar DB criptografado (arquivo runtime)", e);
         }
     }
@@ -240,9 +240,9 @@ public final class DatabaseBackup {
         try (Connection c = dataSource.getConnection()) {
             try (PreparedStatement ps = c.prepareStatement("PRAGMA wal_checkpoint(TRUNCATE);");) {
                 ps.execute();
-            } catch (Exception ignored) {
+            } catch (java.sql.SQLException ignored) {
             }
-        } catch (Exception ignored) {
+        } catch (java.sql.SQLException ignored) {
         }
     }
 
@@ -263,7 +263,7 @@ public final class DatabaseBackup {
                 flyway.migrate();
             }
             migrated = true;
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             logger.error("Flyway migration failed", e);
             throw new IllegalStateException("Flyway migration failed", e);
         }
@@ -275,7 +275,7 @@ public final class DatabaseBackup {
         }
 
         if (dataSource != null) {
-            try { dataSource.close(); } catch (Exception ignored) {}
+            try { dataSource.close(); } catch (RuntimeException ignored) {}
             dataSource = null;
         }
         jdbi = null;
@@ -290,10 +290,10 @@ public final class DatabaseBackup {
                 var runtimeShm = runtime.resolveSibling(runtime.getFileName().toString() + "-shm");
 
                 DbFileCrypto.encryptFromRuntime(runtime, encrypted, Config.getSecretKey());
-                try { Files.deleteIfExists(runtime); } catch (Exception ignored) {}
-                try { Files.deleteIfExists(runtimeWal); } catch (Exception ignored) {}
-                try { Files.deleteIfExists(runtimeShm); } catch (Exception ignored) {}
-            } catch (Exception e) {
+                try { Files.deleteIfExists(runtime); } catch (java.io.IOException ignored) {}
+                try { Files.deleteIfExists(runtimeWal); } catch (java.io.IOException ignored) {}
+                try { Files.deleteIfExists(runtimeShm); } catch (java.io.IOException ignored) {}
+            } catch (java.io.IOException | RuntimeException e) {
                 logger.error("Falha ao salvar/encriptar o DB no shutdown", e);
             }
         }
@@ -306,7 +306,7 @@ public final class DatabaseBackup {
             var runtime = Config.getRuntimeDbFilePath();
             var encrypted = Config.getEncryptedDbFilePath();
             DbFileCrypto.encryptFromRuntime(runtime, encrypted, Config.getSecretKey());
-        } catch (Exception e) {
+        } catch (java.io.IOException | RuntimeException e) {
             logger.warn("Falha ao persistir snapshot criptografado", e);
         }
     }
@@ -323,7 +323,7 @@ public final class DatabaseBackup {
         public Connection borrow() throws SQLException {
             init();
             Connection c = dataSource.getConnection();
-            try { c.setAutoCommit(false); } catch (Exception ignored) {}
+            try { c.setAutoCommit(false); } catch (java.sql.SQLException ignored) {}
             return c;
         }
 
@@ -334,12 +334,12 @@ public final class DatabaseBackup {
         init();
         if (dataSource == null) throw new SQLException("Datasource not initialized");
         Connection c = dataSource.getConnection();
-        try { c.setAutoCommit(false); } catch (Exception ignored) {}
+        try { c.setAutoCommit(false); } catch (java.sql.SQLException ignored) {}
         return c;
     }
 
     public static void safeClose(Connection c) {
         if (c == null) return;
-        try { c.close(); } catch (Exception ignored) {}
+        try { c.close(); } catch (java.sql.SQLException ignored) {}
     }
 }

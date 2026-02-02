@@ -566,10 +566,6 @@ public final class BackupController {
                     historyStatus = "CANCELED";
                 }
 
-            } catch (InterruptedException ie) {
-                log(">> Operação interrompida.");
-                historyStatus = "CANCELED";
-                historyMessage = "Interrompido";
             } catch (Exception e) {
                 log(">> ERRO FATAL: " + safeMsg(e));
                 logger.error("Erro fatal durante o scan", e);

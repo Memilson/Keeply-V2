@@ -23,15 +23,34 @@ import org.slf4j.LoggerFactory;
 
 import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.database.KeeplyDao;
+
 public final class Backup {
 
-    Backup() {}
-    public record ScanConfig(int dbBatchSize, List<String> excludeGlobs) {
+    @SuppressWarnings("unused")
+    private Backup() {}
+
+    @SuppressWarnings("unused")
+    public record ScanConfig(@SuppressWarnings("unused") int dbBatchSize,
+                             @SuppressWarnings("MismatchedQueryAndUpdateOfCollection") List<String> excludeGlobs) {
         public static ScanConfig defaults() {
-            return new ScanConfig(10000, 
-                List.of("**/.git/**", "**/node_modules/**", "**/AppData/**", "**/Keeply/**", "**/*.iso", "**/*.vdi"));
+            List<String> excludes = new ArrayList<>();
+            excludes.addAll(List.of(
+                "**/.git/**",
+                "**/node_modules/**",
+                "**/AppData/**",
+                "**/Keeply/**",
+                "**/*.iso",
+                "**/*.vdi"
+            ));
+            return new ScanConfig(10000, List.copyOf(excludes));
         }}
-    public record FileSeen(long scanId, String pathRel, String name, long size, long mtime, long ctime) {}
+    @SuppressWarnings("unused")
+    public record FileSeen(@SuppressWarnings("unused") long scanId,
+                           @SuppressWarnings("unused") String pathRel,
+                           @SuppressWarnings("unused") String name,
+                           @SuppressWarnings("unused") long size,
+                           @SuppressWarnings("unused") long mtime,
+                           @SuppressWarnings("unused") long ctime) {}
 
     public static final class ScanMetrics {
         public final LongAdder filesSeen = new LongAdder();
@@ -51,7 +70,7 @@ public final class Backup {
             ScanMetrics metrics, 
             AtomicBoolean cancel,
             Consumer<String> uiLogger
-    ) throws Exception {
+    ) throws IOException {
         
         var rootAbs = root.toAbsolutePath().normalize();
         metrics.running.set(true);
@@ -71,7 +90,7 @@ public final class Backup {
         if (cancel.get()) {
             try {
                 DatabaseBackup.jdbi().useExtension(KeeplyDao.class, dao -> dao.cancelScanLog(scanId));
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 logger.error("Falha ao marcar scan como cancelado", e);
             }
             uiLogger.accept(">> Cancelado pelo usuário.");
@@ -239,6 +258,11 @@ public final class Backup {
                             pending = 0;
 }}
                     if (pending > 0) { ps.executeBatch(); c.commit(); metrics.dbBatches.increment(); }
-                }}catch (Exception e) {
+                }}catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 workerError = e;
-                logger.error("DbWriter error", e);}}}}
+                logger.error("DbWriter interrompido", e);
+            } catch (java.sql.SQLException | RuntimeException e) {
+                workerError = e;
+                logger.error("DbWriter error", e);
+            }}}}

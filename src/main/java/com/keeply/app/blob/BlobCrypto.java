@@ -12,6 +12,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 
 final class BlobCrypto {
@@ -42,25 +43,29 @@ final class BlobCrypto {
         }
     }
 
-    static OutputStream openEncryptingStream(OutputStream out, String passphrase) throws Exception {
-        SecureRandom rng = new SecureRandom();
-        byte[] salt = new byte[SALT_LEN];
-        byte[] nonce = new byte[NONCE_LEN];
-        rng.nextBytes(salt);
-        rng.nextBytes(nonce);
+    static OutputStream openEncryptingStream(OutputStream out, String passphrase) throws java.io.IOException {
+        try {
+            SecureRandom rng = new SecureRandom();
+            byte[] salt = new byte[SALT_LEN];
+            byte[] nonce = new byte[NONCE_LEN];
+            rng.nextBytes(salt);
+            rng.nextBytes(nonce);
 
-        SecretKey key = deriveKey(passphrase, salt);
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
+            SecretKey key = deriveKey(passphrase, salt);
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
 
-        out.write(MAGIC);
-        out.write(VERSION);
-        out.write(salt);
-        out.write(nonce);
-        return new CipherOutputStream(out, cipher);
+            out.write(MAGIC);
+            out.write(VERSION);
+            out.write(salt);
+            out.write(nonce);
+            return new CipherOutputStream(out, cipher);
+        } catch (GeneralSecurityException e) {
+            throw new java.io.IOException("Falha ao inicializar criptografia.", e);
+        }
     }
 
-    static InputStream openDecryptingStream(InputStream in, String passphrase) throws Exception {
+    static InputStream openDecryptingStream(InputStream in, String passphrase) throws java.io.IOException {
         byte[] magic = in.readNBytes(MAGIC.length);
         if (magic.length != MAGIC.length) {
             throw new IllegalStateException("Backup criptografado inválido (magic curto)");
@@ -81,13 +86,17 @@ final class BlobCrypto {
             throw new IllegalStateException("Backup criptografado inválido (salt/nonce)");
         }
 
-        SecretKey key = deriveKey(passphrase, salt);
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
-        return new CipherInputStream(in, cipher);
+        try {
+            SecretKey key = deriveKey(passphrase, salt);
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
+            return new CipherInputStream(in, cipher);
+        } catch (GeneralSecurityException e) {
+            throw new java.io.IOException("Falha ao inicializar descriptografia.", e);
+        }
     }
 
-    private static SecretKey deriveKey(String passphrase, byte[] salt) throws Exception {
+    private static SecretKey deriveKey(String passphrase, byte[] salt) throws GeneralSecurityException {
         PBEKeySpec spec = new PBEKeySpec(passphrase.toCharArray(), salt, PBKDF2_ITERS, KEY_BITS);
         SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
         byte[] keyBytes = skf.generateSecret(spec).getEncoded();

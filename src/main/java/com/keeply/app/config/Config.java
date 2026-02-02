@@ -6,13 +6,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.Instant;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 
 import io.github.cdimascio.dotenv.Dotenv;
@@ -34,8 +34,6 @@ public final class Config {
     private static final String PROP_DATA_DIR = "keeply.dataDir";
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Config.class);
     private static final Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
-    private static final String PREFS_FILE_NAME = "preferences.json";
-    private static final Pattern JSON_ENTRY_PATTERN = Pattern.compile("\"([^\"]+)\"\\s*:\\s*(\"([^\"]*)\"|true|false|null)");
     private static volatile String cachedDbPathKey;
     private static volatile Path cachedDbPath;
     private static volatile String sessionBackupPassword;
@@ -183,7 +181,7 @@ public final class Config {
             }
             sessionBackupPassword = null;
             return false;
-        } catch (Exception e) {
+        } catch (NoSuchAlgorithmException e) {
             sessionBackupPassword = null;
             return false;
         }
@@ -323,148 +321,6 @@ public final class Config {
         }
     }
 
-    private static Path getPreferencesFilePath() {
-        Path dbPath = getResolvedDbPath();
-        Path dir = dbPath.getParent();
-        if (dir == null) return Path.of(PREFS_FILE_NAME);
-        return dir.resolve(PREFS_FILE_NAME);
-    }
-
-    private static void savePreferencesValue(String key, String value) {
-        try {
-            if ("backup_encryption_enabled".equals(key)) {
-                prefsPutBoolean("backup_encryption_enabled", "true".equalsIgnoreCase(value));
-                return;
-            }
-            if ("backup_password_active".equals(key)) {
-                prefsPutBoolean("backup_password_active", "true".equalsIgnoreCase(value));
-                return;
-            }
-        } catch (Exception ignored) {
-            // Best-effort.
-        }
-    }
-
-    private static Preferences loadPreferences() {
-        Preferences prefs = new Preferences();
-        prefs.backupEncryptionEnabled = prefsGetBoolean("backup_encryption_enabled", true);
-        prefs.backupPasswordHash = prefsGet("backup_password_hash", null);
-        prefs.backupPasswordSetAt = prefsGet("backup_password_set_at", null);
-        prefs.backupPasswordActive = null;
-
-        Path file = getPreferencesFilePath();
-        if (!Files.exists(file)) {
-            if (prefs.backupPasswordHash != null && !prefs.backupPasswordHash.isBlank()) {
-                prefs.backupPasswordActive = true;
-            }
-            return prefs;
-        }
-        try {
-            String content = Files.readString(file, StandardCharsets.UTF_8);
-            Matcher matcher = JSON_ENTRY_PATTERN.matcher(content);
-            while (matcher.find()) {
-                String key = matcher.group(1);
-                String raw = matcher.group(2);
-                String str = matcher.group(3);
-                if ("backup_encryption_enabled".equals(key)) {
-                    if ("true".equalsIgnoreCase(raw)) {
-                        prefs.backupEncryptionEnabled = true;
-                    } else if ("false".equalsIgnoreCase(raw)) {
-                        prefs.backupEncryptionEnabled = false;
-                    }
-                } else if ("backup_password_active".equals(key)) {
-                    if ("true".equalsIgnoreCase(raw)) {
-                        prefs.backupPasswordActive = true;
-                    } else if ("false".equalsIgnoreCase(raw)) {
-                        prefs.backupPasswordActive = false;
-                    }
-                } else if ("backup_password_hash".equals(key)) {
-                    prefs.backupPasswordHash = "null".equals(raw) ? null : str;
-                } else if ("backup_password_set_at".equals(key)) {
-                    prefs.backupPasswordSetAt = "null".equals(raw) ? null : str;
-                }
-            }
-            if ((prefs.backupPasswordHash != null && !prefs.backupPasswordHash.isBlank())
-                    && (prefsGet("backup_password_hash", null) == null || prefsGet("backup_password_hash", "").isBlank())) {
-                prefsPut("backup_password_hash", prefs.backupPasswordHash);
-                if (prefs.backupPasswordSetAt != null && !prefs.backupPasswordSetAt.isBlank()) {
-                    prefsPut("backup_password_set_at", prefs.backupPasswordSetAt);
-                }
-                prefsPutBoolean("backup_password_active", true);
-                prefs.backupPasswordHash = null;
-                prefs.backupPasswordSetAt = null;
-                savePreferences(prefs);
-            }
-        } catch (Exception ignored) {
-            // Best-effort.
-        }
-        if (prefs.backupPasswordActive == null) {
-            prefs.backupPasswordActive = prefs.backupPasswordHash != null && !prefs.backupPasswordHash.isBlank();
-        }
-        return prefs;
-    }
-
-    private static synchronized void savePreferences(Preferences prefs) {
-        Path file = getPreferencesFilePath();
-        Path dir = file.getParent();
-        try {
-            if (dir != null) {
-                Files.createDirectories(dir);
-            }
-        } catch (Exception ignored) {
-        }
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("{\n");
-        sb.append("  \"backup_encryption_enabled\": ").append(prefs.backupEncryptionEnabled != null && prefs.backupEncryptionEnabled ? "true" : "false").append(",\n");
-        sb.append("  \"backup_password_active\": ").append(prefs.backupPasswordActive != null && prefs.backupPasswordActive ? "true" : "false").append("\n");
-        sb.append("}\n");
-
-        Path tmp = file.resolveSibling(file.getFileName().toString() + ".tmp");
-        try {
-            Files.writeString(tmp, sb.toString(), StandardCharsets.UTF_8);
-            try {
-                Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-            } catch (Exception ignored) {
-                Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            }
-        } catch (Exception ignored) {
-        }
-    }
-
-    private static String jsonStringOrNull(String value) {
-        if (value == null) return "null";
-        return "\"" + jsonEscape(value) + "\"";
-    }
-
-    private static String jsonEscape(String value) {
-        StringBuilder sb = new StringBuilder(value.length() + 8);
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-            switch (c) {
-                case '\\' -> sb.append("\\\\");
-                case '"' -> sb.append("\\\"");
-                case '\n' -> sb.append("\\n");
-                case '\r' -> sb.append("\\r");
-                case '\t' -> sb.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        sb.append(String.format("\\u%04x", (int) c));
-                    } else {
-                        sb.append(c);
-                    }
-                }
-            }
-        }
-        return sb.toString();
-    }
-
-    private static final class Preferences {
-        Boolean backupEncryptionEnabled;
-        Boolean backupPasswordActive;
-        String backupPasswordHash;
-        String backupPasswordSetAt;
-    }
 
     private static String sessionGet(String key) {
         if (key == null || key.isBlank()) return null;
@@ -477,7 +333,7 @@ public final class Config {
                     if (rs.next()) return rs.getString(1);
                 }
             }
-        } catch (Exception ignored) {
+        } catch (SQLException | RuntimeException ignored) {
         }
         return null;
     }
@@ -496,7 +352,7 @@ public final class Config {
                 ps.setString(3, Instant.now().toString());
                 ps.executeUpdate();
             }
-        } catch (Exception ignored) {
+        } catch (SQLException | RuntimeException ignored) {
         }
     }
 
@@ -521,11 +377,11 @@ public final class Config {
                 ps2.execute();
             }
             sessionDbInitialized = true;
-        } catch (Exception ignored) {
+        } catch (SQLException | RuntimeException ignored) {
         }
     }
 
-    private static Connection sessionOpen() throws Exception {
+    private static Connection sessionOpen() throws SQLException {
         return DriverManager.getConnection("jdbc:sqlite:" + getSessionDbFilePath().toAbsolutePath());
     }
 
@@ -543,7 +399,7 @@ public final class Config {
                     }
                 }
             }
-        } catch (Exception ignored) {
+        } catch (SQLException | RuntimeException ignored) {
         }
         return fallback;
     }
@@ -562,7 +418,7 @@ public final class Config {
                 ps.setString(3, Instant.now().toString());
                 ps.executeUpdate();
             }
-        } catch (Exception ignored) {
+        } catch (SQLException | RuntimeException ignored) {
         }
     }
 
@@ -576,7 +432,7 @@ public final class Config {
         prefsPut(key, value ? "true" : "false");
     }
 
-    private static String sha256Hex(String input) throws Exception {
+    private static String sha256Hex(String input) throws NoSuchAlgorithmException {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         byte[] out = digest.digest(input.getBytes(StandardCharsets.UTF_8));
         StringBuilder sb = new StringBuilder(out.length * 2);

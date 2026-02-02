@@ -10,6 +10,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 
 final class DbFileCrypto {
@@ -52,7 +53,7 @@ final class DbFileCrypto {
         }
     }
 
-    static void decryptToRuntime(Path encryptedFile, Path runtimeSqliteFile, String passphrase) throws Exception {
+    static void decryptToRuntime(Path encryptedFile, Path runtimeSqliteFile, String passphrase) throws java.io.IOException {
         if (!Files.exists(encryptedFile)) {
             return; // nada pra restaurar
         }
@@ -78,61 +79,69 @@ final class DbFileCrypto {
                 throw new IllegalStateException("Arquivo de DB criptografado inválido (salt/nonce)");
             }
 
-            SecretKey key = deriveKey(passphrase, salt);
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
+            try {
+                SecretKey key = deriveKey(passphrase, salt);
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
 
-            Files.createDirectories(runtimeSqliteFile.toAbsolutePath().getParent());
-            try (OutputStream out = Files.newOutputStream(runtimeSqliteFile)) {
-                // streaming decrypt
-                byte[] buf = new byte[64 * 1024];
-                int read;
-                while ((read = in.read(buf)) != -1) {
-                    byte[] pt = cipher.update(buf, 0, read);
-                    if (pt != null && pt.length > 0) out.write(pt);
+                Files.createDirectories(runtimeSqliteFile.toAbsolutePath().getParent());
+                try (OutputStream out = Files.newOutputStream(runtimeSqliteFile)) {
+                    // streaming decrypt
+                    byte[] buf = new byte[64 * 1024];
+                    int read;
+                    while ((read = in.read(buf)) != -1) {
+                        byte[] pt = cipher.update(buf, 0, read);
+                        if (pt != null && pt.length > 0) out.write(pt);
+                    }
+                    byte[] finalPt = cipher.doFinal();
+                    if (finalPt != null && finalPt.length > 0) out.write(finalPt);
                 }
-                byte[] finalPt = cipher.doFinal();
-                if (finalPt != null && finalPt.length > 0) out.write(finalPt);
+            } catch (GeneralSecurityException e) {
+                throw new java.io.IOException("Falha ao descriptografar DB.", e);
             }
         }
     }
 
-    static void encryptFromRuntime(Path runtimeSqliteFile, Path encryptedFile, String passphrase) throws Exception {
+    static void encryptFromRuntime(Path runtimeSqliteFile, Path encryptedFile, String passphrase) throws java.io.IOException {
         if (!Files.exists(runtimeSqliteFile)) {
             return; // nada pra persistir
         }
 
-        SecureRandom rng = new SecureRandom();
-        byte[] salt = new byte[SALT_LEN];
-        byte[] nonce = new byte[NONCE_LEN];
-        rng.nextBytes(salt);
-        rng.nextBytes(nonce);
+        try {
+            SecureRandom rng = new SecureRandom();
+            byte[] salt = new byte[SALT_LEN];
+            byte[] nonce = new byte[NONCE_LEN];
+            rng.nextBytes(salt);
+            rng.nextBytes(nonce);
 
-        SecretKey key = deriveKey(passphrase, salt);
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
+            SecretKey key = deriveKey(passphrase, salt);
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
 
-        Files.createDirectories(encryptedFile.toAbsolutePath().getParent());
-        try (OutputStream out = Files.newOutputStream(encryptedFile)) {
-            out.write(MAGIC);
-            out.write(VERSION);
-            out.write(salt);
-            out.write(nonce);
+            Files.createDirectories(encryptedFile.toAbsolutePath().getParent());
+            try (OutputStream out = Files.newOutputStream(encryptedFile)) {
+                out.write(MAGIC);
+                out.write(VERSION);
+                out.write(salt);
+                out.write(nonce);
 
-            try (InputStream in = Files.newInputStream(runtimeSqliteFile)) {
-                byte[] buf = new byte[64 * 1024];
-                int read;
-                while ((read = in.read(buf)) != -1) {
-                    byte[] ct = cipher.update(buf, 0, read);
-                    if (ct != null && ct.length > 0) out.write(ct);
+                try (InputStream in = Files.newInputStream(runtimeSqliteFile)) {
+                    byte[] buf = new byte[64 * 1024];
+                    int read;
+                    while ((read = in.read(buf)) != -1) {
+                        byte[] ct = cipher.update(buf, 0, read);
+                        if (ct != null && ct.length > 0) out.write(ct);
+                    }
+                    byte[] finalCt = cipher.doFinal();
+                    if (finalCt != null && finalCt.length > 0) out.write(finalCt);
                 }
-                byte[] finalCt = cipher.doFinal();
-                if (finalCt != null && finalCt.length > 0) out.write(finalCt);
             }
+        } catch (GeneralSecurityException e) {
+            throw new java.io.IOException("Falha ao criptografar DB.", e);
         }
     }
 
-    private static SecretKey deriveKey(String passphrase, byte[] salt) throws Exception {
+    private static SecretKey deriveKey(String passphrase, byte[] salt) throws GeneralSecurityException {
         PBEKeySpec spec = new PBEKeySpec(passphrase.toCharArray(), salt, PBKDF2_ITERS, KEY_BITS);
         SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
         byte[] keyBytes = skf.generateSecret(spec).getEncoded();

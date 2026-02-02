@@ -86,7 +86,7 @@ public final class InventoryController {
                         dao -> dao.fetchSnapshotFiles(scan.scanId())
                 );
                 Platform.runLater(() -> view.showFilesWindow(rows, scan, selected -> restoreSelectedForScan(scan, selected)));
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 Platform.runLater(() -> view.showError("Erro ao abrir arquivos: " + e.getMessage()));
             }
         });
@@ -102,7 +102,7 @@ public final class InventoryController {
         Path baseDir;
         try {
             baseDir = Path.of(baseDirRaw);
-        } catch (Exception e) {
+        } catch (java.nio.file.InvalidPathException e) {
             view.showError("Destino de Backup inválido: " + baseDirRaw);
             return;
         }
@@ -156,7 +156,7 @@ public final class InventoryController {
                 );
 
                 log.markDoneOk(">> Restore concluído: arquivos=" + result.filesRestored() + ", erros=" + result.errors());
-            } catch (Exception e) {
+            } catch (java.io.IOException | RuntimeException e) {
                 logger.error("Erro ao restaurar snapshot", e);
                 log.markDoneError(">> Erro ao restaurar snapshot: " + e.getMessage());
                 Platform.runLater(() -> view.showError("Erro ao restaurar snapshot: " + e.getMessage()));
@@ -183,7 +183,7 @@ public final class InventoryController {
         Path baseDir;
         try {
             baseDir = Path.of(baseDirRaw);
-        } catch (Exception e) {
+        } catch (java.nio.file.InvalidPathException e) {
             view.showError("Destino de Backup inválido: " + baseDirRaw);
             return;
         }
@@ -248,7 +248,7 @@ public final class InventoryController {
                         log.logger()
                 );
                 log.markDoneOk(">> Restore concluído: arquivos=" + result.filesRestored() + ", erros=" + result.errors());
-            } catch (Exception e) {
+            } catch (java.io.IOException | RuntimeException e) {
                 logger.error("Erro ao restaurar selecionados", e);
                 log.markDoneError(">> Erro ao restaurar selecionados: " + e.getMessage());
                 Platform.runLater(() -> view.showError("Erro ao restaurar selecionados: " + e.getMessage()));
@@ -300,7 +300,7 @@ public final class InventoryController {
                         view.renderTree(List.of(), null);
                     }
                 });
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 logger.error("Erro ao atualizar inventário", e);
                 Platform.runLater(() -> { view.showLoading(false); view.showError("Erro: " + e.getMessage()); });
             }
@@ -352,13 +352,15 @@ public final class InventoryController {
         return dialog.showAndWait().orElse(null);
     }
 
-    private record RestoreOptions(BlobStore.RestoreMode mode, String password) {}
+    @SuppressWarnings("unused")
+    private record RestoreOptions(@SuppressWarnings("unused") BlobStore.RestoreMode mode,
+                                  @SuppressWarnings("unused") String password) {}
 
     private static long parseTs(String s) {
         if (s == null || s.isBlank()) return 0L;
         try {
             return java.time.Instant.parse(s).toEpochMilli();
-        } catch (Exception e) {
+        } catch (java.time.format.DateTimeParseException e) {
             return 0L;
         }
     }
@@ -373,7 +375,7 @@ public final class InventoryController {
                         dao -> dao.fetchFileHistory(pathRel)
                 );
                 Platform.runLater(() -> view.showHistoryDialog(rows, pathRel));
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 logger.error("Erro ao carregar histórico", e);
             }
         });
@@ -392,7 +394,7 @@ public final class InventoryController {
         try {
             return DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")
                     .format(Instant.parse(dt).atZone(ZoneId.systemDefault()));
-        } catch (Exception e) {
+        } catch (java.time.format.DateTimeParseException e) {
             return dt.length() > 16 ? dt.substring(0, 16) : dt;
         }
     }

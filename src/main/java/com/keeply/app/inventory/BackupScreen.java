@@ -21,7 +21,6 @@ import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
-import javafx.scene.control.ContentDisplay;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.ProgressBar;
@@ -102,7 +101,7 @@ public final class BackupScreen {
         // Garante que o destino padrão exista (best-effort)
         try {
             Files.createDirectories(Path.of(destField.getText()));
-        } catch (Exception ignored) {}
+        } catch (java.io.IOException | RuntimeException ignored) {}
 
         // Tipo de destino (Local / Nuvem placeholder)
         btnLocal.setToggleGroup(destinationTypeGroup);
@@ -264,37 +263,6 @@ public final class BackupScreen {
 
     // ---------------- UI building ----------------
 
-    private VBox createCard(Node... children) {
-        var card = new VBox(10, children);
-        card.getStyleClass().add("card");
-        card.setPadding(new Insets(18));
-        return card;
-    }
-
-    private Label sectionTitle(String text) {
-        var l = new Label(text);
-        l.getStyleClass().add("card-title");
-        return l;
-    }
-
-    private Label sectionLabel(String text) {
-        var l = new Label(text);
-        l.getStyleClass().add("section-label");
-        return l;
-    }
-
-    private Label mutedText(String text) {
-        var l = new Label(text);
-        l.getStyleClass().add("muted");
-        l.setWrapText(true);
-        return l;
-    }
-
-    private Region spacer(double h) {
-        var r = new Region();
-        r.setMinHeight(h);
-        return r;
-    }
 
     private Node createFlowPanel(String title, String subtitle, String iconPath, TextField boundPath, Button actionButton) {
         VBox panel = new VBox(8);
@@ -498,16 +466,6 @@ public final class BackupScreen {
         GridPane.setHgrow(right, Priority.ALWAYS);
     }
 
-    private static void styleIconOnly(Button btn, String svgPath) {
-        var icon = new SVGPath();
-        icon.setContent(svgPath);
-        icon.getStyleClass().add("icon");
-        btn.setGraphic(icon);
-        btn.setContentDisplay(ContentDisplay.GRAPHIC_ONLY);
-        btn.setMinWidth(44);
-        btn.setPrefHeight(42);
-    }
-
     private static void styleIconButton(Button btn, String svgPath) {
         var icon = new SVGPath();
         icon.setContent(svgPath);
@@ -542,7 +500,7 @@ public final class BackupScreen {
 
             try {
                 Files.createDirectories(f.toPath());
-            } catch (Exception ignored) {}
+            } catch (java.io.IOException | RuntimeException ignored) {}
         }
     }
 
@@ -557,11 +515,14 @@ public final class BackupScreen {
 
     private void showDbOptions() {
         DatabaseBackup.DbEncryptionStatus s = DatabaseBackup.getEncryptionStatus();
-        String text = "Status da Criptografia:\n" +
-                "Ativado: " + s.encryptionEnabled() + "\n\n" +
-                "Arquivos:\n" +
-                ".enc exists: " + s.encryptedFileExists() + "\n" +
-                "Legacy plain exists: " + s.legacyPlainExists();
+        String text = """
+            Status da Criptografia:
+            Ativado: %s
+
+            Arquivos:
+            .enc exists: %s
+            Legacy plain exists: %s
+            """.formatted(s.encryptionEnabled(), s.encryptedFileExists(), s.legacyPlainExists());
 
         Alert alert = new Alert(Alert.AlertType.INFORMATION);
         alert.setTitle("Opções do Banco de Dados");
@@ -615,7 +576,7 @@ public final class BackupScreen {
         alert.getDialogPane().setContent(content);
         try {
             alert.getDialogPane().getStylesheets().add(getClass().getResource("/styles.css").toExternalForm());
-        } catch (Exception ignored) {}
+        } catch (RuntimeException ignored) {}
 
         var okButton = alert.getDialogPane().lookupButton(ButtonType.OK);
         okButton.disableProperty().bind(field.textProperty().isEmpty());
@@ -640,7 +601,7 @@ public final class BackupScreen {
 
         try {
             alert.getDialogPane().getStylesheets().add(getClass().getResource("/styles.css").toExternalForm());
-        } catch (Exception ignored) {}
+        } catch (RuntimeException ignored) {}
 
         var okButton = alert.getDialogPane().lookupButton(ButtonType.OK);
         okButton.disableProperty().bind(field.textProperty().isEmpty());
@@ -697,11 +658,13 @@ public final class BackupScreen {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
         alert.setTitle("Confirmar remoção");
         alert.setHeaderText("Apagar backups do Keeply?");
-        alert.setContentText(
-                "Isso apagará:\n" +
-                "• O histórico/banco de dados (SQLite)\n" +
-                "• Os binários armazenados no cofre (.keeply/storage)\n\n" +
-                "Isso NÃO apaga os arquivos originais da sua pasta de origem.");
+        alert.setContentText("""
+            Isso apagará:
+            • O histórico/banco de dados (SQLite)
+            • Os binários armazenados no cofre (.keeply/storage)
+
+            Isso NÃO apaga os arquivos originais da sua pasta de origem.
+            """);
         Optional<ButtonType> res = alert.showAndWait();
         return res.isPresent() && res.get() == ButtonType.OK;
     }

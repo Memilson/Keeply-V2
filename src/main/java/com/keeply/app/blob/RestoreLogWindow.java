@@ -20,14 +20,12 @@ import java.util.function.Consumer;
 
 public final class RestoreLogWindow {
 
-    private final Stage stage;
     private final TextArea logArea;
     private final Button cancelButton;
     private final Button closeButton;
     private final AtomicBoolean cancel = new AtomicBoolean(false);
 
-    private RestoreLogWindow(Stage stage, TextArea logArea, Button cancelButton, Button closeButton) {
-        this.stage = stage;
+    private RestoreLogWindow(TextArea logArea, Button cancelButton, Button closeButton) {
         this.logArea = logArea;
         this.cancelButton = cancelButton;
         this.closeButton = closeButton;
@@ -65,7 +63,7 @@ public final class RestoreLogWindow {
         Scene scene = new Scene(root, 760, 520);
         stage.setScene(scene);
 
-        RestoreLogWindow window = new RestoreLogWindow(stage, area, cancel, close);
+        RestoreLogWindow window = new RestoreLogWindow(area, cancel, close);
 
         cancel.setOnAction(e -> {
             window.cancel.set(true);

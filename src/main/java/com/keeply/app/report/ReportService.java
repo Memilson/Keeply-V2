@@ -21,7 +21,6 @@ import org.knowm.xchart.style.PieStyler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.awt.Color;
 import java.io.*;
 import java.lang.reflect.Method;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -237,16 +236,16 @@ public class ReportService {
             var ps = pie.getStyler();
             ps.setChartTitleVisible(false);
             ps.setLegendPosition(PieStyler.LegendPosition.OutsideE);
-            ps.setChartBackgroundColor(Color.WHITE);
+            tryInvoke(ps, "setChartBackgroundColor", awtWhite());
             ps.setPlotBorderVisible(false);
 
             // cores (SaaS)
-            ps.setSeriesColors(new Color[]{
-                    Color.decode(opts.theme().accent()),
-                    new Color(34, 197, 94),   // verde
-                    new Color(251, 191, 36),  // amarelo
-                    new Color(148, 163, 184)  // cinza
-            });
+                tryInvokeSeriesColors(ps, new Object[]{
+                    awtDecode(opts.theme().accent()),
+                    awtColor(34, 197, 94),
+                    awtColor(251, 191, 36),
+                    awtColor(148, 163, 184)
+                });
 
             // ordem estável
             List<String> keys = List.of("NEW", "MODIFIED", "STABLE", "OTHER");
@@ -258,7 +257,7 @@ public class ReportService {
 
             statusPng = toPngDataUri(pie);
 
-        } catch (Exception e) {
+        } catch (IOException | RuntimeException e) {
             log.error("Erro ao gerar gráficos (PNG)", e);
         }
 
@@ -269,14 +268,14 @@ public class ReportService {
         s.setLegendVisible(false);
         s.setChartTitleVisible(false);
 
-        s.setChartBackgroundColor(Color.WHITE);
-        s.setPlotBackgroundColor(Color.WHITE);
+        tryInvoke(s, "setChartBackgroundColor", awtWhite());
+        tryInvoke(s, "setPlotBackgroundColor", awtWhite());
 
         s.setPlotGridLinesVisible(true);
-        s.setPlotGridLinesColor(new Color(226, 232, 240));
+        tryInvoke(s, "setPlotGridLinesColor", awtColor(226, 232, 240));
         s.setPlotBorderVisible(false);
 
-        s.setSeriesColors(new Color[]{Color.decode(opts.theme().accent())});
+        tryInvokeSeriesColors(s, new Object[]{awtDecode(opts.theme().accent())});
 
         // legibilidade
         s.setXAxisLabelRotation(35);
@@ -284,17 +283,62 @@ public class ReportService {
         s.setOverlapped(false);
 
         // “tenta” deixar texto mais escuro sem depender da versão do XChart
-        tryInvoke(s, "setChartFontColor", Color.class, new Color(15, 23, 42));
-        tryInvoke(s, "setAxisTickLabelsColor", Color.class, new Color(15, 23, 42));
-        tryInvoke(s, "setAxisTitleColor", Color.class, new Color(15, 23, 42));
+        tryInvoke(s, "setChartFontColor", awtColor(15, 23, 42));
+        tryInvoke(s, "setAxisTickLabelsColor", awtColor(15, 23, 42));
+        tryInvoke(s, "setAxisTitleColor", awtColor(15, 23, 42));
     }
 
-    private static void tryInvoke(Object target, String method, Class<?> paramType, Object value) {
+    private static void tryInvoke(Object target, String method, Object value) {
+        if (target == null || value == null) return;
         try {
-            Method m = target.getClass().getMethod(method, paramType);
+            Method m = target.getClass().getMethod(method, value.getClass());
             m.invoke(target, value);
-        } catch (Exception ignored) {
+        } catch (ReflectiveOperationException | SecurityException ignored) {
             // compatibilidade entre versões do XChart
+        }
+    }
+
+    private static void tryInvokeSeriesColors(Object target, Object[] colors) {
+        if (target == null || colors == null || colors.length == 0 || colors[0] == null) return;
+        try {
+            Class<?> colorClass = colors[0].getClass();
+            Object array = java.lang.reflect.Array.newInstance(colorClass, colors.length);
+            for (int i = 0; i < colors.length; i++) {
+                if (colors[i] == null) return;
+                java.lang.reflect.Array.set(array, i, colors[i]);
+            }
+            Method m = target.getClass().getMethod("setSeriesColors", array.getClass());
+            m.invoke(target, array);
+        } catch (ReflectiveOperationException | SecurityException ignored) {
+            // compatibilidade entre versões do XChart
+        }
+    }
+
+    private static Object awtColor(int r, int g, int b) {
+        try {
+            Class<?> color = Class.forName("java.awt.Color");
+            return color.getConstructor(int.class, int.class, int.class).newInstance(r, g, b);
+        } catch (ReflectiveOperationException | SecurityException e) {
+            return null;
+        }
+    }
+
+    private static Object awtDecode(String hex) {
+        try {
+            Class<?> color = Class.forName("java.awt.Color");
+            Method decode = color.getMethod("decode", String.class);
+            return decode.invoke(null, hex);
+        } catch (ReflectiveOperationException | SecurityException e) {
+            return null;
+        }
+    }
+
+    private static Object awtWhite() {
+        try {
+            Class<?> color = Class.forName("java.awt.Color");
+            return color.getField("WHITE").get(null);
+        } catch (ReflectiveOperationException | SecurityException e) {
+            return null;
         }
     }
 
@@ -310,8 +354,9 @@ public class ReportService {
         try {
             Class<?> enc = Class.forName("org.knowm.xchart.BitmapEncoder");
             Class<?> fmt = Class.forName("org.knowm.xchart.BitmapEncoder$BitmapFormat");
-            @SuppressWarnings("unchecked")
-            Object pngEnum = Enum.valueOf((Class<Enum>) fmt.asSubclass(Enum.class), "PNG");
+            Class<?> enumType = fmt.asSubclass(Enum.class);
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            Enum<?> pngEnum = Enum.valueOf((Class) enumType, "PNG");
 
             // 1) tenta getBitmapBytes(chart, BitmapFormat.PNG)
             for (Method m : enc.getMethods()) {
@@ -345,7 +390,7 @@ public class ReportService {
 
         } catch (IOException e) {
             throw e;
-        } catch (Exception e) {
+        } catch (ReflectiveOperationException | SecurityException e) {
             throw new IOException("Falha ao gerar PNG do gráfico via BitmapEncoder.", e);
         }
     }
@@ -437,7 +482,7 @@ public class ReportService {
             } catch (AtomicMoveNotSupportedException e) {
                 Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
             }
-        } catch (Exception e) {
+        } catch (IOException | RuntimeException e) {
             Files.deleteIfExists(tmp);
             throw (e instanceof IOException io) ? io : new IOException(e);
         }
@@ -445,7 +490,7 @@ public class ReportService {
 
     @FunctionalInterface
     interface IOSubroutine {
-        void execute(OutputStream out) throws Exception;
+        void execute(OutputStream out) throws IOException;
     }
 
     // Helpers
@@ -474,21 +519,28 @@ public class ReportService {
     }
 
     // Records
+    @SuppressWarnings("unused")
     public record Model(Summary summary,
                         Map<String, Long> statusCounts,
                         List<TypeStat> topTypes,
                         List<FolderStat> topFolders,
                         List<TopFile> topFiles) {
 
+        @SuppressWarnings("unused")
         public record Summary(String rootPath, int totalFiles, long totalBytes, Object scanId, String finishedAt) {}
+        @SuppressWarnings("unused")
         public record TypeStat(String ext, long bytes, long count) {}
+        @SuppressWarnings("unused")
         public record FolderStat(String folder, long bytes, long count) {}
+        @SuppressWarnings("unused")
         public record TopFile(String name, String pathRel, String rootPath, long sizeBytes) {}
 
         // PNG base64 (data URI)
+        @SuppressWarnings("unused")
         public record Charts(String typesSizePng, String typesCountPng, String statusPng) {}
     }
 
+    @SuppressWarnings("unused")
     public record ReportOptions(Locale locale, ZoneId zoneId, int topFiles, int topTypes, int topFolders, Theme theme) {
         public static ReportOptions load() {
             return new ReportOptions(
@@ -502,6 +554,7 @@ public class ReportService {
         }
     }
 
+    @SuppressWarnings("unused")
     public record Theme(String headerBg, String accent, String textMain, String textMuted, String rowAlt) {}
 
     public static class TemplateFormatters {
@@ -528,8 +581,8 @@ public class ReportService {
         }
 
         public String pathFull(String root, String rel) {
-            String r = StringUtils.defaultString(root, "");
-            String p = StringUtils.defaultString(rel, "");
+            String r = (root == null) ? "" : root;
+            String p = (rel == null) ? "" : rel;
             if (r.isBlank()) return p;
             if (p.isBlank()) return r;
             if (r.endsWith("/") || r.endsWith("\\")) return r + p;

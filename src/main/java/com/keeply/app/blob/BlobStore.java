@@ -1,12 +1,5 @@
 package com.keeply.app.blob;
 
-import com.github.luben.zstd.ZstdInputStream;
-import com.github.luben.zstd.ZstdOutputStream;
-import com.keeply.app.config.Config;
-import com.keeply.app.database.DatabaseBackup;
-import com.keeply.app.database.KeeplyDao;
-import com.keeply.app.inventory.Backup;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -18,6 +11,7 @@ import java.nio.file.PathMatcher;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -29,6 +23,13 @@ import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.github.luben.zstd.ZstdInputStream;
+import com.github.luben.zstd.ZstdOutputStream;
+import com.keeply.app.config.Config;
+import com.keeply.app.database.DatabaseBackup;
+import com.keeply.app.database.KeeplyDao;
+import com.keeply.app.inventory.Backup;
 
 /**
  * Armazena blobs deduplicados e gerencia backup/restore.
@@ -44,7 +45,7 @@ public class BlobStore {
         Files.createDirectories(this.rootDir);
     }
 
-    public String put(Path sourceFile) throws Exception {
+    public String put(Path sourceFile) throws IOException {
         String hash = calculateHash(sourceFile);
 
         String prefix = hash.substring(0, 2);
@@ -97,8 +98,13 @@ public class BlobStore {
         }
     }
 
-    private String calculateHash(Path file) throws Exception {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+    private String calculateHash(Path file) throws IOException {
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IOException("Algoritmo SHA-256 indisponível.", e);
+        }
         try (InputStream fis = Files.newInputStream(file)) {
             byte[] buffer = new byte[8192];
             int bytesCount;
@@ -109,9 +115,11 @@ public class BlobStore {
         return HexFormat.of().formatHex(digest.digest());
     }
 
-    public record BackupResult(long filesProcessed, long errors) {}
+    @SuppressWarnings("unused")
+    public record BackupResult(@SuppressWarnings("unused") long filesProcessed, @SuppressWarnings("unused") long errors) {}
 
-    public record RestoreResult(long filesRestored, long errors) {}
+    @SuppressWarnings("unused")
+    public record RestoreResult(@SuppressWarnings("unused") long filesRestored, @SuppressWarnings("unused") long errors) {}
 
     public enum RestoreMode {
         ORIGINAL_PATH,
@@ -147,23 +155,23 @@ public class BlobStore {
                 if (payload[i] != restored[i]) return false;
             }
             return true;
-        } catch (Exception e) {
+        } catch (IOException | RuntimeException e) {
             logger.warn("Falha ao validar senha de backup (teste de criptografia).", e);
             return false;
         } finally {
-            try { if (dec != null) Files.deleteIfExists(dec); } catch (Exception ignored) {}
-            try { if (enc != null) Files.deleteIfExists(enc); } catch (Exception ignored) {}
-            try { if (tmpDir != null) Files.deleteIfExists(tmpDir); } catch (Exception ignored) {}
+            try { if (dec != null) Files.deleteIfExists(dec); } catch (IOException ignored) {}
+            try { if (enc != null) Files.deleteIfExists(enc); } catch (IOException ignored) {}
+            try { if (tmpDir != null) Files.deleteIfExists(tmpDir); } catch (IOException ignored) {}
         }
     }
 
-    public static BackupResult runBackup(Path root, Backup.ScanConfig cfg, AtomicBoolean cancel, Consumer<String> uiLogger) throws Exception {
+    public static BackupResult runBackup(Path root, Backup.ScanConfig cfg, AtomicBoolean cancel, Consumer<String> uiLogger) throws IOException {
         Path baseDir = Config.getEncryptedDbFilePath().toAbsolutePath().getParent();
         if (baseDir == null) throw new IllegalStateException("Base dir not resolved for BlobStore");
         return runBackup(root, cfg, baseDir, cancel, uiLogger);
     }
 
-    public static BackupResult runBackup(Path root, Backup.ScanConfig cfg, Path baseDir, AtomicBoolean cancel, Consumer<String> uiLogger) throws Exception {
+    public static BackupResult runBackup(Path root, Backup.ScanConfig cfg, Path baseDir, AtomicBoolean cancel, Consumer<String> uiLogger) throws IOException {
         Path rootAbs = root.toAbsolutePath().normalize();
 
         if (baseDir == null) {
@@ -211,7 +219,7 @@ public class BlobStore {
                 try {
                     store.put(file);
                     files[0]++;
-                } catch (Exception e) {
+                } catch (IOException e) {
                     errors[0]++;
                     logger.warn("Falha ao armazenar arquivo no backup: {}", file, e);
                 }
@@ -231,7 +239,7 @@ public class BlobStore {
         return new BackupResult(files[0], errors[0]);
     }
 
-    public static BackupResult runBackupIncremental(Path root, Backup.ScanConfig cfg, Path baseDir, long scanId, AtomicBoolean cancel, Consumer<String> uiLogger) throws Exception {
+    public static BackupResult runBackupIncremental(Path root, Backup.ScanConfig cfg, Path baseDir, long scanId, AtomicBoolean cancel, Consumer<String> uiLogger) throws IOException {
         return runBackupIncremental(root, cfg, baseDir, scanId, cancel, uiLogger, null);
     }
 
@@ -243,7 +251,7 @@ public class BlobStore {
             AtomicBoolean cancel,
             Consumer<String> uiLogger,
             BiConsumer<Long, Long> progress
-    ) throws Exception {
+    ) throws IOException {
         Path rootAbs = root.toAbsolutePath().normalize();
 
         if (baseDir == null) {
@@ -283,7 +291,7 @@ public class BlobStore {
                 files[0]++;
                 done++;
                 if (progress != null) progress.accept(done, total);
-            } catch (Exception e) {
+            } catch (IOException e) {
                 errors[0]++;
                 logger.warn("Falha ao armazenar arquivo no backup incremental: {}", source, e);
                 done++;
@@ -303,7 +311,7 @@ public class BlobStore {
             RestoreMode mode,
             AtomicBoolean cancel,
             Consumer<String> uiLogger
-    ) throws Exception {
+    ) throws IOException {
         if (baseDir == null) {
             throw new IllegalArgumentException("baseDir is required");
         }
@@ -325,7 +333,7 @@ public class BlobStore {
             RestoreMode mode,
             AtomicBoolean cancel,
             Consumer<String> uiLogger
-    ) throws Exception {
+    ) throws IOException {
         if (baseDir == null) {
             throw new IllegalArgumentException("baseDir is required");
         }
@@ -372,7 +380,7 @@ public class BlobStore {
             RestoreMode mode,
             AtomicBoolean cancel,
             Consumer<String> uiLogger
-    ) throws Exception {
+    ) throws IOException {
         List<DatabaseBackup.SnapshotBlobRow> safe = (blobs == null) ? List.of() : blobs;
 
         uiLogger.accept(">> Restore: arquivos encontrados=" + safe.size());
@@ -417,7 +425,7 @@ public class BlobStore {
                 uiLogger.accept(">> Restore: " + pathRel);
                 store.get(hash, out);
                 restored++;
-            } catch (Exception e) {
+            } catch (IOException e) {
                 errors++;
                 uiLogger.accept(">> Restore: ERRO em " + pathRel + " (" + e.getClass().getSimpleName() + ")");
             }
@@ -446,11 +454,7 @@ public class BlobStore {
     }
 
     private static InputStream safeDecryptStream(InputStream in, String passphrase) throws IOException {
-        try {
-            return BlobCrypto.openDecryptingStream(in, passphrase);
-        } catch (Exception e) {
-            throw new IOException(e.getMessage(), e);
-        }
+        return BlobCrypto.openDecryptingStream(in, passphrase);
     }
 
     private static Path resolveOutputPath(String pathRel, Path destinationDir, Path originalRoot, RestoreMode mode) throws IOException {

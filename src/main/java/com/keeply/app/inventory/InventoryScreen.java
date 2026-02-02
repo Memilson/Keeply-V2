@@ -399,7 +399,13 @@ public final class InventoryScreen {
         r.setMaxWidth(Region.USE_PREF_SIZE);
     }
 
-    public record FileNode(String name, String path, boolean directory, long sizeBytes, String status, long modifiedMillis) {}
+    @SuppressWarnings("unused")
+    public record FileNode(@SuppressWarnings("unused") String name,
+                           @SuppressWarnings("unused") String path,
+                           @SuppressWarnings("unused") boolean directory,
+                           @SuppressWarnings("unused") long sizeBytes,
+                           @SuppressWarnings("unused") String status,
+                           @SuppressWarnings("unused") long modifiedMillis) {}
     public record SelectedNode(String pathRel, boolean directory) {}
     
     private class ScanListCell extends ListCell<BackupHistoryDb.HistoryRow> {

@@ -1,11 +1,21 @@
 package com.keeply.app.overview;
+
+import com.keeply.app.config.Config;
+import com.keeply.app.database.DatabaseBackup;
+import com.keeply.app.database.DatabaseBackup.InventoryRow;
+import com.keeply.app.database.DatabaseBackup.ScanSummary;
+import com.keeply.app.database.KeeplyDao;
+import com.keeply.app.report.ReportService;
+import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.chart.AreaChart;
 import javafx.scene.chart.NumberAxis;
 import javafx.scene.chart.XYChart;
+import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.layout.ColumnConstraints;
@@ -15,6 +25,15 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.scene.shape.SVGPath;
+import javafx.stage.FileChooser;
+import javafx.stage.Window;
+
+import java.io.File;
+import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.Optional;
 public final class OverviewScreen {
     public Node content() {
         VBox root = new VBox(14);
@@ -29,8 +48,9 @@ public final class OverviewScreen {
         header.setAlignment(Pos.CENTER_LEFT);
         Region headerSpacer = new Region();
         HBox.setHgrow(headerSpacer, Priority.ALWAYS);
-        Button reportBtn = new Button("Relatório");
+        Button reportBtn = new Button("Gerar relatório");
         reportBtn.getStyleClass().addAll("btn", "btn-outline");
+        reportBtn.setOnAction(e -> generateReport(root, reportBtn));
         header.getChildren().addAll(headerLeft, headerSpacer, reportBtn);
         GridPane top = new GridPane();
         top.getStyleClass().add("metrics-grid");
@@ -55,12 +75,79 @@ public final class OverviewScreen {
         content.getStyleClass().add("content-wrap");
         content.setMaxWidth(980);
         root.getChildren().add(content);
-        return root;}
+        return root;
+    }
+
+    private void generateReport(Node ownerNode, Button reportBtn) {
+        Window owner = ownerNode.getScene() != null ? ownerNode.getScene().getWindow() : null;
+
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Salvar relatório PDF");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("PDF", "*.pdf"));
+
+        String lastPath = Config.getLastPath();
+        if (lastPath != null && !lastPath.isBlank()) {
+            File lastDir = new File(lastPath);
+            if (lastDir.exists() && lastDir.isDirectory()) {
+                chooser.setInitialDirectory(lastDir);
+            }
+        }
+
+        String ts = DateTimeFormatter.ofPattern("yyyyMMdd-HHmm").format(LocalDateTime.now());
+        chooser.setInitialFileName("relatorio-keeply-" + ts + ".pdf");
+
+        File out = chooser.showSaveDialog(owner);
+        if (out == null) return;
+
+        Config.saveLastPath(out.getParentFile() != null ? out.getParentFile().getAbsolutePath() : out.getAbsolutePath());
+
+        reportBtn.setDisable(true);
+        Thread.ofVirtual().name("keeply-report").start(() -> {
+            try {
+                DatabaseBackup.init();
+                Optional<ScanSummary> lastScan = DatabaseBackup.jdbi().withExtension(KeeplyDao.class, KeeplyDao::fetchLastScan);
+                if (lastScan.isEmpty()) {
+                    Platform.runLater(() -> showAlert(Alert.AlertType.WARNING,
+                            "Sem dados",
+                            "Não há backups para gerar relatório."));
+                    return;
+                }
+
+                ScanSummary scan = lastScan.get();
+                List<InventoryRow> rows = DatabaseBackup.jdbi().withExtension(
+                        KeeplyDao.class,
+                        dao -> dao.fetchSnapshotFiles(scan.scanId())
+                );
+
+                ReportService reportService = new ReportService();
+                reportService.exportPdf(rows, out, scan);
+
+                Platform.runLater(() -> showAlert(Alert.AlertType.INFORMATION,
+                        "Relatório gerado",
+                        "PDF salvo em: " + out.getAbsolutePath()));
+
+            } catch (IOException | RuntimeException ex) {
+                Platform.runLater(() -> showAlert(Alert.AlertType.ERROR,
+                        "Erro ao gerar relatório",
+                        ex.getMessage() != null ? ex.getMessage() : "Falha desconhecida"));
+            } finally {
+                Platform.runLater(() -> reportBtn.setDisable(false));
+            }
+        });
+    }
+
+    private void showAlert(Alert.AlertType type, String title, String message) {
+        Alert alert = new Alert(type, message, ButtonType.OK);
+        alert.setTitle(title);
+        alert.setHeaderText(null);
+        alert.showAndWait();
+    }
     private VBox baseCard() {
         VBox card = new VBox(10);
         card.getStyleClass().add("card");
         card.setPadding(new Insets(14));
-        return card;}
+        return card;
+    }
     private Node cardTotalBackups() {
         VBox card = baseCard();
         card.getStyleClass().add("metric-card");
@@ -77,7 +164,8 @@ public final class OverviewScreen {
         Label big = new Label("124");
         big.getStyleClass().add("metric-value");
         card.getChildren().addAll(header, big);
-        return card;}
+        return card;
+    }
     private Node cardStorage() {
         VBox card = baseCard();
         card.getStyleClass().add("metric-card");
@@ -97,7 +185,8 @@ public final class OverviewScreen {
         Label txt = new Label("1.2 TB / 5 TB (24%)");
         txt.getStyleClass().add("muted");
         card.getChildren().addAll(header, bar, txt);
-        return card;}
+        return card;
+    }
     private Node cardRecentActivity() {
         VBox card = baseCard();
         card.getStyleClass().add("metric-card");
