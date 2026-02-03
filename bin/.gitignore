@@ -1,0 +1,41 @@
+
+# Java
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Maven
+.mvn/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Banco de dados
+*.db
+*.sqlite
+
+# Node (se presente)
+node_modules/
+
+# Sistema
+$RECYCLE.BIN/
+System Volume Information/
+
+# Outros
+*.swp
+*~
+.env

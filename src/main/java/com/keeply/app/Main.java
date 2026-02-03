@@ -125,6 +125,8 @@ public class Main extends Application {
 
         tabs.getTabs().addAll(tOverview, tHistory, tConfig, tInv);
 
+        layout.setTitle(tOverview.getText());
+
         // Footer global (mesmos botões em todas as telas)
         layout.setFooter(scan.footer());
 
@@ -138,7 +140,7 @@ public class Main extends Application {
             scan.getScanButton().setDisable(!isBackup);
             scan.getStopButton().setDisable(!isBackup);
 
-            // Título de tela não exibido no novo layout.
+            layout.setTitle(newVal.getText());
         });
 
         return tabs;

@@ -1,7 +1,26 @@
 package com.keeply.app.inventory;
 
-import com.keeply.app.config.Config;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.keeply.app.blob.BlobStore;
+import com.keeply.app.config.Config;
 import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.history.BackupHistoryDb;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
@@ -12,20 +31,6 @@ import javafx.application.Platform;
 import javafx.scene.control.Alert;
 import javafx.util.Duration;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.time.Instant;
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 public final class BackupController {
 
     private final BackupScreen view;
@@ -34,6 +39,10 @@ public final class BackupController {
     private volatile ScannerTask currentTask;
     private volatile Thread scanThread;
     private volatile Timeline uiUpdater;
+
+    // Otimização crítica: NUNCA chamar Platform.runLater() por log em volume.
+    // Em vez disso, enfileira logs e dá flush em lote na UI.
+    private final LogBus logBus = new LogBus();
 
     private static final Logger logger = LoggerFactory.getLogger(BackupController.class);
 
@@ -57,8 +66,14 @@ public final class BackupController {
         else Platform.runLater(r);
     }
 
+    // Log "rápido": vai pra fila e é despejado em lote na UI
     private void log(String msg) {
-        ui(() -> view.appendLog(msg));
+        logBus.enqueue(msg);
+    }
+
+    // Log "importante": aparece mais rápido (ainda sem spam)
+    private void logNow(String msg) {
+        logBus.enqueueImportant(msg);
     }
 
     private void showError(String message) {
@@ -72,7 +87,7 @@ public final class BackupController {
     }
 
     private void errorAndLog(String message) {
-        log(">> Erro: " + message);
+        logNow(">> Erro: " + message);
         showError(message);
     }
 
@@ -80,12 +95,21 @@ public final class BackupController {
         ui(() -> view.setScanningState(scanning));
     }
 
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "generic").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private static boolean isLinux() {
+        String os = System.getProperty("os.name", "generic").toLowerCase(Locale.ROOT);
+        return os.contains("nux") || os.contains("linux");
+    }
+
     // -----------------------------
     // Actions
     // -----------------------------
     private void startScan() {
         if (currentTask != null && currentTask.isRunning()) {
-            log(">> Aviso: Backup anterior ainda está finalizando...");
+            logNow(">> Aviso: Backup anterior ainda está finalizando...");
             return;
         }
 
@@ -106,6 +130,18 @@ public final class BackupController {
             return;
         }
 
+        // Check forte: destino dentro da origem = risco de recursão/scan infinito (mesmo com excludes).
+        try {
+            Path root = Path.of(pathText).toAbsolutePath().normalize();
+            Path dest = Path.of(destText).toAbsolutePath().normalize();
+            boolean nested = dest.startsWith(root);
+
+            if (nested) {
+                logNow(">> Aviso: destino está dentro da origem — o scanner vai ignorar o destino para evitar recursão.");
+                // NÃO retorna; deixa rodar
+            }
+        } catch (Exception ignored) { }
+
         if (view.isEncryptionEnabled()) {
             String pass = view.getBackupEncryptionPassword();
             if (pass == null || pass.isBlank()) {
@@ -116,7 +152,7 @@ public final class BackupController {
                 errorAndLog("Senha incorreta. Digite a senha configurada para desbloquear.");
                 return;
             }
-            log(">> Criptografia ativa: senha validada.");
+            logNow(">> Criptografia ativa: senha validada.");
         }
 
         try {
@@ -128,35 +164,38 @@ public final class BackupController {
                 model.progressProperty.set(-1);
             });
 
-            // Cria a configuração simplificada (sem hash)
+            // Inicia log flusher (UI) e throttles
+            logBus.start();
+
+            // Config (agressiva e cross-platform)
             var config = buildScanConfig();
 
             // Inicia a tarefa
             currentTask = new ScannerTask(pathText, destText, config);
-            
-            // Thread Virtual para orquestrar o scan
+
             scanThread = Thread.ofVirtual()
                     .name("keeply-scan-main")
                     .start(currentTask);
 
         } catch (Exception e) {
-            log(">> ERRO AO INICIAR: " + safeMsg(e));
+            logNow(">> ERRO AO INICIAR: " + safeMsg(e));
             logger.error("Erro ao iniciar backup", e);
             setScanningState(false);
             currentTask = null;
             scanThread = null;
+            logBus.stop();
         }
     }
 
     private void stopScan() {
         var task = currentTask;
         if (task != null && task.isRunning()) {
-            log("!!! Solicitando parada... Aguarde...");
+            logNow("!!! Solicitando parada... Aguarde...");
             task.cancel();
-            
+
             var t = scanThread;
             if (t != null) t.interrupt();
-            
+
             ui(() -> view.getStopButton().setDisable(true));
         }
     }
@@ -165,36 +204,40 @@ public final class BackupController {
         if (!view.confirmWipe()) return;
 
         setScanningState(true);
+        logBus.start();
 
         Thread.ofVirtual().name("keeply-db-wipe").start(() -> {
-            log("!!! APAGANDO BACKUPS (DB + COFRE) !!!");
+            logNow("!!! APAGANDO BACKUPS (DB + COFRE) !!!");
             try {
                 ui(() -> {
                     model.phaseProperty.set("Apagando backups...");
                     model.progressProperty.set(-1);
                 });
+
                 requestStopAndWait(5, TimeUnit.SECONDS);
                 var t = scanThread;
                 if (t != null && t.isAlive()) {
                     throw new IllegalStateException("Backup ainda está rodando. Aguarde finalizar/cancelar e tente novamente.");
                 }
 
-                // 1) Delete backup vault binaries (.keeply/storage) under the configured destination(s)
+                // 1) Delete backup vault binaries (.keeply/storage)
                 wipeBackupStorageBestEffort();
 
                 // 2) Delete SQLite DB files (history/metadata)
                 performWipeLogic();
-                log(">> SUCESSO: Backups apagados (banco + cofre). O app recria o DB no próximo backup.");
+
+                logNow(">> SUCESSO: Backups apagados (banco + cofre). O app recria o DB no próximo backup.");
             } catch (Exception e) {
-                log(">> ERRO NO WIPE: " + safeMsg(e));
+                logNow(">> ERRO NO WIPE: " + safeMsg(e));
                 logger.error("Erro no wipe do banco", e);
             } finally {
                 setScanningState(false);
                 ui(() -> {
                     model.phaseProperty.set("Idle");
                     model.progressProperty.set(0);
+                    view.getStopButton().setDisable(false);
                 });
-                ui(() -> view.getStopButton().setDisable(false));
+                logBus.stop();
             }
         });
     }
@@ -211,43 +254,34 @@ public final class BackupController {
     }
 
     private void performWipeLogic() throws Exception {
-        // Wipe only the Keeply database files (history/metadata).
-        // Backup vault deletion is handled separately.
-
         Path encrypted = Config.getEncryptedDbFilePath();
         Path runtime = Config.getRuntimeDbFilePath();
 
         if (encrypted == null || runtime == null) {
-            log(">> ERRO: Caminho do banco não resolvido.");
+            logNow(">> ERRO: Caminho do banco não resolvido.");
             return;
         }
 
-        log(">> Encerrando conexões e removendo arquivos de banco...");
+        logNow(">> Encerrando conexões e removendo arquivos de banco...");
 
         try {
             DatabaseBackup.shutdown();
-        } catch (Exception ignored) {
-            // Best-effort.
-        }
+        } catch (Exception ignored) {}
 
-        // Ensure the directory exists
         if (encrypted.getParent() != null) {
             Files.createDirectories(encrypted.getParent());
         }
 
         boolean anyFailed = false;
 
-        // Delete runtime + WAL/SHM
         anyFailed |= !deleteIfExistsQuiet(runtime, 12, 75);
         anyFailed |= !deleteIfExistsQuiet(Path.of(runtime.toString() + "-wal"), 12, 75);
         anyFailed |= !deleteIfExistsQuiet(Path.of(runtime.toString() + "-shm"), 12, 75);
 
-        // Delete encrypted + any accidental sqlite sidecars
         anyFailed |= !deleteIfExistsQuiet(encrypted, 6, 75);
         anyFailed |= !deleteIfExistsQuiet(Path.of(encrypted.toString() + "-wal"), 6, 75);
         anyFailed |= !deleteIfExistsQuiet(Path.of(encrypted.toString() + "-shm"), 6, 75);
 
-        // If encryption is enabled, also try removing legacy plaintext base name (without .enc)
         if (Config.isDbEncryptionEnabled()) {
             String name = encrypted.getFileName().toString();
             if (name.endsWith(".enc")) {
@@ -259,10 +293,10 @@ public final class BackupController {
         }
 
         if (anyFailed) {
-            log(">> Falha ao apagar algum arquivo. Limpando tabelas como fallback.");
+            logNow(">> Falha ao apagar algum arquivo. Limpando tabelas como fallback.");
             wipeTablesFallback();
         } else {
-            log(">> Arquivos removidos (ou já não existiam). Um novo banco será criado no próximo backup.");
+            logNow(">> Arquivos removidos (ou já não existiam). Um novo banco será criado no próximo backup.");
             DatabaseBackup.init();
         }
     }
@@ -270,20 +304,16 @@ public final class BackupController {
     private void wipeBackupStorageBestEffort() {
         Set<Path> baseDirs = new LinkedHashSet<>();
 
-        // 1) From UI field
         try {
             String txt = view.getBackupDestinationText();
             if (txt != null && !txt.isBlank()) baseDirs.add(Path.of(txt).toAbsolutePath().normalize());
         } catch (Exception ignored) {}
 
-        // 2) From persisted config
         try {
             String txt = Config.getLastBackupDestination();
             if (txt != null && !txt.isBlank()) baseDirs.add(Path.of(txt).toAbsolutePath().normalize());
         } catch (Exception ignored) {}
 
-        // 3) Legacy/default location: alongside the DB directory.
-        // Older code paths may have stored the vault under %APPDATA%\Keeply\.keeply\storage.
         try {
             Path p = Config.getEncryptedDbFilePath();
             Path parent = (p == null) ? null : p.toAbsolutePath().getParent();
@@ -294,7 +324,7 @@ public final class BackupController {
             baseDirs.add(Path.of(".").toAbsolutePath().normalize());
         }
 
-        log(">> Apagando backups locais (BlobStore/.keeply/storage)...");
+        logNow(">> Apagando backups locais (BlobStore/.keeply/storage)...");
         log(">> Locais candidatos: " + baseDirs);
 
         boolean anyDeleted = false;
@@ -312,29 +342,29 @@ public final class BackupController {
             try {
                 deleteDirectoryRecursive(storageDir, 8, 90);
                 anyDeleted = true;
-                log(">> Backups locais removidos.");
+                logNow(">> Backups locais removidos.");
             } catch (Exception e) {
                 anyFailed = true;
-                log(">> Aviso: falha ao apagar cofre: " + safeMsg(e));
+                logNow(">> Aviso: falha ao apagar cofre: " + safeMsg(e));
                 logger.warn("Falha ao apagar cofre {}", storageDir, e);
             }
         }
 
         if (!anyDeleted && !anyFailed) {
-            log(">> Nenhum cofre encontrado (ok). ");
+            logNow(">> Nenhum cofre encontrado (ok).");
         }
     }
 
     private static void deleteDirectoryRecursive(Path dir, int attempts, long delayMillis) throws Exception {
         Files.walkFileTree(dir, new SimpleFileVisitor<>() {
             @Override
-            public java.nio.file.FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws java.io.IOException {
+            public java.nio.file.FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 deletePathWithRetry(file, attempts, delayMillis);
                 return java.nio.file.FileVisitResult.CONTINUE;
             }
 
             @Override
-            public java.nio.file.FileVisitResult postVisitDirectory(Path d, java.io.IOException exc) throws java.io.IOException {
+            public java.nio.file.FileVisitResult postVisitDirectory(Path d, IOException exc) throws IOException {
                 if (exc != null) throw exc;
                 deletePathWithRetry(d, attempts, delayMillis);
                 return java.nio.file.FileVisitResult.CONTINUE;
@@ -342,31 +372,25 @@ public final class BackupController {
         });
     }
 
-    private static void deletePathWithRetry(Path p, int attempts, long delayMillis) throws java.io.IOException {
+    private static void deletePathWithRetry(Path p, int attempts, long delayMillis) throws IOException {
         if (p == null) return;
 
-        java.io.IOException last = null;
+        IOException last = null;
         int tries = Math.max(1, attempts);
 
         for (int i = 1; i <= tries; i++) {
             try {
                 Files.deleteIfExists(p);
                 return;
-            } catch (java.io.IOException e) {
+            } catch (IOException e) {
                 last = e;
 
-                // On Windows, read-only attribute can prevent deletion.
-                try {
-                    Files.setAttribute(p, "dos:readonly", false);
-                } catch (Exception ignored) {}
+                // Windows: read-only pode travar delete
+                try { Files.setAttribute(p, "dos:readonly", false); } catch (Exception ignored) {}
 
                 if (delayMillis > 0 && i < tries) {
-                    try {
-                        Thread.sleep(delayMillis);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
+                    try { Thread.sleep(delayMillis); }
+                    catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
                 }
             }
         }
@@ -387,14 +411,9 @@ public final class BackupController {
                 return true;
             } catch (Exception e) {
                 last = e;
-                // Windows may keep file handles briefly after closing SQLite/Hikari.
                 if (delayMillis > 0 && i < attempts) {
-                    try {
-                        Thread.sleep(delayMillis);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
+                    try { Thread.sleep(delayMillis); }
+                    catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
                 }
             }
         }
@@ -406,39 +425,70 @@ public final class BackupController {
         DatabaseBackup.init();
         DatabaseBackup.jdbi().useHandle(handle -> {
             handle.execute("PRAGMA busy_timeout = 5000");
-            log(">> Apagando tabelas...");
+            logNow(">> Apagando tabelas...");
             handle.execute("DELETE FROM scan_issues");
             handle.execute("DELETE FROM file_inventory");
             handle.execute("DELETE FROM scans");
-            // Reset AUTOINCREMENT counters
-            try {
-                handle.execute("DELETE FROM sqlite_sequence");
-            } catch (Exception ignored) {
-                // sqlite_sequence may not exist on some schemas; ignore
-            }
-            log(">> Compactando arquivo (VACUUM)...");
+            try { handle.execute("DELETE FROM sqlite_sequence"); } catch (Exception ignored) {}
+            logNow(">> Compactando arquivo (VACUUM)...");
             handle.execute("VACUUM");
         });
     }
 
-
     // --- CONFIGURAÇÃO (Otimizada) ---
     private Backup.ScanConfig buildScanConfig() {
         var defaults = Backup.ScanConfig.defaults();
-        
         var excludes = new ArrayList<>(defaults.excludeGlobs());
-        // Adiciona exclusões de sistema
+
+        // Exclusões comuns (Win + Linux)
         excludes.addAll(List.of(
-            "**/Keeply/**", "**/*.keeply*", 
-            "**/.keeply/**",
-            "**/AppData/Local/Temp/**", "**/AppData/Local/Microsoft/**",
-            "**/ntuser.dat*", "**/Cookies/**", "**/$Recycle.Bin/**",
-            "**/System Volume Information/**", "**/Windows/**"
+                "**/.keeply/**",
+                "**/*.keeply*",
+                "**/.git/**",
+                "**/node_modules/**",
+                "**/.venv/**",
+                "**/__pycache__/**",
+                "**/.DS_Store",
+                "**/Thumbs.db"
         ));
 
-        // Note: removemos os parâmetros de HashWorker, pois o novo Scanner não usa
+        if (isWindows()) {
+            // Windows: corte agressivo pra evitar scan infinito/ruim
+            excludes.addAll(List.of(
+                    "**/Windows/**",
+                    "**/Program Files/**",
+                    "**/Program Files (x86)/**",
+                    "**/ProgramData/**",
+                    "**/System Volume Information/**",
+                    "**/$Recycle.Bin/**",
+                    "**/AppData/**",            // MUITO impacto (se quiser menos, refine depois)
+                    "**/ntuser.dat*",
+                    "**/hiberfil.sys",
+                    "**/pagefile.sys",
+                    "**/swapfile.sys"
+            ));
+        } else if (isLinux()) {
+            // Linux: se o usuário apontar pra /, isso salva tua vida
+            excludes.addAll(List.of(
+                    "**/proc/**",
+                    "**/sys/**",
+                    "**/dev/**",
+                    "**/run/**",
+                    "**/tmp/**",
+                    "**/var/tmp/**",
+                    "**/var/cache/**",
+                    "**/.cache/**",
+                    "**/.local/share/Trash/**"
+            ));
+        }
+
+        // AQUI é uma alavanca grande:
+        // batch baixo = commit demais = scan lento
+        int tunedBatch = Math.max(2000, defaults.dbBatchSize());
+        tunedBatch = Math.min(tunedBatch, 10000); // limite sensato
+
         return new Backup.ScanConfig(
-                defaults.dbBatchSize(),
+                tunedBatch,
                 List.copyOf(excludes)
         );
     }
@@ -461,16 +511,14 @@ public final class BackupController {
     private void updateModel(Backup.ScanMetrics m) {
         long elapsed = java.time.Duration.between(m.start, Instant.now()).toSeconds();
         double seconds = Math.max(1.0, elapsed);
-        
+
         long scanned = m.filesSeen.sum();
-        
-        // UI simplificada sem métricas de Hash
+
         model.filesScannedProperty.set("%,d".formatted(scanned));
         model.rateProperty.set("%.0f files/s".formatted(scanned / seconds));
         model.dbBatchesProperty.set(Long.toString(m.dbBatches.sum()));
         model.errorsProperty.set(Long.toString(m.walkErrors.sum()));
-        
-        // Feedback visual de atividade
+
         String phase = m.running.get() ? "Validando metadados..." : "Idle";
         model.mbPerSecProperty.set(phase);
         model.phaseProperty.set(phase);
@@ -492,10 +540,11 @@ public final class BackupController {
         }
 
         public boolean isRunning() { return running.get(); }
-        
-        public void cancel() { 
+
+        public void cancel() {
             cancelRequested.set(true);
-            if (scanThread != null) scanThread.interrupt();
+            var t = scanThread;
+            if (t != null) t.interrupt();
         }
 
         @Override
@@ -504,53 +553,71 @@ public final class BackupController {
             running.set(true);
             cancelRequested.set(false);
             metrics.running.set(true);
+
             ui(() -> startUiUpdater(metrics));
 
             long historyId = BackupHistoryDb.start(rootPath, backupDest);
             long scanId = -1;
+
             BlobStore.BackupResult backupResult = null;
             String historyStatus = "SUCCESS";
             String historyMessage = null;
             String backupType = null;
 
+            // Log throttled para não esmagar UI
+            Consumer<String> scanLog = logBus.throttled(250);
+
             try {
-                log(">> Conectando ao Banco de Dados...");
+                logNow(">> Conectando ao Banco de Dados...");
                 ui(() -> {
                     model.phaseProperty.set("Validando metadados...");
                     model.progressProperty.set(-1);
                 });
-                // Pool pequeno é suficiente, pois agora só temos 1 Writer e a UI
+
                 DatabaseBackup.init();
+
+                // (Opcional, mas fortemente recomendado)
+                // Se seu DatabaseBackup.init() não aplica PRAGMAs, aplique aqui:
+                applyFastSqlitePragmasBestEffort();
+
                 pool = new DatabaseBackup.SimplePool(Config.getDbUrl(), 4);
 
-                log(">> Iniciando motor de metadados...");
-                scanId = Backup.runScan(java.nio.file.Path.of(rootPath), config, pool, metrics, cancelRequested, BackupController.this::log);
+                logNow(">> Iniciando motor de metadados...");
+
+                long t0 = System.nanoTime();
+                scanId = Backup.runScan(
+                    Path.of(rootPath),
+                    Path.of(backupDest),
+                    config,
+                    pool,
+                    metrics,
+                    cancelRequested,
+                    scanLog
+                );
+                scanLog.accept(">> Scan finalizado em " + java.time.Duration.ofNanos(System.nanoTime() - t0));
+
                 try {
                     Long firstId = DatabaseBackup.jdbi().withExtension(
                             com.keeply.app.database.KeeplyDao.class,
                             dao -> dao.fetchFirstScanIdForRoot(rootPath)
                     );
-                    if (firstId != null && firstId == scanId) {
-                        backupType = "FULL";
-                    } else {
-                        backupType = "INCREMENTAL";
-                    }
-                } catch (Exception ignored) {
-                }
+                    backupType = (firstId != null && firstId == scanId) ? "FULL" : "INCREMENTAL";
+                } catch (Exception ignored) {}
 
-                // Depois que o scan terminou, aciona o Backup (BlobStore).
                 if (!cancelRequested.get()) {
                     ui(() -> {
                         model.phaseProperty.set("Backup: comprimindo/gravando...");
                         model.progressProperty.set(-1);
                     });
+
+                    long t1 = System.nanoTime();
                     backupResult = BlobStore.runBackupIncremental(
-                            java.nio.file.Path.of(rootPath),
+                            Path.of(rootPath),
                             config,
-                            java.nio.file.Path.of(backupDest),
+                            Path.of(backupDest),
                             scanId,
                             cancelRequested,
-                            BackupController.this::log,
+                            scanLog,
                             (done, total) -> ui(() -> {
                                 if (total == null || total <= 0) {
                                     model.progressProperty.set(1);
@@ -562,24 +629,35 @@ public final class BackupController {
                                 }
                             })
                     );
+                    scanLog.accept(">> Backup finalizado em " + java.time.Duration.ofNanos(System.nanoTime() - t1));
                 } else {
                     historyStatus = "CANCELED";
                 }
 
             } catch (Exception e) {
-                log(">> ERRO FATAL: " + safeMsg(e));
+                logNow(">> ERRO FATAL: " + safeMsg(e));
                 logger.error("Erro fatal durante o scan", e);
                 historyStatus = "ERROR";
                 historyMessage = safeMsg(e);
             } finally {
-                if (cancelRequested.get()) {
-                    historyStatus = "CANCELED";
-                }
+                if (cancelRequested.get()) historyStatus = "CANCELED";
+
                 long files = (backupResult == null) ? 0 : backupResult.filesProcessed();
                 long errors = (backupResult == null) ? 0 : backupResult.errors();
-                BackupHistoryDb.finish(historyId, historyStatus, files, errors, (scanId <= 0) ? null : scanId, historyMessage, backupType);
+
+                BackupHistoryDb.finish(
+                        historyId,
+                        historyStatus,
+                        files,
+                        errors,
+                        (scanId <= 0) ? null : scanId,
+                        historyMessage,
+                        backupType
+                );
+
                 running.set(false);
                 cleanup();
+
                 ui(() -> {
                     stopUiUpdater();
                     view.setScanningState(false);
@@ -587,16 +665,101 @@ public final class BackupController {
                     model.phaseProperty.set("Idle");
                     model.progressProperty.set(0);
                 });
+
                 currentTask = null;
+                logBus.stop(); // encerra flusher quando o job termina
             }
         }
 
         private void cleanup() {
             if (pool != null) try { pool.close(); } catch (Exception ignored) {}
         }
+
+        private void applyFastSqlitePragmasBestEffort() {
+            try {
+                DatabaseBackup.jdbi().useHandle(h -> {
+                    // WAL + synchronous NORMAL = grande ganho sem ser suicídio
+                    h.execute("PRAGMA journal_mode=WAL");
+                    h.execute("PRAGMA synchronous=NORMAL");
+                    h.execute("PRAGMA temp_store=MEMORY");
+                    h.execute("PRAGMA cache_size=-20000"); // ~20MB (valor negativo = KB)
+                    h.execute("PRAGMA busy_timeout=5000");
+                });
+            } catch (Exception ignored) {}
+        }
     }
 
     private static String safeMsg(Throwable t) {
         return (t.getMessage() != null) ? t.getMessage() : t.getClass().getSimpleName();
+    }
+
+    // -----------------------------
+    // LogBus: fila + flush em lote na UI
+    // -----------------------------
+    private final class LogBus {
+        private final ConcurrentLinkedQueue<String> q = new ConcurrentLinkedQueue<>();
+        private volatile Timeline flusher;
+        private volatile long lastThrottled = 0;
+
+        // Limites pra não explodir memória se alguém logar por arquivo
+        private static final int MAX_LINES_PER_FLUSH = 250;
+        private static final int MAX_QUEUE_SOFT = 20_000;
+
+        void start() {
+            ui(() -> {
+                if (flusher != null) return;
+                flusher = new Timeline(new KeyFrame(Duration.millis(120), evt -> flushNow()));
+                flusher.setCycleCount(Timeline.INDEFINITE);
+                flusher.play();
+            });
+        }
+
+        void stop() {
+            ui(() -> {
+                if (flusher != null) {
+                    flusher.stop();
+                    flusher = null;
+                }
+            });
+            // não precisa limpar a fila; mas se quiser:
+            q.clear();
+        }
+
+        void enqueue(String msg) {
+            if (msg == null) return;
+            if (q.size() > MAX_QUEUE_SOFT) {
+                // Drop silencioso pra preservar responsividade
+                return;
+            }
+            q.add(msg);
+            start();
+        }
+
+        void enqueueImportant(String msg) {
+            // Important = sempre entra
+            if (msg == null) return;
+            q.add(msg);
+            start();
+        }
+
+        Consumer<String> throttled(long minIntervalMillis) {
+            return (s) -> {
+                long now = System.currentTimeMillis();
+                if (now - lastThrottled >= minIntervalMillis) {
+                    lastThrottled = now;
+                    enqueue(s);
+                }
+            };
+        }
+
+        private void flushNow() {
+            int n = 0;
+            while (n < MAX_LINES_PER_FLUSH) {
+                String s = q.poll();
+                if (s == null) break;
+                view.appendLog(s);
+                n++;
+            }
+        }
     }
 }

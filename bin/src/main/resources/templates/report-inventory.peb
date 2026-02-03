@@ -1,0 +1,338 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="pt-BR">
+<head>
+  <meta charset="utf-8"/>
+  <title>Relatório de Inventário</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 0;
+      margin-bottom: 16mm;
+      @bottom-center {
+        content: "Página " counter(page) " de " counter(pages);
+        font-family: "Noto Sans", sans-serif;
+        font-size: 9px;
+        color: #94a3b8;
+        margin-bottom: 8mm;
+      }
+    }
+
+    @font-face {
+      font-family: 'Noto Sans';
+      src: url(classloader:/fonts/NotoSans-Regular.ttf);
+      font-weight: 400;
+    }
+    @font-face {
+      font-family: 'Noto Sans';
+      src: url(classloader:/fonts/NotoSans-Bold.ttf);
+      font-weight: 700;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      font-family: "Noto Sans", sans-serif;
+      margin: 0;
+      padding: 0;
+      color: #0f172a;
+      background: #ffffff;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    /* Header (full-bleed) */
+    .header {
+      background: {{ o.theme.headerBg }};
+      color: #fff;
+      padding: 14mm 15mm 10mm 15mm;
+      border-bottom: 4px solid {{ o.theme.accent }};
+    }
+
+    .header-grid { display: table; width: 100%; }
+    .h-left { display: table-cell; vertical-align: bottom; }
+    .h-right { display: table-cell; vertical-align: bottom; text-align: right; }
+
+    .brand {
+      font-size: 10px;
+      letter-spacing: 2px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: {{ o.theme.accent }};
+      margin-bottom: 6px;
+    }
+
+    .title {
+      font-size: 30px;
+      font-weight: 700;
+      margin: 0;
+      line-height: 1.1;
+      letter-spacing: -0.5px;
+    }
+
+    .meta {
+      display: inline-block;
+      text-align: left;
+      margin-left: 18px;
+      padding-left: 14px;
+      border-left: 1px solid #2b2b2b; /* sem rgba (parser do PDF gosta mais) */
+    }
+    .meta-label {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #cbd5e1;
+      margin-bottom: 2px;
+    }
+    .meta-value {
+      font-size: 12px;
+      font-weight: 700;
+      color: #ffffff;
+    }
+
+    /* Content padding */
+    .content {
+      padding: 10mm 15mm 0 15mm;
+    }
+
+    /* KPI cards */
+    .kpis { display: table; width: 100%; border-spacing: 14px; margin: 0 -14px 10px -14px; }
+    .kpi { display: table-cell; width: 33.33%; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; vertical-align: top; }
+    .kpi-label { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; font-weight: 700; }
+    .kpi-value { margin-top: 8px; font-size: 24px; font-weight: 700; color: #0f172a; line-height: 1.1; }
+    .kpi-sub { margin-top: 8px; font-size: 10.5px; color: #475569; overflow-wrap: anywhere; word-break: break-word; }
+
+    /* Status row */
+    .status-row { margin: 10px 0 18px 0; }
+    .chip {
+      display: inline-block;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #334155;
+      margin-right: 8px;
+      margin-bottom: 8px;
+    }
+    .chip b { color: #0f172a; }
+
+    /* Charts cards */
+    .charts { display: table; width: 100%; border-spacing: 14px; margin: 0 -14px 18px -14px; }
+    .chart { display: table-cell; width: 50%; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px 14px 14px 14px; vertical-align: top; }
+    .chart-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin-bottom: 10px; }
+    .chart-img { width: 100%; height: auto; display: block; border: 1px solid #eef2f7; border-radius: 8px; }
+
+    .chart-wide { display: block; width: 100%; margin-top: 14px; }
+
+    /* Section titles */
+    h2 {
+      margin: 18px 0 12px 0;
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      color: #0f172a;
+      padding-left: 10px;
+      border-left: 4px solid {{ o.theme.accent }};
+    }
+
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+    tr { page-break-inside: avoid; }
+
+    thead th {
+      text-align: left;
+      padding: 10px;
+      background: #f8fafc;
+      color: #64748b;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      font-size: 9px;
+      border-bottom: 2px solid #e5e7eb;
+    }
+
+    tbody td {
+      padding: 10px;
+      border-bottom: 1px solid #eef2f7;
+      vertical-align: top;
+      color: #334155;
+    }
+
+    tbody tr:nth-child(even) td { background: {{ o.theme.rowAlt }}; }
+
+    .right { text-align: right; }
+    .bold { font-weight: 700; color: #0f172a; }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 10.5px;
+      color: #475569;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .rank { width: 28px; color: #94a3b8; text-align: center; }
+
+    .pill-ext {
+      display: inline-block;
+      background: #eef2ff;
+      color: #3730a3;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 10px;
+      border: 1px solid #e0e7ff;
+    }
+
+    .empty {
+      text-align: center;
+      color: #64748b;
+      padding: 24px;
+      border: 1px dashed #e2e8f0;
+      border-radius: 10px;
+      margin-bottom: 12px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="header">
+    <div class="header-grid">
+      <div class="h-left">
+        <div class="brand">KEEPLY ANALYTICS</div>
+        <div class="title">Relatório de Inventário</div>
+      </div>
+      <div class="h-right">
+        <div class="meta">
+          <div class="meta-label">Gerado em</div>
+          <div class="meta-value">{{ fmt.now() }}</div>
+        </div>
+        <div class="meta">
+          <div class="meta-label">Snapshot</div>
+          <div class="meta-value">#{{ m.summary.scanId | default("1") }}</div>
+        </div>
+        <div class="meta">
+          <div class="meta-label">Total Arq.</div>
+          <div class="meta-value">{{ fmt.format(m.summary.totalFiles) }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <div class="kpis">
+      <div class="kpi">
+        <div class="kpi-label">Arquivos totais</div>
+        <div class="kpi-value">{{ fmt.format(m.summary.totalFiles) }}</div>
+        <div class="kpi-sub">Inventário do snapshot atual</div>
+      </div>
+
+      <div class="kpi">
+        <div class="kpi-label">Tamanho total</div>
+        <div class="kpi-value">{{ fmt.bytes(m.summary.totalBytes) }}</div>
+        <div class="kpi-sub">Soma de todos os arquivos</div>
+      </div>
+
+      <div class="kpi">
+        <div class="kpi-label">Pasta raiz</div>
+        <div class="kpi-value" style="font-size: 14px;">&nbsp;</div>
+        <div class="kpi-sub mono">{{ m.summary.rootPath }}</div>
+      </div>
+    </div>
+
+    <div class="status-row">
+      <span class="chip">NEW <b>{{ fmt.format(m.statusCounts["NEW"]) }}</b></span>
+      <span class="chip">MODIFIED <b>{{ fmt.format(m.statusCounts["MODIFIED"]) }}</b></span>
+      <span class="chip">STABLE <b>{{ fmt.format(m.statusCounts["STABLE"]) }}</b></span>
+      <span class="chip">OTHER <b>{{ fmt.format(m.statusCounts["OTHER"]) }}</b></span>
+    </div>
+
+    <div class="charts">
+      <div class="chart">
+        <div class="chart-title">Tamanho por extensão</div>
+        {% if c.typesSizePng is empty %}
+          <div class="empty">Sem dados para gerar gráfico.</div>
+        {% else %}
+          <img class="chart-img" src="{{ c.typesSizePng }}" alt="Tamanho por extensão"/>
+        {% endif %}
+      </div>
+
+      <div class="chart">
+        <div class="chart-title">Arquivos por extensão</div>
+        {% if c.typesCountPng is empty %}
+          <div class="empty">Sem dados para gerar gráfico.</div>
+        {% else %}
+          <img class="chart-img" src="{{ c.typesCountPng }}" alt="Arquivos por extensão"/>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="chart chart-wide">
+      <div class="chart-title">Distribuição por status</div>
+      {% if c.statusPng is empty %}
+        <div class="empty">Sem dados para gerar gráfico.</div>
+      {% else %}
+        <img class="chart-img" src="{{ c.statusPng }}" alt="Distribuição por status"/>
+      {% endif %}
+    </div>
+
+    <h2>Pastas mais pesadas</h2>
+    {% if m.topFolders is empty %}
+      <div class="empty">Nenhuma pasta encontrada.</div>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>Caminho</th>
+            <th class="right">Arquivos</th>
+            <th class="right">Tamanho</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in m.topFolders %}
+          <tr>
+            <td class="mono">{{ f.folder }}</td>
+            <td class="right bold">{{ fmt.format(f.count) }}</td>
+            <td class="right bold">{{ fmt.bytes(f.bytes) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    <h2>Maiores arquivos individuais</h2>
+    {% if m.topFiles is empty %}
+      <div class="empty">Nenhum arquivo encontrado.</div>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th class="rank">#</th>
+            <th>Arquivo</th>
+            <th class="right">Tamanho</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in m.topFiles %}
+          <tr>
+            <td class="rank">{{ loop.index }}</td>
+            <td>
+              <div class="bold">{{ t.name }}</div>
+              <div class="mono">{{ fmt.pathFull(t.rootPath, t.pathRel) }}</div>
+            </td>
+            <td class="right bold">{{ fmt.bytes(t.sizeBytes) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+  </div>
+</body>
+</html>

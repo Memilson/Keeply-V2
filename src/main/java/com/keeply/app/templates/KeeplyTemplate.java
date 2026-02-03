@@ -11,7 +11,12 @@ import javafx.scene.Node;
 import javafx.scene.Parent;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
-import javafx.scene.layout.*;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
 import javafx.scene.shape.SVGPath;
 import javafx.stage.Stage;
 
@@ -144,6 +149,11 @@ public final class KeeplyTemplate {
         brandBox.setAlignment(Pos.CENTER_LEFT);
         brandBox.getStyleClass().add("brand-box");
 
+        var separator = new Label("•");
+        separator.getStyleClass().add("keeply-separator");
+
+        screenTitle.getStyleClass().add("keeply-screen-title");
+
         var spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
@@ -154,9 +164,7 @@ public final class KeeplyTemplate {
         var btnClose = createWindowButton(ICON_CLOSE, true);
         btnClose.setOnAction(e -> stage.close());
 
-        bar.getChildren().addAll(brandBox, spacer, btnMin, btnClose);
-
-        // Linha fina colorida (Accent Line)
+        bar.getChildren().addAll(brandBox, separator, screenTitle, spacer, btnMin, btnClose);
         var accentLine = new Region();
         accentLine.setPrefHeight(1);
         accentLine.getStyleClass().add("keeply-titlebar-accent");

@@ -306,6 +306,7 @@ public final class InventoryController {
             }
         });
     }
+    
 
     private RestoreOptions promptRestoreOptions(String title) {
         Dialog<RestoreOptions> dialog = new Dialog<>();
