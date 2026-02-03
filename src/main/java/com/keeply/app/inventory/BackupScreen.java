@@ -6,10 +6,10 @@ import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Optional;
 
+import com.keeply.app.blob.BlobStore;
 import com.keeply.app.config.Config;
 import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
-import com.keeply.app.blob.BlobStore;
 
 import javafx.application.Platform;
 import javafx.beans.property.BooleanProperty;

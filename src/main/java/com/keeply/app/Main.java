@@ -1,35 +1,35 @@
 package com.keeply.app;
 
+import java.io.InputStream;
+import java.util.Objects;
+
 import com.keeply.app.database.DatabaseBackup;
+import com.keeply.app.history.BackupHistoryScreen;
 import com.keeply.app.inventory.BackupController;
 import com.keeply.app.inventory.BackupScreen;
 import com.keeply.app.inventory.InventoryController;
 import com.keeply.app.inventory.InventoryScreen;
 import com.keeply.app.overview.OverviewScreen;
-import com.keeply.app.history.BackupHistoryScreen;
 import com.keeply.app.templates.KeeplyTemplate;
 
 import io.github.cdimascio.dotenv.Dotenv;
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.geometry.Pos;
 import javafx.geometry.Rectangle2D;
 import javafx.scene.Scene;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
+import javafx.scene.control.ToggleButton;
+import javafx.scene.control.ToggleGroup;
 import javafx.scene.image.Image;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
-import javafx.geometry.Pos;
-import javafx.scene.control.ToggleButton;
-import javafx.scene.control.ToggleGroup;
 import javafx.scene.shape.SVGPath;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
 import javafx.stage.StageStyle;
-
-import java.io.InputStream;
-import java.util.Objects;
 
 public class Main extends Application {
 
