@@ -10,7 +10,6 @@ import java.util.function.Consumer;
 import com.keeply.app.database.DatabaseBackup.FileHistoryRow;
 import com.keeply.app.database.DatabaseBackup.InventoryRow;
 import com.keeply.app.database.DatabaseBackup.ScanSummary;
-import com.keeply.app.history.BackupHistoryDb;
 
 import javafx.beans.binding.Bindings;
 import javafx.beans.property.SimpleStringProperty;

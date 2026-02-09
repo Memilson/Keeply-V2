@@ -29,13 +29,23 @@
         <dependency>
             <groupId>org.xerial</groupId>
             <artifactId>sqlite-jdbc</artifactId>
-            <version>3.45.1.0</version>
+            <version>3.46.1.0</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.slf4j</groupId>
                     <artifactId>slf4j-api</artifactId>
                 </exclusion>
             </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna</artifactId>
+            <version>5.14.0</version>
+        </dependency>
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna-platform</artifactId>
+            <version>5.14.0</version>
         </dependency>
         <dependency>
             <groupId>com.zaxxer</groupId>
@@ -77,6 +87,11 @@
             <groupId>org.apache.xmlgraphics</groupId>
             <artifactId>batik-script</artifactId>
             <version>1.17</version>
+        </dependency>
+        <dependency>
+            <groupId>xerces</groupId>
+            <artifactId>xercesImpl</artifactId>
+            <version>2.12.2</version>
         </dependency>
         <dependency>
             <groupId>org.mozilla</groupId>
@@ -185,6 +200,18 @@
                 <version>0.0.8</version>
                 <configuration>
                     <mainClass>com.keeply.app.Main</mainClass>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <mainClass>com.keeply.app.cli.MainApp</mainClass>
+                    <classpathScope>runtime</classpathScope>
+                    <includeProjectDependencies>true</includeProjectDependencies>
+                    <includePluginDependencies>false</includePluginDependencies>
                 </configuration>
             </plugin>
 

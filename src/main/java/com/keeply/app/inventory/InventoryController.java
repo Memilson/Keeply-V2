@@ -12,7 +12,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.keeply.app.blob.BlobStore;
-import com.keeply.app.blob.RestoreLogWindow;
 import com.keeply.app.config.Config;
 import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.database.DatabaseBackup.ScanSummary;
@@ -275,7 +274,7 @@ public final class InventoryController {
         view.showLoading(true);
         Thread.ofVirtual().name("keeply-refresh").start(() -> {
             try {
-                var history = com.keeply.app.history.BackupHistoryDb.listRecent(200);
+                var history = com.keeply.app.inventory.BackupHistoryDb.listRecent(200);
                 var orderedHistory = new java.util.ArrayList<>(history);
                 orderedHistory.sort((a, b) -> {
                     int ra = "FULL".equalsIgnoreCase(a.backupType()) ? 1 : 0;
@@ -382,7 +381,7 @@ public final class InventoryController {
         });
     }
 
-    private static String buildMeta(com.keeply.app.history.BackupHistoryDb.HistoryRow row) {
+    private static String buildMeta(com.keeply.app.inventory.BackupHistoryDb.HistoryRow row) {
         if (row == null) return "";
         String tsRaw = row.finishedAt() != null ? row.finishedAt() : row.startedAt();
         String ts = formatDisplayDate(tsRaw);

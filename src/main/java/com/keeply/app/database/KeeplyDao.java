@@ -1,11 +1,18 @@
 package com.keeply.app.database;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.List;
+import java.util.Optional;
+
 import org.jdbi.v3.core.mapper.RowMapper;
 import org.jdbi.v3.core.statement.StatementContext;
 import org.jdbi.v3.sqlobject.config.RegisterConstructorMapper;
 import org.jdbi.v3.sqlobject.config.RegisterRowMapper;
 import org.jdbi.v3.sqlobject.customizer.Bind;
+import org.jdbi.v3.sqlobject.customizer.BindBean;
 import org.jdbi.v3.sqlobject.statement.GetGeneratedKeys;
+import org.jdbi.v3.sqlobject.statement.SqlBatch;
 import org.jdbi.v3.sqlobject.statement.SqlQuery;
 import org.jdbi.v3.sqlobject.statement.SqlUpdate;
 import org.jdbi.v3.sqlobject.transaction.Transaction;
@@ -16,14 +23,10 @@ import com.keeply.app.database.DatabaseBackup.InventoryRow;
 import com.keeply.app.database.DatabaseBackup.ScanSummary;
 import com.keeply.app.database.DatabaseBackup.SnapshotBlobRow;
 
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.List;
-import java.util.Optional;
-
 public interface KeeplyDao {
 
-    // --- Scan log ---
+    // --- Scan log ------------------------------------------------------------
+
     @SqlUpdate("INSERT INTO scans(root_path, started_at, status) VALUES(:rootPath, datetime('now'), 'RUNNING')")
     @GetGeneratedKeys("scan_id")
     long startScanLog(@Bind("rootPath") String rootPath);
@@ -38,8 +41,9 @@ public interface KeeplyDao {
                ), 0),
                status = 'DONE'
          WHERE scan_id = :scanId
+           AND status = 'RUNNING'
         """)
-    void finishScanLog(@Bind("scanId") long scanId);
+    int finishScanLog(@Bind("scanId") long scanId);
 
     @SqlUpdate("""
         UPDATE scans
@@ -47,8 +51,9 @@ public interface KeeplyDao {
                total_usage = NULL,
                status = 'CANCELED'
          WHERE scan_id = :scanId
+           AND status = 'RUNNING'
         """)
-    void cancelScanLog(@Bind("scanId") long scanId);
+    int cancelScanLog(@Bind("scanId") long scanId);
 
     @SqlQuery("""
         SELECT scan_id AS scanId,
@@ -92,82 +97,105 @@ public interface KeeplyDao {
     @RegisterConstructorMapper(CapacityReport.class)
     List<CapacityReport> predictGrowth();
 
-    // --- Inventory ---
+    // --- Inventory -----------------------------------------------------------
+
     @SqlQuery("""
         SELECT fi.root_path AS rootPath,
-               fi.path_rel AS pathRel,
-               fi.name AS name,
+               fi.path_rel  AS pathRel,
+               fi.name      AS name,
                fi.size_bytes AS sizeBytes,
                fi.modified_millis AS modifiedMillis,
-               fi.created_millis AS createdMillis,
-               fi.status AS status
+               fi.created_millis  AS createdMillis,
+               fi.status    AS status
           FROM file_inventory fi
          ORDER BY fi.root_path, fi.path_rel
         """)
     @RegisterConstructorMapper(InventoryRow.class)
     List<InventoryRow> fetchInventory();
 
+    /**
+     * Snapshot “estado atual até scanId” (último evento por arquivo), ignorando DELETED.
+     * Mantém a regra correta: escolhe o evento mais recente e SÓ DEPOIS filtra DELETED.
+     */
     @SqlQuery("""
-        WITH Target AS (
+        WITH target AS (
             SELECT root_path AS root
               FROM scans
              WHERE scan_id = :scanId
         ),
-        LatestState AS (
-            SELECT root_path, path_rel, MAX(scan_id) AS max_scan
-              FROM file_history
-             WHERE scan_id <= :scanId
-               AND root_path = (SELECT root FROM Target)
-          GROUP BY root_path, path_rel
+        ranked AS (
+            SELECT
+                fh.root_path   AS root_path,
+                fh.path_rel    AS path_rel,
+                fh.size_bytes  AS size_bytes,
+                fh.status_event AS status_event,
+                fh.created_millis AS created_millis,
+                fh.modified_millis AS modified_millis,
+                ROW_NUMBER() OVER (
+                    PARTITION BY fh.root_path, fh.path_rel
+                    ORDER BY fh.scan_id DESC
+                ) AS rn
+              FROM file_history fh
+              JOIN target t ON t.root = fh.root_path
+             WHERE fh.scan_id <= :scanId
         )
-        SELECT fh.root_path,
-               fh.path_rel,
-               fh.size_bytes,
-               fh.status_event,
-               fh.created_millis,
-               fh.modified_millis
-          FROM file_history fh
-          JOIN LatestState ls
-            ON fh.root_path = ls.root_path
-           AND fh.path_rel = ls.path_rel
-           AND fh.scan_id = ls.max_scan
-                 WHERE fh.status_event != 'DELETED'
-         ORDER BY fh.path_rel
+        SELECT root_path, path_rel, size_bytes, status_event, created_millis, modified_millis
+          FROM ranked
+         WHERE rn = 1
+           AND status_event != 'DELETED'
+         ORDER BY path_rel
         """)
     @RegisterRowMapper(InventorySnapshotMapper.class)
     List<InventoryRow> fetchSnapshotFiles(@Bind("scanId") long scanId);
 
-        @SqlUpdate("""
-                INSERT INTO file_history (scan_id, root_path, path_rel, size_bytes, status_event, created_at, created_millis, modified_millis)
-                SELECT :scanId,
-                             root_path,
-                             path_rel,
-                             size_bytes,
-                             'DELETED',
-                             datetime('now'),
-                             created_millis,
-                             modified_millis
-                    FROM file_inventory
-                 WHERE root_path = :rootPath
-                     AND last_scan_id < :scanId
-                """)
-        int copyStaleFilesToHistoryAsDeleted(@Bind("scanId") long scanId, @Bind("rootPath") String rootPath);
+    // --- Stale cleanup -------------------------------------------------------
 
-        @SqlUpdate("DELETE FROM file_inventory WHERE root_path = :rootPath AND last_scan_id < :scanId")
-        int deleteStaleFilesRaw(@Bind("scanId") long scanId, @Bind("rootPath") String rootPath);
+    @SqlUpdate("""
+        INSERT INTO file_history (scan_id, root_path, path_rel, size_bytes, status_event, created_at, created_millis, modified_millis)
+        SELECT :scanId,
+               root_path,
+               path_rel,
+               size_bytes,
+               'DELETED',
+               datetime('now'),
+               created_millis,
+               modified_millis
+          FROM file_inventory
+         WHERE root_path = :rootPath
+           AND last_scan_id < :scanId
+        """)
+    int copyStaleFilesToHistoryAsDeleted(@Bind("scanId") long scanId, @Bind("rootPath") String rootPath);
 
-        @Transaction
-        default int deleteStaleFiles(long scanId, String rootPath) {
-                copyStaleFilesToHistoryAsDeleted(scanId, rootPath);
-                return deleteStaleFilesRaw(scanId, rootPath);
+    @SqlUpdate("""
+        DELETE FROM file_inventory
+         WHERE root_path = :rootPath
+           AND last_scan_id < :scanId
+        """)
+    int deleteStaleFilesRaw(@Bind("scanId") long scanId, @Bind("rootPath") String rootPath);
+
+    @Transaction
+    default CleanupResult deleteStaleFiles(long scanId, String rootPath) {
+        int archived = copyStaleFilesToHistoryAsDeleted(scanId, rootPath);
+        int deleted  = deleteStaleFilesRaw(scanId, rootPath);
+        return new CleanupResult(archived, deleted);
+    }
+
+    final class CleanupResult {
+        public final int archivedAsDeleted;
+        public final int removedFromInventory;
+        public CleanupResult(int archivedAsDeleted, int removedFromInventory) {
+            this.archivedAsDeleted = archivedAsDeleted;
+            this.removedFromInventory = removedFromInventory;
         }
+    }
 
-    // --- History ---
+    // --- History -------------------------------------------------------------
+
     @Transaction
     default int snapshotToHistory(long scanId) {
-        int count = copyToHistory(scanId);
+        int inserted = copyToHistory(scanId);
         markStable(scanId);
-        return count;
+        return inserted;
     }
 
     @SqlUpdate("""
@@ -180,7 +208,7 @@ public interface KeeplyDao {
     int copyToHistory(@Bind("scanId") long scanId);
 
     @SqlUpdate("UPDATE file_inventory SET status = 'STABLE' WHERE last_scan_id = :scanId")
-    void markStable(@Bind("scanId") long scanId);
+    int markStable(@Bind("scanId") long scanId);
 
     @SqlQuery("""
         SELECT fh.scan_id AS scanId,
@@ -198,78 +226,108 @@ public interface KeeplyDao {
     @RegisterConstructorMapper(FileHistoryRow.class)
     List<FileHistoryRow> fetchFileHistory(@Bind("pathRel") String pathRel);
 
-        // --- Blob mapping (per-scan) ---
-        @SqlQuery("""
-                SELECT path_rel
-                    FROM file_history
-                 WHERE scan_id = :scanId
-                     AND status_event IN ('NEW', 'MODIFIED')
-                 ORDER BY path_rel
-                """)
-        List<String> fetchChangedFilesForScan(@Bind("scanId") long scanId);
+    // --- Blob mapping (per-scan) --------------------------------------------
 
-        @SqlUpdate("""
-                UPDATE file_history
-                     SET content_hash = :contentHash
-                 WHERE scan_id = :scanId
-                     AND path_rel = :pathRel
-                """)
-        void setHistoryContentHash(@Bind("scanId") long scanId, @Bind("pathRel") String pathRel, @Bind("contentHash") String contentHash);
+    @SqlQuery("""
+        SELECT path_rel
+          FROM file_history
+         WHERE scan_id = :scanId
+           AND status_event IN ('NEW', 'MODIFIED')
+         ORDER BY path_rel
+        """)
+    List<String> fetchChangedFilesForScan(@Bind("scanId") long scanId);
 
-        @SqlQuery("""
-                SELECT path_rel AS pathRel,
-                             content_hash AS contentHash
-                    FROM file_history
-                 WHERE scan_id = :scanId
-                     AND status_event IN ('NEW', 'MODIFIED')
-                     AND content_hash IS NOT NULL
-                 ORDER BY path_rel
-                """)
-        @RegisterConstructorMapper(SnapshotBlobRow.class)
-        List<SnapshotBlobRow> fetchChangedBlobsForScan(@Bind("scanId") long scanId);
+    @SqlUpdate("""
+        UPDATE file_history
+           SET content_hash = :contentHash
+         WHERE scan_id = :scanId
+           AND path_rel = :pathRel
+        """)
+    int setHistoryContentHash(@Bind("scanId") long scanId, @Bind("pathRel") String pathRel, @Bind("contentHash") String contentHash);
 
-        @SqlQuery("""
-                WITH Target AS (
-                        SELECT root_path AS root
-                            FROM scans
-                         WHERE scan_id = :scanId
-                ),
-                LatestState AS (
-                        SELECT root_path, path_rel, MAX(scan_id) AS max_scan
-                            FROM file_history
-                         WHERE scan_id <= :scanId
-                             AND root_path = (SELECT root FROM Target)
-                    GROUP BY root_path, path_rel
-                )
-                SELECT fh.path_rel AS pathRel,
-                             fh.content_hash AS contentHash
-                    FROM file_history fh
-                    JOIN LatestState ls
-                        ON fh.root_path = ls.root_path
-                     AND fh.path_rel = ls.path_rel
-                     AND fh.scan_id = ls.max_scan
-                                 WHERE fh.content_hash IS NOT NULL
-                                     AND fh.status_event != 'DELETED'
-                 ORDER BY fh.path_rel
-                """)
-        @RegisterConstructorMapper(SnapshotBlobRow.class)
-        List<SnapshotBlobRow> fetchSnapshotBlobs(@Bind("scanId") long scanId);
+    // Batch: muito mais eficiente quando você seta hash de muitos arquivos
+    @SqlBatch("""
+        UPDATE file_history
+           SET content_hash = :contentHash
+         WHERE scan_id = :scanId
+           AND path_rel = :pathRel
+        """)
+    int[] setHistoryContentHashes(@BindBean List<HashUpdate> updates);
+
+    final class HashUpdate {
+        public final long scanId;
+        public final String pathRel;
+        public final String contentHash;
+        public HashUpdate(long scanId, String pathRel, String contentHash) {
+            this.scanId = scanId;
+            this.pathRel = pathRel;
+            this.contentHash = contentHash;
+        }
+    }
+
+    @SqlQuery("""
+        SELECT path_rel AS pathRel,
+               content_hash AS contentHash
+          FROM file_history
+         WHERE scan_id = :scanId
+           AND status_event IN ('NEW', 'MODIFIED')
+           AND content_hash IS NOT NULL
+         ORDER BY path_rel
+        """)
+    @RegisterConstructorMapper(SnapshotBlobRow.class)
+    List<SnapshotBlobRow> fetchChangedBlobsForScan(@Bind("scanId") long scanId);
+
+    @SqlQuery("""
+        WITH target AS (
+            SELECT root_path AS root
+              FROM scans
+             WHERE scan_id = :scanId
+        ),
+        ranked AS (
+            SELECT
+                fh.path_rel AS pathRel,
+                fh.content_hash AS contentHash,
+                fh.status_event AS status_event,
+                ROW_NUMBER() OVER (
+                    PARTITION BY fh.root_path, fh.path_rel
+                    ORDER BY fh.scan_id DESC
+                ) AS rn
+              FROM file_history fh
+              JOIN target t ON t.root = fh.root_path
+             WHERE fh.scan_id <= :scanId
+               AND fh.content_hash IS NOT NULL
+        )
+        SELECT pathRel, contentHash
+          FROM ranked
+         WHERE rn = 1
+           AND status_event != 'DELETED'
+         ORDER BY pathRel
+        """)
+    @RegisterConstructorMapper(SnapshotBlobRow.class)
+    List<SnapshotBlobRow> fetchSnapshotBlobs(@Bind("scanId") long scanId);
+
+    // --- Mapper --------------------------------------------------------------
 
     final class InventorySnapshotMapper implements RowMapper<InventoryRow> {
         @Override
         public InventoryRow map(ResultSet rs, StatementContext ctx) throws SQLException {
             String rootPath = rs.getString("root_path");
-            String pathRel = rs.getString("path_rel");
-            String name = "";
-            if (pathRel != null) {
-                int idx = pathRel.lastIndexOf('/');
-                name = (idx >= 0 && idx < pathRel.length() - 1) ? pathRel.substring(idx + 1) : pathRel;
-            }
-            long sizeBytes = rs.getLong("size_bytes");
+            String pathRel  = rs.getString("path_rel");
+
+            String name = basename(pathRel);
+
+            long sizeBytes      = rs.getLong("size_bytes");
             long modifiedMillis = rs.getLong("modified_millis");
-            long createdMillis = rs.getLong("created_millis");
-            String status = rs.getString("status_event");
+            long createdMillis  = rs.getLong("created_millis");
+            String status       = rs.getString("status_event");
+
             return new InventoryRow(rootPath, pathRel, name, sizeBytes, modifiedMillis, createdMillis, status);
+        }
+
+        private static String basename(String pathRel) {
+            if (pathRel == null || pathRel.isBlank()) return "";
+            int idx = pathRel.lastIndexOf('/');
+            return (idx >= 0 && idx < pathRel.length() - 1) ? pathRel.substring(idx + 1) : pathRel;
         }
     }
 }

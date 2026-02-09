@@ -1,4 +1,6 @@
-package com.keeply.app.history;
+package com.keeply.app.inventory;
+
+import java.util.List;
 
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -12,8 +14,6 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
-
-import java.util.List;
 public final class BackupHistoryScreen {
 
     private final ListView<BackupHistoryDb.HistoryRow> historyList = new ListView<>();

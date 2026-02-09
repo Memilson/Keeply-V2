@@ -519,7 +519,6 @@
         }
 
         // Records
-        @SuppressWarnings("unused")
         public record Model(Summary summary,
                             Map<String, Long> statusCounts,
                             List<TypeStat> topTypes,

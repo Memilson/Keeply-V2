@@ -10,8 +10,10 @@ import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -20,6 +22,15 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+
+import javax.crypto.Cipher;
+import javax.crypto.CipherInputStream;
+import javax.crypto.CipherOutputStream;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -455,6 +466,94 @@ public class BlobStore {
 
     private static InputStream safeDecryptStream(InputStream in, String passphrase) throws IOException {
         return BlobCrypto.openDecryptingStream(in, passphrase);
+    }
+
+    private static final class BlobCrypto {
+
+        private static final byte[] MAGIC = "KEEPLYBLOB".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        private static final byte VERSION = 1;
+
+        private static final int SALT_LEN = 16;
+        private static final int NONCE_LEN = 12;
+        private static final int PBKDF2_ITERS = 120_000;
+        private static final int KEY_BITS = 256;
+        private static final int GCM_TAG_BITS = 128;
+
+        private BlobCrypto() {}
+
+        static boolean looksEncrypted(Path file) {
+            if (file == null || !Files.exists(file)) return false;
+            try (InputStream in = Files.newInputStream(file)) {
+                byte[] m = in.readNBytes(MAGIC.length);
+                if (m.length != MAGIC.length) return false;
+                for (int i = 0; i < MAGIC.length; i++) {
+                    if (m[i] != MAGIC[i]) return false;
+                }
+                int v = in.read();
+                return v == VERSION;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        static OutputStream openEncryptingStream(OutputStream out, String passphrase) throws java.io.IOException {
+            try {
+                SecureRandom rng = new SecureRandom();
+                byte[] salt = new byte[SALT_LEN];
+                byte[] nonce = new byte[NONCE_LEN];
+                rng.nextBytes(salt);
+                rng.nextBytes(nonce);
+
+                SecretKey key = deriveKey(passphrase, salt);
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
+
+                out.write(MAGIC);
+                out.write(VERSION);
+                out.write(salt);
+                out.write(nonce);
+                return new CipherOutputStream(out, cipher);
+            } catch (GeneralSecurityException e) {
+                throw new java.io.IOException("Falha ao inicializar criptografia.", e);
+            }
+        }
+
+        static InputStream openDecryptingStream(InputStream in, String passphrase) throws java.io.IOException {
+            byte[] magic = in.readNBytes(MAGIC.length);
+            if (magic.length != MAGIC.length) {
+                throw new IllegalStateException("Backup criptografado inválido (magic curto)");
+            }
+            for (int i = 0; i < MAGIC.length; i++) {
+                if (magic[i] != MAGIC[i]) {
+                    throw new IllegalStateException("Backup criptografado inválido (magic mismatch)");
+                }
+            }
+            int version = in.read();
+            if (version != VERSION) {
+                throw new IllegalStateException("Versão de criptografia não suportada: " + version);
+            }
+
+            byte[] salt = in.readNBytes(SALT_LEN);
+            byte[] nonce = in.readNBytes(NONCE_LEN);
+            if (salt.length != SALT_LEN || nonce.length != NONCE_LEN) {
+                throw new IllegalStateException("Backup criptografado inválido (salt/nonce)");
+            }
+            try {
+                SecretKey key = deriveKey(passphrase, salt);
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
+                return new CipherInputStream(in, cipher);
+            } catch (GeneralSecurityException e) {
+                throw new java.io.IOException("Falha ao inicializar descriptografia.", e);
+            }
+        }
+
+        private static SecretKey deriveKey(String passphrase, byte[] salt) throws GeneralSecurityException {
+            PBEKeySpec spec = new PBEKeySpec(passphrase.toCharArray(), salt, PBKDF2_ITERS, KEY_BITS);
+            SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            byte[] keyBytes = skf.generateSecret(spec).getEncoded();
+            return new SecretKeySpec(keyBytes, "AES");
+        }
     }
 
     private static Path resolveOutputPath(String pathRel, Path destinationDir, Path originalRoot, RestoreMode mode) throws IOException {

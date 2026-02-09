@@ -20,10 +20,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.keeply.app.blob.BlobStore;
-import com.keeply.app.blob.BlobStore.BackupResult;
 import com.keeply.app.config.Config;
 import com.keeply.app.database.DatabaseBackup;
-import com.keeply.app.history.BackupHistoryDb;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
 
 import javafx.animation.KeyFrame;

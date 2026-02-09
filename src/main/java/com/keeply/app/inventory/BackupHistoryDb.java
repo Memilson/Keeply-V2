@@ -1,7 +1,4 @@
-package com.keeply.app.history;
-
-import com.keeply.app.config.Config;
-import com.keeply.app.database.DatabaseBackup;
+package com.keeply.app.inventory;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -10,6 +7,9 @@ import java.sql.ResultSet;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+
+import com.keeply.app.config.Config;
+import com.keeply.app.database.DatabaseBackup;
 
 public final class BackupHistoryDb {
 

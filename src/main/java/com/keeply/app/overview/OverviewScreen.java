@@ -17,7 +17,6 @@ import com.keeply.app.database.DatabaseBackup.InventoryRow;
 import com.keeply.app.database.DatabaseBackup.ScanSummary;
 import com.keeply.app.database.KeeplyDao;
 import com.keeply.app.report.ReportService;
-import com.keeply.app.service.SystemMonitorService;
 
 import javafx.application.Platform;
 import javafx.beans.property.ReadOnlyStringWrapper;

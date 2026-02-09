@@ -11,6 +11,7 @@ import java.nio.file.PathMatcher;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -33,7 +34,10 @@ public final class Backup {
 
     private Backup() {}
 
-    public record ScanConfig(int dbBatchSize, List<String> excludeGlobs) {
+        public record ScanConfig(
+            @SuppressWarnings("unused") int dbBatchSize,
+            @SuppressWarnings("unused") List<String> excludeGlobs
+        ) {
         public static ScanConfig defaults() {
             List<String> excludes = new ArrayList<>();
 
@@ -78,12 +82,14 @@ public final class Backup {
         }
     }
 
-    public record FileSeen(long scanId,
-                           String pathRel,
-                           String name,
-                           long size,
-                           long mtime,
-                           long ctime) {}
+        public record FileSeen(
+            @SuppressWarnings("unused") long scanId,
+            @SuppressWarnings("unused") String pathRel,
+            @SuppressWarnings("unused") String name,
+            @SuppressWarnings("unused") long size,
+            @SuppressWarnings("unused") long mtime,
+            @SuppressWarnings("unused") long ctime
+        ) {}
 
     public static final class ScanMetrics {
         public final LongAdder filesSeen = new LongAdder();
@@ -216,11 +222,13 @@ public static long runScan(
 
         uiLogger.accept(">> Fase 2: Sincronizando banco (Limpeza)...");
 
-        int deleted = DatabaseBackup.jdbi().withExtension(
-                KeeplyDao.class,
-                dao -> dao.deleteStaleFiles(scanId, rootAbs.toString())
+        KeeplyDao.CleanupResult cleanup = DatabaseBackup.jdbi().withExtension(
+            KeeplyDao.class,
+            dao -> dao.deleteStaleFiles(scanId, rootAbs.toString())
         );
-        if (deleted > 0) uiLogger.accept(">> Removidos " + deleted + " arquivos que não existem mais.");
+        if (cleanup.removedFromInventory > 0) {
+            uiLogger.accept(">> Removidos " + cleanup.removedFromInventory + " arquivos que não existem mais.");
+        }
 
         int hist = DatabaseBackup.jdbi().inTransaction(handle -> {
             KeeplyDao dao = handle.attach(KeeplyDao.class);
@@ -425,11 +433,6 @@ public static long runScan(
         );
     }
 
-    private static Path toRealPathBestEffort(Path p) {
-        try { return p.toRealPath(); }
-        catch (Exception e) { return p; }
-    }
-
     // -----------------------------
     // DbWriter (otimizado)
     // -----------------------------
@@ -507,7 +510,7 @@ public static long runScan(
             try (Connection c = pool.borrow()) {
 
                 // transação real
-                try { c.setAutoCommit(false); } catch (Exception ignored) {}
+                try { c.setAutoCommit(false); } catch (SQLException ignored) {}
 
                 // PRAGMAs (best-effort)
                 try (var st = c.createStatement()) {
@@ -516,7 +519,7 @@ public static long runScan(
                     st.execute("PRAGMA temp_store=MEMORY");
                     st.execute("PRAGMA cache_size=-20000"); // ~20MB
                     st.execute("PRAGMA busy_timeout=5000");
-                } catch (Exception ignored) {}
+                } catch (SQLException ignored) {}
 
                 var sql = """
                     INSERT INTO file_inventory (root_path, path_rel, name, size_bytes, modified_millis, created_millis, last_scan_id, status)

@@ -1,4 +1,7 @@
-package com.keeply.app.blob;
+package com.keeply.app.inventory;
+
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 import javafx.application.Platform;
 import javafx.geometry.Insets;
@@ -14,9 +17,6 @@ import javafx.scene.layout.VBox;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
 import javafx.stage.Window;
-
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
 
 public final class RestoreLogWindow {
 
