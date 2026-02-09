@@ -115,7 +115,7 @@ public final class Backup {
     }
 
     // Fast path: evita PathMatcher (caro) na maioria dos casos
-    private static boolean fastExcludeDir(String rn) {
+    private static boolean fastExcludePath(String rn) {
         // gerais
         if (rn.contains("/.keeply/")) return true;
         if (rn.contains("/.git/")) return true;
@@ -168,19 +168,17 @@ public final class Backup {
     public static long runScan(
         Path root,
         ScanConfig cfg,
-        DatabaseBackup.SimplePool pool,
         ScanMetrics metrics,
         AtomicBoolean cancel,
         Consumer<String> uiLogger
 ) throws IOException {
-    return runScan(root, null, cfg, pool, metrics, cancel, uiLogger);
+    return runScan(root, null, cfg, metrics, cancel, uiLogger);
 }
 
 public static long runScan(
         Path root,
         Path backupDest,
         ScanConfig cfg,
-        DatabaseBackup.SimplePool pool,
         ScanMetrics metrics,
         AtomicBoolean cancel,
         Consumer<String> uiLogger
@@ -198,7 +196,7 @@ public static long runScan(
 
         uiLogger.accept(">> Fase 1: Validando metadados (Tamanho/Data/Nome)...");
 
-        try (var writer = new DbWriter(pool, scanId, rootAbs.toString(), cfg.dbBatchSize(), metrics, cancel)) {
+        try (var writer = new DbWriter(scanId, rootAbs.toString(), cfg.dbBatchSize(), metrics, cancel)) {
             if (backupDest != null) {
                 walk(rootAbs, backupDest, scanId, cfg, metrics, cancel, writer);
             } else {
@@ -290,13 +288,13 @@ public static long runScan(
                     Path rel = rootAbs.relativize(dir);
                     String rn = relNorm(rel);
 
-                    if (fastExcludeDir(rn)) {
+                    if (fastExcludePath(rn)) {
                         metrics.dirsSkipped.increment();
                         return FileVisitResult.SKIP_SUBTREE;
                     }
 
                     if (!matchers.isEmpty()) {
-                        Path relForMatcher = Paths.get(rn);
+                        Path relForMatcher = Paths.get(rn.replace('/', java.io.File.separatorChar));
                         if (matchesAny(relForMatcher, matchers)) {
                             metrics.dirsSkipped.increment();
                             return FileVisitResult.SKIP_SUBTREE;
@@ -319,10 +317,10 @@ public static long runScan(
                     Path rel = rootAbs.relativize(file);
                     String rn = relNorm(rel);
 
-                    if (fastExcludeDir(rn)) return FileVisitResult.CONTINUE;
+                    if (fastExcludePath(rn)) return FileVisitResult.CONTINUE;
 
                     if (!matchers.isEmpty()) {
-                        Path relForMatcher = Paths.get(rn);
+                        Path relForMatcher = Paths.get(rn.replace('/', java.io.File.separatorChar));
                         if (matchesAny(relForMatcher, matchers)) return FileVisitResult.CONTINUE;
                     }
 
@@ -378,14 +376,14 @@ public static long runScan(
                         String rn = relNorm(rel);
 
                         // FAST: evita PathMatcher na maioria dos casos
-                        if (fastExcludeDir(rn)) {
+                        if (fastExcludePath(rn)) {
                             metrics.dirsSkipped.increment();
                             return FileVisitResult.SKIP_SUBTREE;
                         }
 
                         // PathMatcher: passamos um Path construído a partir do rn (com "/")
                         if (!matchers.isEmpty()) {
-                            Path relForMatcher = Paths.get(rn);
+                            Path relForMatcher = Paths.get(rn.replace('/', java.io.File.separatorChar));
                             if (matchesAny(relForMatcher, matchers)) {
                                 metrics.dirsSkipped.increment();
                                 return FileVisitResult.SKIP_SUBTREE;
@@ -404,10 +402,10 @@ public static long runScan(
                         String rn = relNorm(rel);
 
                         // FAST também pra arquivo
-                        if (fastExcludeDir(rn)) return FileVisitResult.CONTINUE;
+                        if (fastExcludePath(rn)) return FileVisitResult.CONTINUE;
 
                         if (!matchers.isEmpty()) {
-                            Path relForMatcher = Paths.get(rn);
+                            Path relForMatcher = Paths.get(rn.replace('/', java.io.File.separatorChar));
                             if (matchesAny(relForMatcher, matchers)) return FileVisitResult.CONTINUE;
                         }
 
@@ -437,7 +435,6 @@ public static long runScan(
     // DbWriter (otimizado)
     // -----------------------------
     private static class DbWriter implements AutoCloseable {
-        private final DatabaseBackup.SimplePool pool;
         private final long scanId;
         private final String rootPath;
         private final int batchSize;
@@ -450,14 +447,11 @@ public static long runScan(
         private volatile boolean finished = false;
         private volatile Exception workerError;
 
-        DbWriter(DatabaseBackup.SimplePool pool,
-                 long scanId,
+        DbWriter(long scanId,
                  String rootPath,
                  int batchSize,
                  ScanMetrics metrics,
                  AtomicBoolean cancel) {
-
-            this.pool = pool;
             this.scanId = scanId;
             this.rootPath = rootPath;
 
@@ -507,14 +501,16 @@ public static long runScan(
         }
 
         private void run() {
-            try (Connection c = pool.borrow()) {
+            Connection c = null;
+            try {
+                c = DatabaseBackup.openSingleConnection();
 
                 // transação real
                 try { c.setAutoCommit(false); } catch (SQLException ignored) {}
 
                 // PRAGMAs (best-effort)
                 try (var st = c.createStatement()) {
-                    st.execute("PRAGMA journal_mode=WAL");
+                    st.execute("PRAGMA foreign_keys=ON");
                     st.execute("PRAGMA synchronous=NORMAL");
                     st.execute("PRAGMA temp_store=MEMORY");
                     st.execute("PRAGMA cache_size=-20000"); // ~20MB
@@ -591,8 +587,13 @@ public static long runScan(
                 workerError = e;
                 logger.error("DbWriter interrompido", e);
             } catch (Exception e) {
+                try { c.rollback(); } catch (SQLException ignored) {}
                 workerError = e;
                 logger.error("DbWriter error", e);
+            } finally {
+                if (c != null) {
+                    try { c.close(); } catch (SQLException ignored) {}
+                }
             }
         }
     }

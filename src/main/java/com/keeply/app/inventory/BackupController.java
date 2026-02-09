@@ -530,7 +530,6 @@ public final class BackupController {
         private final Backup.ScanConfig config;
         private final AtomicBoolean running = new AtomicBoolean(false);
         private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
-        private DatabaseBackup.SimplePool pool;
 
         ScannerTask(String rootPath, String backupDest, Backup.ScanConfig config) {
             this.rootPath = rootPath;
@@ -579,8 +578,6 @@ public final class BackupController {
                 // Se seu DatabaseBackup.init() não aplica PRAGMAs, aplique aqui:
                 applyFastSqlitePragmasBestEffort();
 
-                pool = new DatabaseBackup.SimplePool(Config.getDbUrl(), 4);
-
                 logNow(">> Iniciando motor de metadados...");
 
                 long t0 = System.nanoTime();
@@ -588,7 +585,6 @@ public final class BackupController {
                     Path.of(rootPath),
                     Path.of(backupDest),
                     config,
-                    pool,
                     metrics,
                     cancelRequested,
                     scanLog
@@ -671,14 +667,14 @@ public final class BackupController {
         }
 
         private void cleanup() {
-            if (pool != null) try { pool.close(); } catch (Exception ignored) {}
+            // Sem pool dedicado
         }
 
         private void applyFastSqlitePragmasBestEffort() {
             try {
                 DatabaseBackup.jdbi().useHandle(h -> {
                     // WAL + synchronous NORMAL = grande ganho sem ser suicídio
-                    h.execute("PRAGMA journal_mode=WAL");
+                    h.execute("PRAGMA foreign_keys=ON");
                     h.execute("PRAGMA synchronous=NORMAL");
                     h.execute("PRAGMA temp_store=MEMORY");
                     h.execute("PRAGMA cache_size=-20000"); // ~20MB (valor negativo = KB)
