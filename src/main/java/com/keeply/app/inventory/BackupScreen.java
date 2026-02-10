@@ -43,7 +43,7 @@ import javafx.scene.layout.VBox;
 import javafx.scene.shape.SVGPath;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.Stage;
-// BackupScreen (sem comentários internos)
+
 public final class BackupScreen {
     private static final String ICON_FOLDER="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z";
     private static final String ICON_PLAY="M8 5v14l11-7z";
@@ -90,19 +90,16 @@ public final class BackupScreen {
     private final Label retentionSummary=new Label();
     private final BooleanProperty optionsExpanded=new SimpleBooleanProperty(true);
     private final Label optionsChevron=new Label("▾");
-
     private java.util.function.Consumer<ScheduleState> scheduleSaveHandler=s->{};
     private java.util.function.IntConsumer retentionSaveHandler=v->{};
     private boolean suppressScheduleSave=false;
-
     public enum ScheduleMode{DAILY,INTERVAL}
     public record ScheduleState(boolean enabled,ScheduleMode mode,String time,int intervalMinutes){}
     private final BooleanProperty hasExclusionsConfigured=new SimpleBooleanProperty(false);
     public BackupScreen(Stage stage,ScanModel model){
         this.stage=Objects.requireNonNull(stage,"stage");
         this.model=Objects.requireNonNull(model,"model");
-        configureControls();
-    }
+        configureControls();}
     private void configureControls(){
         pathField.setText(Objects.requireNonNullElse(Config.getLastPath(),System.getProperty("user.home")));
         pathField.setPromptText("Selecione a pasta de origem…");
@@ -130,15 +127,13 @@ public final class BackupScreen {
         else{backupPasswordField.setPromptText("Digite a senha do backup");}
         backupPasswordField.textProperty().addListener((obs,oldVal,newVal)->{
             Config.setBackupEncryptionPassword(newVal);
-            if(newVal!=null&&!newVal.isBlank()){passwordRequired.set(false);}
-        });
+            if(newVal!=null&&!newVal.isBlank()){passwordRequired.set(false);}});
         pathField.textProperty().addListener((o,a,b)->recomputePlanState());
         destField.textProperty().addListener((o,a,b)->recomputePlanState());
         destinationTypeGroup.selectedToggleProperty().addListener((o,a,b)->{
             btnBrowseDest.setDisable(isCloudSelected()||scanning.get());
             btnCopyDest.setDisable(isCloudSelected()||scanning.get());
-            recomputePlanState();
-        });
+            recomputePlanState();});
         scheduleMode.getItems().addAll("Diário","Intervalo");
         scheduleMode.getSelectionModel().select("Diário");
         scheduleCheckbox.setSelected(false);
@@ -149,15 +144,13 @@ public final class BackupScreen {
         scheduleCheckbox.selectedProperty().addListener((o,a,b)->{
             updateScheduleValidity();
             if(suppressScheduleSave)return;
-            scheduleSaveHandler.accept(currentScheduleState());
-        });
+            scheduleSaveHandler.accept(currentScheduleState());});
         scheduleMode.getSelectionModel().selectedItemProperty().addListener((o,a,b)->updateScheduleValidity());
         scheduleTimeField.textProperty().addListener((o,a,b)->updateScheduleValidity());
         scheduleIntervalField.textProperty().addListener((o,a,b)->updateScheduleValidity());
         recomputePlanState();
         updateScheduleValidity();
-        retentionSummary.setText("Manter 10 backups");
-    }
+        retentionSummary.setText("Manter 10 backups");}
     public Node content(){
         var root=new VBox(14);
         root.getStyleClass().add("backup-screen");
@@ -202,8 +195,7 @@ public final class BackupScreen {
         scroll.setFitToWidth(true);
         scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
         scroll.getStyleClass().add("content-scroll");
-        return scroll;
-    }
+        return scroll;}
     private Node createSummaryStrip(){
         HBox strip=new HBox(10);
         strip.getStyleClass().add("summary-strip");
@@ -218,8 +210,7 @@ public final class BackupScreen {
         HBox.setHgrow(summaryText,Priority.ALWAYS);
         summaryBadge.getStyleClass().add("summary-badge");
         strip.getChildren().addAll(statusIcon,summaryText,summaryBadge);
-        return strip;
-    }
+        return strip;}
     private void recomputePlanState(){
         boolean hasOrigin=pathField.getText()!=null&&!pathField.getText().isBlank();
         boolean hasDest=isCloudSelected()||(destField.getText()!=null&&!destField.getText().isBlank());
@@ -231,8 +222,7 @@ public final class BackupScreen {
         summaryBadge.setText(valid?"Plano válido":"Atenção");
         summaryBadge.getStyleClass().removeAll("badge-ok","badge-warn");
         summaryBadge.getStyleClass().add(valid?"badge-ok":"badge-warn");
-        refreshActionStates();
-    }
+        refreshActionStates();}
     private void updateScheduleValidity(){
         boolean enabled=scheduleCheckbox.isSelected();
         if(!enabled){scheduleValid.set(true);scheduleSummary.setText("Desativado");return;}
@@ -243,15 +233,11 @@ public final class BackupScreen {
             scheduleSummary.setText(valid?"Diário às "+scheduleTimeField.getText().trim():"Horário inválido");
         }else{
             valid=isValidInterval(scheduleIntervalField.getText());
-            scheduleSummary.setText(valid?"A cada "+scheduleIntervalField.getText().trim()+" min":"Intervalo inválido");
-        }
-        scheduleValid.set(valid);
-    }
+            scheduleSummary.setText(valid?"A cada "+scheduleIntervalField.getText().trim()+" min":"Intervalo inválido");}
+        scheduleValid.set(valid);}
     public void setRetentionValue(int retention){
         int safe=Math.max(1,Math.min(retention,365));
-        retentionSummary.setText("Manter " + safe + " backups");
-    }
-
+        retentionSummary.setText("Manter " + safe + " backups");}
     public void setScheduleState(ScheduleState state){
         if(state==null)return;
         suppressScheduleSave=true;
@@ -260,33 +246,25 @@ public final class BackupScreen {
         scheduleTimeField.setText(state.time()==null?"22:00":state.time());
         scheduleIntervalField.setText(Integer.toString(state.intervalMinutes()));
         updateScheduleValidity();
-        suppressScheduleSave=false;
-    }
-
+        suppressScheduleSave=false;}
     public void onScheduleConfigured(java.util.function.Consumer<ScheduleState> handler){
-        this.scheduleSaveHandler=(handler==null)?s->{}:handler;
-    }
-
+        this.scheduleSaveHandler=(handler==null)?s->{}:handler;}
     public void onRetentionConfigured(java.util.function.IntConsumer handler){
-        this.retentionSaveHandler=(handler==null)?v->{}:handler;
-    }
+        this.retentionSaveHandler=(handler==null)?v->{}:handler;}
     private ScheduleState currentScheduleState(){
         boolean enabled=scheduleCheckbox.isSelected();
         boolean daily="Diário".equalsIgnoreCase(scheduleMode.getValue());
         String time=scheduleTimeField.getText();
         int interval=120;
         try{interval=Integer.parseInt(scheduleIntervalField.getText().trim());}catch(Exception ignored){}
-        return new ScheduleState(enabled,daily?ScheduleMode.DAILY:ScheduleMode.INTERVAL,time,interval);
-    }
+        return new ScheduleState(enabled,daily?ScheduleMode.DAILY:ScheduleMode.INTERVAL,time,interval);}
     private static boolean isValidTime(String text){
         if(text==null)return false;
         String t=text.trim();
-        return t.matches("^([01]\\d|2[0-3]):[0-5]\\d$");
-    }
+        return t.matches("^([01]\\d|2[0-3]):[0-5]\\d$");}
     private static boolean isValidInterval(String text){
         if(text==null)return false;
-        try{int v=Integer.parseInt(text.trim());return v>=15&&v<=1440;}catch(Exception e){return false;}
-    }
+        try{int v=Integer.parseInt(text.trim());return v>=15&&v<=1440;}catch(Exception e){return false;}}
     private void openScheduleDialog(){
         Alert alert=new Alert(Alert.AlertType.CONFIRMATION);
         alert.setTitle("Agendamento");
@@ -321,8 +299,7 @@ public final class BackupScreen {
             boolean valid=daily?isValidTime(timeField.getText()):isValidInterval(intervalField.getText());
             okButton.setDisable(!valid);
             hint.setVisible(!valid);
-            hint.setManaged(!valid);
-        };
+            hint.setManaged(!valid);};
         mode.getSelectionModel().selectedItemProperty().addListener((o,a,b)->validate.run());
         timeField.textProperty().addListener((o,a,b)->validate.run());
         intervalField.textProperty().addListener((o,a,b)->validate.run());
@@ -335,8 +312,7 @@ public final class BackupScreen {
         try{interval=Integer.parseInt(intervalField.getText().trim());}catch(Exception ignored){}
         ScheduleState state=new ScheduleState(true,daily?ScheduleMode.DAILY:ScheduleMode.INTERVAL,time,interval);
         setScheduleState(state);
-        scheduleSaveHandler.accept(state);
-    }
+        scheduleSaveHandler.accept(state);}
     private void openRetentionDialog(){
         Alert alert=new Alert(Alert.AlertType.CONFIRMATION);
         alert.setTitle("Retenção");
@@ -358,13 +334,11 @@ public final class BackupScreen {
             int safe=Math.max(1,Math.min(v,365));
             retentionSummary.setText("Manter "+safe+" backups");
             retentionSaveHandler.accept(safe);
-        }catch(Exception e){showError("Valor inválido","Informe um número entre 1 e 365.");}
-    }
+        }catch(Exception e){showError("Valor inválido","Informe um número entre 1 e 365.");}}
     private static String safeShort(String s){
         if(s==null||s.isBlank())return "-";
         if(s.length()<=58)return s;
-        return s.substring(0,26)+"…"+s.substring(s.length()-28);
-    }
+        return s.substring(0,26)+"…"+s.substring(s.length()-28);}
     private void refreshActionStates(){
         boolean isScanning=scanning.get();
         boolean valid=planValid.get();
@@ -379,8 +353,7 @@ public final class BackupScreen {
         btnStop.setDisable(!isScanning);
         double opacity=isScanning?0.72:1.0;
         pathField.setOpacity(opacity);
-        destField.setOpacity(opacity);
-    }
+        destField.setOpacity(opacity);}
     private Node createProgressPanel(){
         progressRing.setMaxSize(20,20);
         progressRing.setMinSize(20,20);
@@ -397,8 +370,7 @@ public final class BackupScreen {
         box.visibleProperty().bind(scanning);
         box.managedProperty().bind(scanning);
         HBox.setHgrow(progressBar,Priority.ALWAYS);
-        return box;
-    }
+        return box;}
     public Node footer(){
         var root=new HBox(12);
         root.getStyleClass().add("footer");
@@ -426,8 +398,7 @@ public final class BackupScreen {
         btnWipe.setTooltip(new Tooltip("Apaga o histórico (SQLite) e o cofre de backups (.keeply/storage)."));
         backupFooterActions.getChildren().setAll(btnStop,btnWipe,btnDbOptions);
         root.getChildren().addAll(leftCluster,spacer,backupFooterActions);
-        return root;
-    }
+        return root;}
     private Node createFlowPanel(String title,String subtitle,String iconPath,TextField boundPath,Button copyBtn,Button actionButton){
         VBox panel=new VBox(10);
         panel.getStyleClass().add("flow-panel");
@@ -453,8 +424,7 @@ public final class BackupScreen {
         actionButton.getStyleClass().addAll("btn","btn-outline");
         actionButton.setMinWidth(150);
         panel.getChildren().addAll(top,pathRow,actionButton);
-        return panel;
-    }
+        return panel;}
     private Node createDestinationPanel(){
         VBox panel=new VBox(10);
         panel.getStyleClass().add("flow-panel");
@@ -491,8 +461,7 @@ public final class BackupScreen {
         btnBrowseDest.getStyleClass().addAll("btn","btn-outline");
         btnBrowseDest.setMinWidth(150);
         panel.getChildren().addAll(top,row,btnBrowseDest);
-        return panel;
-    }
+        return panel;}
     private Node createOptionsList(){
         VBox wrap=new VBox(10);
         wrap.getStyleClass().add("options-wrap");
@@ -512,8 +481,7 @@ public final class BackupScreen {
         optionsExpanded.addListener((o,a,b)->optionsChevron.setText(b?"▾":"▸"));
         list.getChildren().addAll(optionRowSchedule(),optionRowRetention(),optionRowEncryption(),optionRowStatic("Integridade","Checksum SHA-256",true,null));
         wrap.getChildren().addAll(titleRow,list);
-        return wrap;
-    }
+        return wrap;}
     private Node optionRowStatic(String name,String summary,boolean ok,String actionText){
         HBox row=new HBox(10);
         row.getStyleClass().add("option-row2");
@@ -530,12 +498,10 @@ public final class BackupScreen {
             Button configure=new Button(actionText);
             configure.getStyleClass().addAll("btn","btn-link");
             configure.setOnAction(e->appendLog("Abrir configuração: "+name));
-            action=configure;
-        }
+            action=configure;}
         Node status=ok?statusPillOk():statusPillWarn();
         row.getChildren().addAll(leftName,leftSummary,spacer,action,status);
-        return row;
-    }
+        return row;}
     private Node optionRowEncryption(){
         HBox row=new HBox(10);
         row.getStyleClass().add("option-row2");
@@ -557,8 +523,7 @@ public final class BackupScreen {
             if(entered==null||entered.isBlank())return;
             if(Config.hasBackupPasswordHash()&&!Config.verifyAndCacheBackupPassword(entered)){
                 showError("Senha inválida","A senha informada não confere.");
-                return;
-            }
+                return;}
             Config.verifyAndCacheBackupPassword(entered);
             Config.setBackupEncryptionPassword(entered);
             backupPasswordField.setText(entered);
@@ -566,8 +531,7 @@ public final class BackupScreen {
             suppressEncryptionToggle=true;
             sw.setSelected(true);
             suppressEncryptionToggle=false;
-            Config.saveBackupEncryptionEnabled(true);
-        });
+            Config.saveBackupEncryptionEnabled(true);});
         sw.setSelected(Config.isBackupEncryptionEnabled());
         sw.selectedProperty().addListener((obs,oldVal,newVal)->{
             if(suppressEncryptionToggle)return;
@@ -580,41 +544,33 @@ public final class BackupScreen {
                         suppressEncryptionToggle=true;
                         sw.setSelected(false);
                         suppressEncryptionToggle=false;
-                        return;
-                    }
+                        return;}
                     if(Config.hasBackupPasswordHash()&&!Config.verifyAndCacheBackupPassword(entered)){
                         showError("Senha inválida","A senha informada não confere.");
                         suppressEncryptionToggle=true;
                         sw.setSelected(false);
                         suppressEncryptionToggle=false;
-                        return;
-                    }
+                        return;}
                     Config.verifyAndCacheBackupPassword(entered);
                     Config.setBackupEncryptionPassword(entered);
                     backupPasswordField.setText(entered);
-                    passwordRequired.set(false);
-                }
-            }
+                    passwordRequired.set(false);}}
             if(oldVal&&!newVal){
                 if(!confirmDisableEncryption()){
                     suppressEncryptionToggle=true;
                     sw.setSelected(true);
                     suppressEncryptionToggle=false;
-                    return;
-                }
+                    return;}
                 Config.clearBackupPassword();
                 backupPasswordField.clear();
-                passwordRequired.set(false);
-            }
-            Config.saveBackupEncryptionEnabled(newVal);
-        });
+                passwordRequired.set(false);}
+            Config.saveBackupEncryptionEnabled(newVal);});
         Node status=statusFromEncryption();
         row.getChildren().addAll(name,summary,spacer,configure,sw,status);
         VBox wrap=new VBox(0);
         wrap.getChildren().add(row);
         wrap.getChildren().add(new Separator());
-        return wrap;
-    }
+        return wrap;}
     private Node optionRowSchedule(){
         HBox row=new HBox(10);
         row.getStyleClass().add("option-row2");
@@ -634,8 +590,7 @@ public final class BackupScreen {
         VBox wrap=new VBox(0);
         wrap.getChildren().add(row);
         wrap.getChildren().add(new Separator());
-        return wrap;
-    }
+        return wrap;}
     private Node optionRowRetention(){
         HBox row=new HBox(10);
         row.getStyleClass().add("option-row2");
@@ -651,28 +606,24 @@ public final class BackupScreen {
         configure.setOnAction(e->openRetentionDialog());
         Node status=statusPillOk();
         row.getChildren().addAll(name,retentionSummary,spacer,configure,status);
-        return row;
-    }
+        return row;}
     private Node statusFromSchedule(){
         StackPane holder=new StackPane();
         holder.getChildren().add(statusPillWarn());
         scheduleCheckbox.selectedProperty().addListener((o,a,b)->updateScheduleStatus(holder));
         scheduleValid.addListener((o,a,b)->updateScheduleStatus(holder));
         updateScheduleStatus(holder);
-        return holder;
-    }
+        return holder;}
     private void updateScheduleStatus(StackPane holder){
         boolean enabled=scheduleCheckbox.isSelected();
         boolean ok=enabled&&scheduleValid.get();
-        holder.getChildren().setAll(ok?statusPillOk():statusPillWarn());
-    }
+        holder.getChildren().setAll(ok?statusPillOk():statusPillWarn());}
     private Node statusFromEncryption(){
         StackPane holder=new StackPane();
         holder.getChildren().add(statusPillWarn());
         encryptionCheckbox.selectedProperty().addListener((o,a,b)->{holder.getChildren().setAll(b?statusPillOk():statusPillWarn());});
         holder.getChildren().setAll(encryptionCheckbox.isSelected()?statusPillOk():statusPillWarn());
-        return holder;
-    }
+        return holder;}
     private Node statusPillOk(){
         HBox pill=new HBox(6);
         pill.getStyleClass().addAll("status-pill","status-ok");
@@ -681,8 +632,7 @@ public final class BackupScreen {
         icon.setContent(ICON_CHECK);
         icon.getStyleClass().add("status-icon");
         pill.getChildren().add(icon);
-        return pill;
-    }
+        return pill;}
     private Node statusPillWarn(){
         HBox pill=new HBox(6);
         pill.getStyleClass().addAll("status-pill","status-warn");
@@ -691,23 +641,20 @@ public final class BackupScreen {
         icon.setContent(ICON_WARN);
         icon.getStyleClass().add("status-icon");
         pill.getChildren().add(icon);
-        return pill;
-    }
+        return pill;}
     private Node createLogsPane(){
         consoleArea.getStyleClass().add("console");
         consoleArea.setPrefRowCount(6);
         TitledPane pane=new TitledPane("Logs",consoleArea);
         pane.getStyleClass().add("logs-pane");
         pane.setExpanded(false);
-        return pane;
-    }
+        return pane;}
     private static void styleIconButton(Button btn,String svgPath){
         var icon=new SVGPath();
         icon.setContent(svgPath);
         icon.getStyleClass().add("icon");
         btn.setGraphic(icon);
-        btn.setGraphicTextGap(8);
-    }
+        btn.setGraphicTextGap(8);}
     private static Button iconOnlyButton(String svgPath,String tooltip){
         Button b=new Button();
         SVGPath icon=new SVGPath();
@@ -716,14 +663,12 @@ public final class BackupScreen {
         b.setGraphic(icon);
         b.setTooltip(new Tooltip(tooltip));
         b.setFocusTraversable(false);
-        return b;
-    }
+        return b;}
     private static void copyToClipboard(String value){
         if(value==null)return;
         ClipboardContent cc=new ClipboardContent();
         cc.putString(value);
-        Clipboard.getSystemClipboard().setContent(cc);
-    }
+        Clipboard.getSystemClipboard().setContent(cc);}
     private void chooseDirectory(){
         DirectoryChooser dc=new DirectoryChooser();
         File initial=new File(Objects.requireNonNullElse(Config.getLastPath(),System.getProperty("user.home")));
@@ -733,9 +678,7 @@ public final class BackupScreen {
         if(f!=null){
             pathField.setText(f.getAbsolutePath());
             Config.saveLastPath(f.getAbsolutePath());
-            recomputePlanState();
-        }
-    }
+            recomputePlanState();}}
     private void chooseDestinationDirectory(){
         DirectoryChooser dc=new DirectoryChooser();
         File initial=new File(Objects.requireNonNullElse(Config.getLastBackupDestination(),defaultLocalBackupDestination().toString()));
@@ -747,15 +690,12 @@ public final class BackupScreen {
             Config.saveLastBackupDestination(f.getAbsolutePath());
             try{Files.createDirectories(f.toPath());}catch(java.io.IOException|RuntimeException ignored){}
             recomputePlanState();
-        }
-    }
+        }}
     private static Path defaultLocalBackupDestination(){
         String home=Objects.requireNonNullElse(System.getProperty("user.home"),".");
-        return Path.of(home,"Documents","Keeply","Backup");
-    }
+        return Path.of(home,"Documents","Keeply","Backup");}
     public boolean isCloudSelected(){
-        return destinationTypeGroup.getSelectedToggle()==btnCloud;
-    }
+        return destinationTypeGroup.getSelectedToggle()==btnCloud;}
     private void showDbOptions(){
         DatabaseBackup.DbEncryptionStatus s=DatabaseBackup.getEncryptionStatus();
         String text="""
@@ -774,31 +714,24 @@ public final class BackupScreen {
         area.setWrapText(true);
         area.setPrefRowCount(8);
         alert.getDialogPane().setContent(area);
-        alert.showAndWait();
-    }
+        alert.showAndWait();}
     private boolean confirmDisableEncryption(){
         String pass=promptPassword("Desativar criptografia","Confirme a senha do backup");
         if(pass==null)return false;
         if(Config.hasBackupPasswordHash()){
             if(!Config.verifyAndCacheBackupPassword(pass)){
                 showError("Senha inválida","A senha informada não confere. Criptografia mantida.");
-                return false;
-            }
-        }else{
+                return false;}}else{
             String session=Config.getBackupEncryptionPassword();
             if(session==null||session.isBlank()||!session.equals(pass)){
                 showError("Senha inválida","A senha informada não confere. Criptografia mantida.");
-                return false;
-            }
-            Config.setBackupEncryptionPassword(pass);
-        }
+                return false;}
+            Config.setBackupEncryptionPassword(pass);}
         if(!BlobStore.verifyBackupPassword(pass)){
             showError("Falha de verificação","Não foi possível validar a senha em um teste de descriptografia.");
-            return false;
-        }
+            return false;}
         Config.setBackupEncryptionPassword(pass);
-        return true;
-    }
+        return true;}
     private String promptPassword(String title,String header){
         Alert alert=new Alert(Alert.AlertType.CONFIRMATION);
         alert.setTitle(title);
@@ -814,8 +747,7 @@ public final class BackupScreen {
         okButton.disableProperty().bind(field.textProperty().isEmpty());
         Optional<ButtonType> res=alert.showAndWait();
         if(res.isEmpty()||res.get()!=ButtonType.OK)return null;
-        return field.getText();
-    }
+        return field.getText();}
     private String promptSetPassword(){
         Alert alert=new Alert(Alert.AlertType.CONFIRMATION);
         alert.setTitle("Definir senha");
@@ -831,15 +763,13 @@ public final class BackupScreen {
         okButton.disableProperty().bind(field.textProperty().isEmpty());
         Optional<ButtonType> res=alert.showAndWait();
         if(res.isEmpty()||res.get()!=ButtonType.OK)return null;
-        return field.getText();
-    }
+        return field.getText();}
     private void showError(String title,String message){
         Alert alert=new Alert(Alert.AlertType.ERROR);
         alert.setTitle(title);
         alert.setHeaderText(title);
         alert.setContentText(message);
-        alert.showAndWait();
-    }
+        alert.showAndWait();}
     public Button getScanButton(){return btnScan;}
     public Button getStopButton(){return btnStop;}
     public Button getWipeButton(){return btnWipe;}
@@ -848,18 +778,14 @@ public final class BackupScreen {
     public String getBackupEncryptionPassword(){return backupPasswordField.getText();}
     public void setScanningState(boolean isScanning){
         scanning.set(isScanning);
-        refreshActionStates();
-    }
+        refreshActionStates();}
     public void clearConsole(){consoleArea.clear();}
     public void appendLog(String message){
         Platform.runLater(()->{
             consoleArea.appendText("• "+message+"\n");
-            consoleArea.positionCaret(consoleArea.getLength());
-        });
-    }
+            consoleArea.positionCaret(consoleArea.getLength());});}
     public boolean isEncryptionEnabled(){
-        return encryptionCheckbox.isSelected();
-    }
+        return encryptionCheckbox.isSelected();}
     public boolean confirmWipe(){
         Alert alert=new Alert(Alert.AlertType.CONFIRMATION);
         alert.setTitle("Confirmar remoção");
@@ -872,6 +798,4 @@ public final class BackupScreen {
             Isso NÃO apaga os arquivos originais da sua pasta de origem.
             """);
         Optional<ButtonType> res=alert.showAndWait();
-        return res.isPresent()&&res.get()==ButtonType.OK;
-    }
-}
+        return res.isPresent()&&res.get()==ButtonType.OK;}}
