@@ -1,4 +1,4 @@
-    package com.keeply.app.report;
+package com.keeply.app.report;
 
     import com.keeply.app.database.DatabaseBackup.InventoryRow;
     import com.keeply.app.database.DatabaseBackup.ScanSummary;

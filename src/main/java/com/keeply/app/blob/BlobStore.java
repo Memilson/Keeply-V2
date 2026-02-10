@@ -276,7 +276,6 @@ public class BlobStore {
         long total = changed.size();
         if (progress != null) progress.accept(0L, total);
 
-        uiLogger.accept(">> Backup incremental: scanId=" + scanId + ", arquivos alterados=" + total);
         uiLogger.accept(">> Backup: destino = " + baseDir.resolve(".keeply").resolve("storage").toAbsolutePath());
 
         BlobStore store = new BlobStore(baseDir);
@@ -310,7 +309,6 @@ public class BlobStore {
             }
         }
 
-        uiLogger.accept(">> Backup incremental: finalizado. Arquivos processados=" + files[0] + ", erros=" + errors[0]);
         return new BackupResult(files[0], errors[0]);
     }
 

@@ -34,14 +34,10 @@ public final class Backup {
 
     private Backup() {}
 
-        public record ScanConfig(
-            @SuppressWarnings("unused") int dbBatchSize,
-            @SuppressWarnings("unused") List<String> excludeGlobs
-        ) {
+    public record ScanConfig(int dbBatchSize, List<String> excludeGlobs) {
         public static ScanConfig defaults() {
             List<String> excludes = new ArrayList<>();
 
-            // comuns
             excludes.addAll(List.of(
                 "**/.keeply/**",
                 "**/*.keeply*",
@@ -53,7 +49,6 @@ public final class Backup {
                 "**/*.vdi"
             ));
 
-            // Windows (se o root for perfil de usuário / disco)
             excludes.addAll(List.of(
                 "**/AppData/**",
                 "**/Windows/**",
@@ -65,7 +60,6 @@ public final class Backup {
                 "**/swapfile.sys"
             ));
 
-            // Linux (se o root for / ou home grande)
             excludes.addAll(List.of(
                 "**/proc/**",
                 "**/sys/**",
@@ -78,18 +72,18 @@ public final class Backup {
                 "**/.local/share/Trash/**"
             ));
 
-            return new ScanConfig(10000, List.copyOf(excludes));
+            return new ScanConfig(10_000, List.copyOf(excludes));
         }
     }
 
-        public record FileSeen(
-            @SuppressWarnings("unused") long scanId,
-            @SuppressWarnings("unused") String pathRel,
-            @SuppressWarnings("unused") String name,
-            @SuppressWarnings("unused") long size,
-            @SuppressWarnings("unused") long mtime,
-            @SuppressWarnings("unused") long ctime
-        ) {}
+    public record FileSeen(
+        long scanId,
+        String pathRel,
+        String name,
+        long size,
+        long mtime,
+        long ctime
+    ) {}
 
     public static final class ScanMetrics {
         public final LongAdder filesSeen = new LongAdder();
@@ -97,7 +91,9 @@ public final class Backup {
         public final LongAdder walkErrors = new LongAdder();
         public final LongAdder dbBatches = new LongAdder();
         public final AtomicBoolean running = new AtomicBoolean(false);
-        public final Instant start = Instant.now();
+
+        // não pode ser "final Instant now" porque você vai reutilizar metrics
+        public volatile Instant start = Instant.EPOCH;
     }
 
     private static final Logger logger = LoggerFactory.getLogger(Backup.class);
@@ -109,14 +105,11 @@ public final class Backup {
         return System.getProperty("os.name", "generic").toLowerCase(Locale.ROOT).contains("win");
     }
 
-    // Normaliza Path relativo pra string com "/" (pra fast checks)
     private static String relNorm(Path rel) {
         return rel.toString().replace('\\', '/');
     }
 
-    // Fast path: evita PathMatcher (caro) na maioria dos casos
     private static boolean fastExcludePath(String rn) {
-        // gerais
         if (rn.contains("/.keeply/")) return true;
         if (rn.contains("/.git/")) return true;
         if (rn.contains("/node_modules/")) return true;
@@ -147,9 +140,6 @@ public final class Backup {
         if (globs == null) return out;
         for (String g : globs) {
             if (g == null || g.isBlank()) continue;
-            // Importante: na prática, "glob:**/*.java" funciona no Windows também.
-            // Mantemos "/" nos globs e garantimos que o Path passado pro matcher
-            // tenha separadores coerentes via Paths.get(relNormString).
             out.add(fs.getPathMatcher("glob:" + g));
         }
         return out;
@@ -171,30 +161,31 @@ public final class Backup {
         ScanMetrics metrics,
         AtomicBoolean cancel,
         Consumer<String> uiLogger
-) throws IOException {
-    return runScan(root, null, cfg, metrics, cancel, uiLogger);
-}
+    ) throws IOException {
+        return runScan(root, null, cfg, metrics, cancel, uiLogger);
+    }
 
-public static long runScan(
+    public static long runScan(
         Path root,
         Path backupDest,
         ScanConfig cfg,
         ScanMetrics metrics,
         AtomicBoolean cancel,
         Consumer<String> uiLogger
-) throws IOException {
+    ) throws IOException {
 
         var rootAbs = root.toAbsolutePath().normalize();
+
+        metrics.start = Instant.now();
         metrics.running.set(true);
 
         DatabaseBackup.init();
 
         long scanId = DatabaseBackup.jdbi().withExtension(
-                KeeplyDao.class,
-                dao -> dao.startScanLog(rootAbs.toString())
+            KeeplyDao.class,
+            dao -> dao.startScanLog(rootAbs.toString())
         );
 
-        uiLogger.accept(">> Fase 1: Validando metadados (Tamanho/Data/Nome)...");
 
         try (var writer = new DbWriter(scanId, rootAbs.toString(), cfg.dbBatchSize(), metrics, cancel)) {
             if (backupDest != null) {
@@ -202,8 +193,16 @@ public static long runScan(
             } else {
                 walk(rootAbs, scanId, cfg, metrics, cancel, writer);
             }
-            writer.flush();
-            writer.waitFinish();
+        } catch (RuntimeException e) {
+            // se writer morreu, cancelar e registrar (evita “scan fantasma”)
+            cancel.set(true);
+            logger.error("Scan abortado por erro interno", e);
+            try {
+                DatabaseBackup.jdbi().useExtension(KeeplyDao.class, dao -> dao.cancelScanLog(scanId));
+            } catch (RuntimeException ignored) {}
+            metrics.running.set(false);
+            DatabaseBackup.persistEncryptedSnapshot();
+            throw e;
         }
 
         if (cancel.get()) {
@@ -218,12 +217,12 @@ public static long runScan(
             return scanId;
         }
 
-        uiLogger.accept(">> Fase 2: Sincronizando banco (Limpeza)...");
 
         KeeplyDao.CleanupResult cleanup = DatabaseBackup.jdbi().withExtension(
             KeeplyDao.class,
             dao -> dao.deleteStaleFiles(scanId, rootAbs.toString())
         );
+
         if (cleanup.removedFromInventory > 0) {
             uiLogger.accept(">> Removidos " + cleanup.removedFromInventory + " arquivos que não existem mais.");
         }
@@ -238,7 +237,6 @@ public static long runScan(
 
         if (hist > 0) logger.info("[DB] Historico: {} alteracoes detectadas.", hist);
 
-        uiLogger.accept("[SCAN] Finalizado.");
         uiLogger.accept(">> FINALIZADO! Total de arquivos validados: " + metrics.filesSeen.sum());
 
         metrics.running.set(false);
@@ -257,15 +255,14 @@ public static long runScan(
         ScanMetrics metrics,
         AtomicBoolean cancel,
         DbWriter writer
-) throws IOException {
+    ) throws IOException {
 
-    final Path rootAbs = root.toAbsolutePath().normalize();
-    final Path destAbs = backupDest.toAbsolutePath().normalize();
-    final boolean nested = destAbs.startsWith(rootAbs);
+        final Path rootAbs = root.toAbsolutePath().normalize();
+        final Path destAbs = backupDest.toAbsolutePath().normalize();
+        final boolean nested = destAbs.startsWith(rootAbs);
+        final var matchers = compileMatchers(cfg.excludeGlobs());
 
-    final var matchers = compileMatchers(cfg.excludeGlobs());
-
-    Files.walkFileTree(
+        Files.walkFileTree(
             rootAbs,
             EnumSet.noneOf(FileVisitOption.class),
             Integer.MAX_VALUE,
@@ -277,7 +274,6 @@ public static long runScan(
                     if (dir.equals(rootAbs)) return FileVisitResult.CONTINUE;
 
                     if (nested) {
-                        // dir já vem absoluto dentro do walk
                         Path dirAbs = dir.normalize();
                         if (dirAbs.startsWith(destAbs)) {
                             metrics.dirsSkipped.increment();
@@ -325,12 +321,12 @@ public static long runScan(
                     }
 
                     writer.add(new FileSeen(
-                            scanId,
-                            rn,
-                            file.getFileName().toString(),
-                            attrs.size(),
-                            attrs.lastModifiedTime().toMillis(),
-                            attrs.creationTime().toMillis()
+                        scanId,
+                        rn,
+                        file.getFileName().toString(),
+                        attrs.size(),
+                        attrs.lastModifiedTime().toMillis(),
+                        attrs.creationTime().toMillis()
                     ));
 
                     metrics.filesSeen.increment();
@@ -343,98 +339,94 @@ public static long runScan(
                     return FileVisitResult.CONTINUE;
                 }
             }
-    );
-}
-
+        );
+    }
 
     private static void walk(
-            Path root,
-            long scanId,
-            ScanConfig cfg,
-            ScanMetrics metrics,
-            AtomicBoolean cancel,
-            DbWriter writer
+        Path root,
+        long scanId,
+        ScanConfig cfg,
+        ScanMetrics metrics,
+        AtomicBoolean cancel,
+        DbWriter writer
     ) throws IOException {
 
         final Path rootAbs = root.toAbsolutePath().normalize();
-        final int maxDepth = Integer.MAX_VALUE;
-
         final var matchers = compileMatchers(cfg.excludeGlobs());
 
         Files.walkFileTree(
-                rootAbs,
-                EnumSet.noneOf(FileVisitOption.class),
-                maxDepth,
-                new SimpleFileVisitor<>() {
+            rootAbs,
+            EnumSet.noneOf(FileVisitOption.class),
+            Integer.MAX_VALUE,
+            new SimpleFileVisitor<>() {
 
-                    @Override
-                    public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                        if (cancel.get() || Thread.currentThread().isInterrupted()) return FileVisitResult.TERMINATE;
-                        if (dir.equals(rootAbs)) return FileVisitResult.CONTINUE;
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    if (cancel.get() || Thread.currentThread().isInterrupted()) return FileVisitResult.TERMINATE;
+                    if (dir.equals(rootAbs)) return FileVisitResult.CONTINUE;
 
-                        Path rel = rootAbs.relativize(dir);
-                        String rn = relNorm(rel);
+                    Path rel = rootAbs.relativize(dir);
+                    String rn = relNorm(rel);
 
-                        // FAST: evita PathMatcher na maioria dos casos
-                        if (fastExcludePath(rn)) {
+                    if (fastExcludePath(rn)) {
+                        metrics.dirsSkipped.increment();
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
+
+                    if (!matchers.isEmpty()) {
+                        Path relForMatcher = Paths.get(rn.replace('/', java.io.File.separatorChar));
+                        if (matchesAny(relForMatcher, matchers)) {
                             metrics.dirsSkipped.increment();
                             return FileVisitResult.SKIP_SUBTREE;
                         }
-
-                        // PathMatcher: passamos um Path construído a partir do rn (com "/")
-                        if (!matchers.isEmpty()) {
-                            Path relForMatcher = Paths.get(rn.replace('/', java.io.File.separatorChar));
-                            if (matchesAny(relForMatcher, matchers)) {
-                                metrics.dirsSkipped.increment();
-                                return FileVisitResult.SKIP_SUBTREE;
-                            }
-                        }
-
-                        return FileVisitResult.CONTINUE;
                     }
 
-                    @Override
-                    public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                        if (cancel.get() || Thread.currentThread().isInterrupted()) return FileVisitResult.TERMINATE;
-                        if (!attrs.isRegularFile()) return FileVisitResult.CONTINUE;
-
-                        Path rel = rootAbs.relativize(file);
-                        String rn = relNorm(rel);
-
-                        // FAST também pra arquivo
-                        if (fastExcludePath(rn)) return FileVisitResult.CONTINUE;
-
-                        if (!matchers.isEmpty()) {
-                            Path relForMatcher = Paths.get(rn.replace('/', java.io.File.separatorChar));
-                            if (matchesAny(relForMatcher, matchers)) return FileVisitResult.CONTINUE;
-                        }
-
-                        writer.add(new FileSeen(
-                                scanId,
-                                rn,
-                                file.getFileName().toString(),
-                                attrs.size(),
-                                attrs.lastModifiedTime().toMillis(),
-                                attrs.creationTime().toMillis()
-                        ));
-
-                        metrics.filesSeen.increment();
-                        return FileVisitResult.CONTINUE;
-                    }
-
-                    @Override
-                    public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                        metrics.walkErrors.increment();
-                        return FileVisitResult.CONTINUE;
-                    }
+                    return FileVisitResult.CONTINUE;
                 }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (cancel.get() || Thread.currentThread().isInterrupted()) return FileVisitResult.TERMINATE;
+                    if (!attrs.isRegularFile()) return FileVisitResult.CONTINUE;
+
+                    Path rel = rootAbs.relativize(file);
+                    String rn = relNorm(rel);
+
+                    if (fastExcludePath(rn)) return FileVisitResult.CONTINUE;
+
+                    if (!matchers.isEmpty()) {
+                        Path relForMatcher = Paths.get(rn.replace('/', java.io.File.separatorChar));
+                        if (matchesAny(relForMatcher, matchers)) return FileVisitResult.CONTINUE;
+                    }
+
+                    writer.add(new FileSeen(
+                        scanId,
+                        rn,
+                        file.getFileName().toString(),
+                        attrs.size(),
+                        attrs.lastModifiedTime().toMillis(),
+                        attrs.creationTime().toMillis()
+                    ));
+
+                    metrics.filesSeen.increment();
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                    metrics.walkErrors.increment();
+                    return FileVisitResult.CONTINUE;
+                }
+            }
         );
     }
 
     // -----------------------------
-    // DbWriter (otimizado)
+    // DbWriter (robusto + WAL)
     // -----------------------------
     private static class DbWriter implements AutoCloseable {
+        private static final FileSeen POISON = new FileSeen(-1L, "", "", 0L, 0L, 0L);
+
         private final long scanId;
         private final String rootPath;
         private final int batchSize;
@@ -444,7 +436,7 @@ public static long runScan(
         private final BlockingQueue<FileSeen> queue;
         private final Thread worker;
 
-        private volatile boolean finished = false;
+        private volatile boolean producerFinished = false;
         private volatile Exception workerError;
 
         DbWriter(long scanId,
@@ -455,14 +447,12 @@ public static long runScan(
             this.scanId = scanId;
             this.rootPath = rootPath;
 
-            // batchSize “sadio”
             int tuned = Math.max(2000, Math.min(batchSize, 10000));
             this.batchSize = tuned;
 
             this.metrics = metrics;
             this.cancel = cancel;
 
-            // fila maior = o walker não trava tanto no writer
             this.queue = new ArrayBlockingQueue<>(50_000);
 
             this.worker = Thread.ofVirtual().name("sqlite-writer").start(this::run);
@@ -470,10 +460,32 @@ public static long runScan(
 
         void add(FileSeen f) {
             if (f == null) return;
-            // não trava infinito se writer estiver atrás; respeita cancel/interrupção
-            while (!finished && !cancel.get() && !Thread.currentThread().isInterrupted()) {
+
+            // falha rápida: não deixa o walk continuar “achando que tá tudo bem”
+            if (workerError != null) {
+                cancel.set(true);
+                throw new RuntimeException("DbWriter já falhou; abortando scan", workerError);
+            }
+            if (!worker.isAlive()) {
+                cancel.set(true);
+                throw new RuntimeException("DbWriter morreu; abortando scan", workerError);
+            }
+            if (producerFinished || cancel.get() || Thread.currentThread().isInterrupted()) return;
+
+            while (!producerFinished && !cancel.get() && !Thread.currentThread().isInterrupted()) {
                 try {
                     if (queue.offer(f, 200, TimeUnit.MILLISECONDS)) return;
+
+                    // recheck
+                    if (workerError != null) {
+                        cancel.set(true);
+                        throw new RuntimeException("DbWriter falhou durante offer()", workerError);
+                    }
+                    if (!worker.isAlive()) {
+                        cancel.set(true);
+                        throw new RuntimeException("DbWriter morreu durante offer()", workerError);
+                    }
+
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;
@@ -481,7 +493,17 @@ public static long runScan(
             }
         }
 
-        void flush() { finished = true; }
+        @Override
+        public void close() {
+            flush();
+            waitFinish();
+        }
+
+        void flush() {
+            producerFinished = true;
+            // acorda o worker se ele estiver em poll
+            queue.offer(POISON);
+        }
 
         void waitFinish() {
             try {
@@ -494,40 +516,44 @@ public static long runScan(
             }
         }
 
-        @Override
-        public void close() {
-            flush();
-            waitFinish();
-        }
-
         private void run() {
             Connection c = null;
             try {
                 c = DatabaseBackup.openSingleConnection();
 
-                // transação real
                 try { c.setAutoCommit(false); } catch (SQLException ignored) {}
 
-                // PRAGMAs (best-effort)
+                // PRAGMAs focados em ingest (WAL + NORMAL)
                 try (var st = c.createStatement()) {
                     st.execute("PRAGMA foreign_keys=ON");
+                    st.execute("PRAGMA journal_mode=WAL");
+                    st.execute("PRAGMA wal_autocheckpoint=2000");
                     st.execute("PRAGMA synchronous=NORMAL");
                     st.execute("PRAGMA temp_store=MEMORY");
                     st.execute("PRAGMA cache_size=-20000"); // ~20MB
-                    st.execute("PRAGMA busy_timeout=5000");
+                    st.execute("PRAGMA busy_timeout=10000");
                 } catch (SQLException ignored) {}
 
                 var sql = """
-                    INSERT INTO file_inventory (root_path, path_rel, name, size_bytes, modified_millis, created_millis, last_scan_id, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'NEW')
+                    INSERT INTO file_inventory
+                        (root_path, path_rel, name, size_bytes, modified_millis, created_millis, last_scan_id, status)
+                    VALUES
+                        (?, ?, ?, ?, ?, ?, ?, 'NEW')
                     ON CONFLICT(root_path, path_rel) DO UPDATE SET
                         last_scan_id = excluded.last_scan_id,
+                        name = excluded.name,
                         status = CASE
-                                    WHEN size_bytes != excluded.size_bytes OR modified_millis != excluded.modified_millis THEN 'MODIFIED'
+                                    WHEN size_bytes != excluded.size_bytes
+                                      OR modified_millis != excluded.modified_millis
+                                    THEN 'MODIFIED'
                                     ELSE status
                                  END,
                         size_bytes = excluded.size_bytes,
-                        modified_millis = excluded.modified_millis
+                        modified_millis = excluded.modified_millis,
+                        created_millis = CASE
+                                            WHEN excluded.created_millis > 0 THEN excluded.created_millis
+                                            ELSE created_millis
+                                         END
                 """;
 
                 try (var ps = c.prepareStatement(sql)) {
@@ -538,13 +564,16 @@ public static long runScan(
                     long lastFlushNs = System.nanoTime();
                     final long MAX_LATENCY_NS = TimeUnit.MILLISECONDS.toNanos(400);
 
-                    while ((!finished && !cancel.get()) || !queue.isEmpty()) {
+                    while (!cancel.get() && !Thread.currentThread().isInterrupted()) {
 
-                        // pega 1 com timeout curto
-                        FileSeen f = queue.poll(50, TimeUnit.MILLISECONDS);
-                        if (f != null) drainList.add(f);
+                        FileSeen first = queue.poll(100, TimeUnit.MILLISECONDS);
+                        if (first != null && first != POISON) {
+                            drainList.add(first);
+                        } else if (first == POISON) {
+                            // producer sinalizou fim
+                            producerFinished = true;
+                        }
 
-                        // drena o resto até completar batch
                         queue.drainTo(drainList, Math.max(0, batchSize - drainList.size()));
 
                         for (FileSeen item : drainList) {
@@ -561,22 +590,25 @@ public static long runScan(
                         drainList.clear();
 
                         boolean timeToFlush = pending > 0 && (System.nanoTime() - lastFlushNs) >= MAX_LATENCY_NS;
-                        boolean doneAndEmpty = pending > 0 && (finished || cancel.get()) && queue.isEmpty();
+                        boolean doneAndEmpty = pending > 0 && producerFinished && queue.isEmpty();
 
                         if (pending >= batchSize || timeToFlush || doneAndEmpty) {
                             ps.executeBatch();
+                            ps.clearBatch();
                             c.commit();
+
                             metrics.dbBatches.increment();
                             pending = 0;
                             lastFlushNs = System.nanoTime();
                         }
 
-                        if (cancel.get() || Thread.currentThread().isInterrupted()) break;
+                        // condição de saída “limpa”
+                        if (producerFinished && queue.isEmpty()) break;
                     }
 
-                    // flush final
-                    if (pending > 0) {
+                    if (pending > 0 && !cancel.get()) {
                         ps.executeBatch();
+                        ps.clearBatch();
                         c.commit();
                         metrics.dbBatches.increment();
                     }
@@ -585,12 +617,17 @@ public static long runScan(
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 workerError = e;
+                cancel.set(true);
                 logger.error("DbWriter interrompido", e);
+
             } catch (Exception e) {
-                try { c.rollback(); } catch (SQLException ignored) {}
                 workerError = e;
+                cancel.set(true);
+                try { if (c != null) c.rollback(); } catch (SQLException ignored) {}
                 logger.error("DbWriter error", e);
+
             } finally {
+                producerFinished = true; // evita qualquer loop infinito no producer
                 if (c != null) {
                     try { c.close(); } catch (SQLException ignored) {}
                 }

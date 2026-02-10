@@ -1,4 +1,4 @@
-package com.keeply.app.inventory;
+package com.keeply.app.screen;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;

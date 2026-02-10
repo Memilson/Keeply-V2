@@ -16,6 +16,8 @@ import com.keeply.app.config.Config;
 import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.database.DatabaseBackup.ScanSummary;
 import com.keeply.app.database.KeeplyDao;
+import com.keeply.app.screen.InventoryScreen;
+import com.keeply.app.screen.RestoreLogWindow;
 
 import javafx.application.Platform;
 import javafx.beans.binding.Bindings;

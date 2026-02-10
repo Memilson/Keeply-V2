@@ -1,5 +1,4 @@
 package com.keeply.app.database;
-
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
@@ -33,98 +32,40 @@ import org.slf4j.LoggerFactory;
 import com.keeply.app.config.Config;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
-
-/**
- * Gerencia banco de dados, migrações e criptografia.
- *
- * Modelo:
- *  - Se criptografia OFF: DB normal em WAL
- *  - Se criptografia ON: DB real é runtime plaintext + persistência em arquivo .enc no shutdown/snapshot.
- */
 public final class DatabaseBackup {
-
     private static final Logger logger = LoggerFactory.getLogger(DatabaseBackup.class);
-
     private DatabaseBackup() {}
-
-    // DTOs usados pelo DAO (mantidos)
-    public record InventoryRow(String rootPath, String pathRel, String name, long sizeBytes, long modifiedMillis,
-                               long createdMillis, String status) {}
+    public record InventoryRow(String rootPath, String pathRel, String name, long sizeBytes, long modifiedMillis, long createdMillis, String status) {}
     public record ScanSummary(long scanId, String rootPath, String startedAt, String finishedAt) {}
-    public record FileHistoryRow(long scanId, String rootPath, String startedAt, String finishedAt, long sizeBytes,
-                                 String statusEvent, String createdAt) {}
+    public record FileHistoryRow(long scanId, String rootPath, String startedAt, String finishedAt, long sizeBytes, String statusEvent, String createdAt) {}
     public record SnapshotBlobRow(String pathRel, String contentHash) {}
     public record CapacityReport(String date, long totalBytes, long growthBytes) {}
-
     private static volatile HikariDataSource dataSource;
     private static volatile Jdbi jdbi;
     private static volatile boolean migrated = false;
     private static volatile boolean shutdownHookRegistered = false;
-
-    public record DbEncryptionStatus(
-            boolean encryptionEnabled,
-            Path encryptedFile,
-            boolean encryptedFileExists,
-            boolean encryptedLooksEncrypted,
-            boolean encryptedLooksPlainSqlite,
-            Path legacyPlainFile,
-            boolean legacyPlainExists,
-            boolean legacyPlainLooksPlainSqlite,
-            boolean legacyPlainWalExists,
-            boolean legacyPlainShmExists,
-            Path runtimePlainFile,
-            boolean runtimePlainExists,
-            boolean runtimePlainWalExists,
-            boolean runtimePlainShmExists
-    ) {}
-
+    public record DbEncryptionStatus(boolean encryptionEnabled, Path encryptedFile, boolean encryptedFileExists, boolean encryptedLooksEncrypted, boolean encryptedLooksPlainSqlite, Path legacyPlainFile, boolean legacyPlainExists, boolean legacyPlainLooksPlainSqlite, boolean legacyPlainWalExists, boolean legacyPlainShmExists, Path runtimePlainFile, boolean runtimePlainExists, boolean runtimePlainWalExists, boolean runtimePlainShmExists) {}
     public static DbEncryptionStatus getEncryptionStatus() {
         boolean enabled = Config.isDbEncryptionEnabled();
-
         var encrypted = Config.getEncryptedDbFilePath();
-        var legacyPlain = enabled
-                ? encrypted.resolveSibling(removeSuffix(encrypted.getFileName().toString(), ".enc"))
-                : encrypted;
+        var legacyPlain = enabled ? encrypted.resolveSibling(removeSuffix(encrypted.getFileName().toString(), ".enc")) : encrypted;
         var runtime = Config.getRuntimeDbFilePath();
-
         boolean encryptedExists = Files.exists(encrypted);
         boolean encLooksEncrypted = DbFileCrypto.looksLikeKeeplyEncrypted(encrypted);
         boolean encLooksPlain = DbFileCrypto.looksLikePlainSqlite(encrypted);
-
         boolean legacyExists = Files.exists(legacyPlain);
         boolean legacyLooksPlain = DbFileCrypto.looksLikePlainSqlite(legacyPlain);
-
         boolean legacyWal = Files.exists(legacyPlain.resolveSibling(legacyPlain.getFileName().toString() + "-wal"));
         boolean legacyShm = Files.exists(legacyPlain.resolveSibling(legacyPlain.getFileName().toString() + "-shm"));
-
         boolean runtimeExists = Files.exists(runtime);
         boolean runtimeWal = Files.exists(runtime.resolveSibling(runtime.getFileName().toString() + "-wal"));
         boolean runtimeShm = Files.exists(runtime.resolveSibling(runtime.getFileName().toString() + "-shm"));
-
-        return new DbEncryptionStatus(
-                enabled,
-                encrypted,
-                encryptedExists,
-                encLooksEncrypted,
-                encLooksPlain,
-                legacyPlain,
-                legacyExists,
-                legacyLooksPlain,
-                legacyWal,
-                legacyShm,
-                runtime,
-                runtimeExists,
-                runtimeWal,
-                runtimeShm
-        );
+        return new DbEncryptionStatus(enabled, encrypted, encryptedExists, encLooksEncrypted, encLooksPlain, legacyPlain, legacyExists, legacyLooksPlain, legacyWal, legacyShm, runtime, runtimeExists, runtimeWal, runtimeShm);
     }
-
     public record SelfTestResult(boolean ok, String report) {}
-
     public static SelfTestResult runBasicSelfTests() {
         StringBuilder r = new StringBuilder();
         boolean ok = true;
-
         try {
             DbEncryptionStatus s = getEncryptionStatus();
             r.append("Criptografia habilitada: ").append(s.encryptionEnabled()).append('\n');
@@ -133,7 +74,6 @@ public final class DatabaseBackup {
             r.append("Plaintext legado existe: ").append(s.legacyPlainExists()).append('\n');
             r.append("Runtime existe agora: ").append(s.runtimePlainExists()).append('\n');
             r.append('\n');
-
             if (s.encryptionEnabled()) {
                 if (!s.encryptedFileExists() || !s.encryptedLooksEncrypted() || s.encryptedLooksPlainSqlite()) {
                     ok = false;
@@ -144,22 +84,18 @@ public final class DatabaseBackup {
             ok = false;
             r.append("[FAIL] Status do DB falhou: ").append(e.getMessage()).append('\n');
         }
-
         try {
             Path dir = Files.createTempDirectory("keeply-selftest-");
             Path runtime = dir.resolve("self.runtime.sqlite");
             Path enc = dir.resolve("self.keeply.enc");
             Path restored = dir.resolve("self.restored.sqlite");
-
             byte[] payload = "keeply-selftest".getBytes(StandardCharsets.UTF_8);
             Files.write(runtime, payload);
-
             DbFileCrypto.encryptFromRuntime(runtime, enc, "test-pass");
             if (!DbFileCrypto.looksLikeKeeplyEncrypted(enc)) {
                 ok = false;
                 r.append("[FAIL] Roundtrip: .enc não tem header KEEPLYENC\n");
             }
-
             DbFileCrypto.decryptToRuntime(enc, restored, "test-pass");
             byte[] out = Files.readAllBytes(restored);
             if (!Arrays.equals(payload, out)) {
@@ -168,7 +104,6 @@ public final class DatabaseBackup {
             } else {
                 r.append("[OK] Roundtrip AES-GCM passou\n");
             }
-
             try {
                 DbFileCrypto.decryptToRuntime(enc, dir.resolve("wrong.sqlite"), "wrong");
                 ok = false;
@@ -176,21 +111,17 @@ public final class DatabaseBackup {
             } catch (Exception expected) {
                 r.append("[OK] Senha errada falha (esperado)\n");
             }
-
         } catch (Exception e) {
             ok = false;
             r.append("[FAIL] Roundtrip AES-GCM falhou: ").append(e.getMessage()).append('\n');
         }
-
         return new SelfTestResult(ok, r.toString());
     }
-
     private static String removeSuffix(String s, String suffix) {
         if (s == null || suffix == null) return s;
         if (s.endsWith(suffix)) return s.substring(0, s.length() - suffix.length());
         return s;
     }
-
     private static synchronized void ensureShutdownHook() {
         if (shutdownHookRegistered) return;
         shutdownHookRegistered = true;
@@ -201,47 +132,27 @@ public final class DatabaseBackup {
             }
         }, "keeply-db-shutdown"));
     }
-
     private static synchronized void createDataSource() {
         if (dataSource != null) return;
-
         HikariConfig hc = new HikariConfig();
         hc.setJdbcUrl(Config.getDbUrl());
-
-        // SQLite não gosta de muita concorrência
-        hc.setMaximumPoolSize(4);
+        hc.setMaximumPoolSize(2);
         hc.setMinimumIdle(1);
         hc.setConnectionTimeout(10_000);
         hc.setValidationTimeout(5_000);
         hc.setPoolName("keeply-sqlite");
-
         hc.setConnectionTestQuery("SELECT 1");
-
-        // Pragmas por conexão
-        // - Com criptografia ON: usa DELETE (evita WAL/shm sobrar e confundir persistência)
-        // - OFF: WAL normal é melhor
-        if (Config.isDbEncryptionEnabled()) {
-            hc.setConnectionInitSql("""
-                PRAGMA foreign_keys=ON;
-                PRAGMA journal_mode=DELETE;
-                PRAGMA synchronous=FULL;
-                PRAGMA busy_timeout=10000;
-                PRAGMA temp_store=MEMORY;
-                """);
-        } else {
-            hc.setConnectionInitSql("""
-                PRAGMA foreign_keys=ON;
-                PRAGMA journal_mode=WAL;
-                PRAGMA wal_autocheckpoint=2000;
-                PRAGMA synchronous=NORMAL;
-                PRAGMA busy_timeout=10000;
-                PRAGMA temp_store=MEMORY;
-                """);
-        }
-
+        hc.setConnectionInitSql("""
+            PRAGMA foreign_keys=ON;
+            PRAGMA journal_mode=WAL;
+            PRAGMA wal_autocheckpoint=2000;
+            PRAGMA synchronous=NORMAL;
+            PRAGMA busy_timeout=10000;
+            PRAGMA temp_store=MEMORY;
+            PRAGMA cache_size=-20000;
+            """);
         dataSource = new HikariDataSource(hc);
     }
-
     public static synchronized void init() {
         if (dataSource == null) {
             if (Config.isDbEncryptionEnabled()) {
@@ -256,28 +167,20 @@ public final class DatabaseBackup {
         }
         migrateIfNeeded();
     }
-
     private static void prepareRuntimeDbFile() {
         try {
             var encrypted = Config.getEncryptedDbFilePath();
             var runtime = Config.getRuntimeDbFilePath();
-
             Files.createDirectories(runtime.toAbsolutePath().getParent());
             Files.createDirectories(encrypted.toAbsolutePath().getParent());
-
             var runtimeWal = runtime.resolveSibling(runtime.getFileName().toString() + "-wal");
             var runtimeShm = runtime.resolveSibling(runtime.getFileName().toString() + "-shm");
-
             try { Files.deleteIfExists(runtime); } catch (Exception ignored) {}
             try { Files.deleteIfExists(runtimeWal); } catch (Exception ignored) {}
             try { Files.deleteIfExists(runtimeShm); } catch (Exception ignored) {}
-
             if (Files.exists(encrypted)) {
                 if (DbFileCrypto.looksLikePlainSqlite(encrypted)) {
-                    throw new IllegalStateException(
-                            "DB encryption habilitada, mas o arquivo persistido parece SQLite plaintext: " + encrypted +
-                            ". Apague esse arquivo ou garanta o sufixo .enc (Config.getEncryptedDbFilePath)."
-                    );
+                    throw new IllegalStateException("DB encryption habilitada, mas o arquivo persistido parece SQLite plaintext: " + encrypted + ". Apague esse arquivo ou garanta o sufixo .enc (Config.getEncryptedDbFilePath).");
                 }
                 DbFileCrypto.decryptToRuntime(encrypted, runtime, Config.getSecretKey());
             }
@@ -285,34 +188,18 @@ public final class DatabaseBackup {
             throw new IllegalStateException("Falha ao preparar DB criptografado (arquivo runtime)", e);
         }
     }
-
-    /**
-     * Garante que WAL (se existir) foi aplicado no DB principal antes de criptografar/copiar.
-     */
     private static void checkpointSqliteIfPossible() {
         if (dataSource == null) return;
-        try (Connection c = dataSource.getConnection();
-             Statement st = c.createStatement()) {
-
-            // FULL primeiro (aplica tudo), depois TRUNCATE (tenta remover WAL)
+        try (Connection c = dataSource.getConnection(); Statement st = c.createStatement()) {
             try { st.execute("PRAGMA wal_checkpoint(FULL);"); } catch (SQLException ignored) {}
             try { st.execute("PRAGMA wal_checkpoint(TRUNCATE);"); } catch (SQLException ignored) {}
             try { st.execute("PRAGMA optimize;"); } catch (SQLException ignored) {}
-
         } catch (SQLException ignored) {
         }
     }
-
     private static synchronized void migrateIfNeeded() {
         if (migrated) return;
-
-        Flyway flyway = Flyway.configure()
-                .dataSource(dataSource)
-                .locations("classpath:db/migration")
-                .baselineOnMigrate(true)
-                .baselineVersion("0")
-                .load();
-
+        Flyway flyway = Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").baselineOnMigrate(true).baselineVersion("0").load();
         try {
             try {
                 flyway.migrate();
@@ -327,35 +214,24 @@ public final class DatabaseBackup {
             throw new IllegalStateException("Flyway migration failed", e);
         }
     }
-
     public static synchronized void shutdown() {
         if (Config.isDbEncryptionEnabled()) {
-            // aplica WAL no arquivo principal antes de salvar
             checkpointSqliteIfPossible();
         }
-
-        // Fecha o pool antes de criptografar (reduz chance de writer aberto)
         if (dataSource != null) {
             try { dataSource.close(); } catch (RuntimeException ignored) {}
             dataSource = null;
         }
-
         jdbi = null;
         migrated = false;
-
         if (Config.isDbEncryptionEnabled()) {
             try {
                 var runtime = Config.getRuntimeDbFilePath();
                 var encrypted = Config.getEncryptedDbFilePath();
-
                 Files.createDirectories(encrypted.toAbsolutePath().getParent());
-
                 var runtimeWal = runtime.resolveSibling(runtime.getFileName().toString() + "-wal");
                 var runtimeShm = runtime.resolveSibling(runtime.getFileName().toString() + "-shm");
-
-                // Grava .enc de forma atômica (tmp -> move)
                 DbFileCrypto.encryptFromRuntime(runtime, encrypted, Config.getSecretKey());
-
                 try { Files.deleteIfExists(runtime); } catch (Exception ignored) {}
                 try { Files.deleteIfExists(runtimeWal); } catch (Exception ignored) {}
                 try { Files.deleteIfExists(runtimeShm); } catch (Exception ignored) {}
@@ -364,7 +240,6 @@ public final class DatabaseBackup {
             }
         }
     }
-
     public static synchronized void persistEncryptedSnapshot() {
         if (!Config.isDbEncryptionEnabled()) return;
         try {
@@ -377,47 +252,29 @@ public final class DatabaseBackup {
             logger.warn("Falha ao persistir snapshot criptografado", e);
         }
     }
-
     public static Jdbi jdbi() {
         init();
         return jdbi;
     }
-
     public static Connection openSingleConnection() throws SQLException {
         init();
         if (dataSource == null) throw new SQLException("Datasource not initialized");
-        // Não força autoCommit=false aqui; deixe o chamador/JDBI cuidar de transação
         return dataSource.getConnection();
     }
-
     public static void safeClose(Connection c) {
         if (c == null) return;
         try { c.close(); } catch (SQLException ignored) {}
     }
 }
-
-/**
- * Utilitário de criptografia do arquivo (AES-GCM + PBKDF2).
- *
- * Formato:
- *   MAGIC "KEEPLYENC" + VERSION (1 byte)
- *   SALT (16) + NONCE (12)
- *   CIPHERTEXT (AES-GCM)
- */
 final class DbFileCrypto {
-
     private static final byte[] MAGIC = "KEEPLYENC".getBytes(StandardCharsets.US_ASCII);
     private static final byte VERSION = 1;
-
     private static final int SALT_LEN = 16;
     private static final int NONCE_LEN = 12;
-    private static final int PBKDF2_ITERS = 120_000;
+    private static final int PBKDF2_ITERS = 250_000;
     private static final int KEY_BITS = 256;
-
     private static final int GCM_TAG_BITS = 128;
-
     private DbFileCrypto() {}
-
     static boolean looksLikePlainSqlite(Path file) {
         if (file == null || !Files.exists(file)) return false;
         try (InputStream in = Files.newInputStream(file)) {
@@ -428,7 +285,6 @@ final class DbFileCrypto {
             return false;
         }
     }
-
     static boolean looksLikeKeeplyEncrypted(Path file) {
         if (file == null || !Files.exists(file)) return false;
         try (InputStream in = Files.newInputStream(file)) {
@@ -443,42 +299,26 @@ final class DbFileCrypto {
             return false;
         }
     }
-
     static void decryptToRuntime(Path encryptedFile, Path runtimeSqliteFile, String passphrase) throws java.io.IOException {
         if (!Files.exists(encryptedFile)) return;
-
         Files.createDirectories(runtimeSqliteFile.toAbsolutePath().getParent());
-
         Path tmp = runtimeSqliteFile.resolveSibling(runtimeSqliteFile.getFileName().toString() + ".tmp");
-
         try (InputStream in = Files.newInputStream(encryptedFile)) {
             byte[] magic = in.readNBytes(MAGIC.length);
-            if (magic.length != MAGIC.length) {
-                throw new IllegalStateException("Arquivo de DB criptografado inválido (magic curto)");
-            }
+            if (magic.length != MAGIC.length) throw new IllegalStateException("Arquivo de DB criptografado inválido (magic curto)");
             for (int i = 0; i < MAGIC.length; i++) {
-                if (magic[i] != MAGIC[i]) {
-                    throw new IllegalStateException("Arquivo de DB criptografado inválido (magic mismatch)");
-                }
+                if (magic[i] != MAGIC[i]) throw new IllegalStateException("Arquivo de DB criptografado inválido (magic mismatch)");
             }
             int version = in.read();
-            if (version != VERSION) {
-                throw new IllegalStateException("Versão de criptografia não suportada: " + version);
-            }
-
+            if (version != VERSION) throw new IllegalStateException("Versão de criptografia não suportada: " + version);
             byte[] salt = in.readNBytes(SALT_LEN);
             byte[] nonce = in.readNBytes(NONCE_LEN);
-            if (salt.length != SALT_LEN || nonce.length != NONCE_LEN) {
-                throw new IllegalStateException("Arquivo de DB criptografado inválido (salt/nonce)");
-            }
-
+            if (salt.length != SALT_LEN || nonce.length != NONCE_LEN) throw new IllegalStateException("Arquivo de DB criptografado inválido (salt/nonce)");
             try {
                 SecretKey key = deriveKey(passphrase, salt);
                 Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
                 cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
-
-                try (FileChannel channel = FileChannel.open(tmp, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-                     OutputStream out = Channels.newOutputStream(channel)) {
+                try (FileChannel channel = FileChannel.open(tmp, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE); OutputStream out = Channels.newOutputStream(channel)) {
                     byte[] buf = new byte[64 * 1024];
                     int read;
                     while ((read = in.read(buf)) != -1) {
@@ -489,45 +329,35 @@ final class DbFileCrypto {
                     if (finalPt != null && finalPt.length > 0) out.write(finalPt);
                     channel.force(true);
                 }
-
                 try {
                     Files.move(tmp, runtimeSqliteFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
                 } catch (Exception atomicFail) {
                     Files.move(tmp, runtimeSqliteFile, StandardCopyOption.REPLACE_EXISTING);
                 }
-
             } catch (GeneralSecurityException e) {
                 try { Files.deleteIfExists(tmp); } catch (Exception ignored) {}
                 throw new java.io.IOException("Falha ao descriptografar DB.", e);
             }
         }
     }
-
     static void encryptFromRuntime(Path runtimeSqliteFile, Path encryptedFile, String passphrase) throws java.io.IOException {
         if (!Files.exists(runtimeSqliteFile)) return;
-
         Files.createDirectories(encryptedFile.toAbsolutePath().getParent());
-
         Path tmp = encryptedFile.resolveSibling(encryptedFile.getFileName().toString() + ".tmp");
-
         try {
             SecureRandom rng = new SecureRandom();
             byte[] salt = new byte[SALT_LEN];
             byte[] nonce = new byte[NONCE_LEN];
             rng.nextBytes(salt);
             rng.nextBytes(nonce);
-
             SecretKey key = deriveKey(passphrase, salt);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, nonce));
-
-              try (FileChannel channel = FileChannel.open(tmp, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-                  OutputStream out = Channels.newOutputStream(channel)) {
+            try (FileChannel channel = FileChannel.open(tmp, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE); OutputStream out = Channels.newOutputStream(channel)) {
                 out.write(MAGIC);
                 out.write(VERSION);
                 out.write(salt);
                 out.write(nonce);
-
                 try (InputStream in = Files.newInputStream(runtimeSqliteFile)) {
                     byte[] buf = new byte[64 * 1024];
                     int read;
@@ -540,19 +370,16 @@ final class DbFileCrypto {
                 }
                 channel.force(true);
             }
-
             try {
                 Files.move(tmp, encryptedFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } catch (Exception atomicFail) {
                 Files.move(tmp, encryptedFile, StandardCopyOption.REPLACE_EXISTING);
             }
-
         } catch (GeneralSecurityException e) {
             try { Files.deleteIfExists(tmp); } catch (Exception ignored) {}
             throw new java.io.IOException("Falha ao criptografar DB.", e);
         }
     }
-
     private static SecretKey deriveKey(String passphrase, byte[] salt) throws GeneralSecurityException {
         PBEKeySpec spec = new PBEKeySpec(passphrase.toCharArray(), salt, PBKDF2_ITERS, KEY_BITS);
         try {

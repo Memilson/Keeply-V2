@@ -23,6 +23,7 @@ import com.keeply.app.blob.BlobStore;
 import com.keeply.app.config.Config;
 import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.database.KeeplyDao;
+import com.keeply.app.screen.BackupScreen;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
 
 import javafx.animation.KeyFrame;
@@ -610,7 +611,6 @@ public final class BackupController {
             Consumer<String> scanLog = logBus.throttled(250);
 
             try {
-                logNow(">> Conectando ao Banco de Dados...");
                 ui(() -> {
                     model.phaseProperty.set("Validando metadados...");
                     model.progressProperty.set(-1);
@@ -622,9 +622,6 @@ public final class BackupController {
                 // Se seu DatabaseBackup.init() não aplica PRAGMAs, aplique aqui:
                 applyFastSqlitePragmasBestEffort();
 
-                logNow(">> Iniciando motor de metadados...");
-
-                long t0 = System.nanoTime();
                 scanId = Backup.runScan(
                     Path.of(rootPath),
                     Path.of(backupDest),
@@ -633,7 +630,6 @@ public final class BackupController {
                     cancelRequested,
                     scanLog
                 );
-                scanLog.accept(">> Scan finalizado em " + java.time.Duration.ofNanos(System.nanoTime() - t0));
 
                 try {
                     Long firstId = DatabaseBackup.jdbi().withExtension(
@@ -649,7 +645,6 @@ public final class BackupController {
                         model.progressProperty.set(-1);
                     });
 
-                    long t1 = System.nanoTime();
                     backupResult = BlobStore.runBackupIncremental(
                             Path.of(rootPath),
                             config,
@@ -668,7 +663,6 @@ public final class BackupController {
                                 }
                             })
                     );
-                    scanLog.accept(">> Backup finalizado em " + java.time.Duration.ofNanos(System.nanoTime() - t1));
                 } else {
                     historyStatus = "CANCELED";
                 }

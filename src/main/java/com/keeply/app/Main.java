@@ -6,10 +6,10 @@ import java.util.Objects;
 import com.keeply.app.database.DatabaseBackup;
 import com.keeply.app.inventory.BackupController;
 import com.keeply.app.inventory.BackupHistoryScreen;
-import com.keeply.app.inventory.BackupScreen;
 import com.keeply.app.inventory.InventoryController;
-import com.keeply.app.inventory.InventoryScreen;
-import com.keeply.app.overview.OverviewScreen;
+import com.keeply.app.screen.BackupScreen;
+import com.keeply.app.screen.InventoryScreen;
+import com.keeply.app.screen.OverviewScreen;
 import com.keeply.app.templates.KeeplyTemplate;
 
 import io.github.cdimascio.dotenv.Dotenv;
