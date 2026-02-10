@@ -32,6 +32,11 @@ public final class Config {
     private static final String PROP_DB_ENCRYPTION = "keeply.dbEncryption";
     private static final String PROP_SECRET_KEY = "keeply.secretKey";
     private static final String PROP_DATA_DIR = "keeply.dataDir";
+    private static final String PREF_SCHEDULE_ENABLED = "backup_schedule_enabled";
+    private static final String PREF_SCHEDULE_MODE = "backup_schedule_mode"; // DAILY | INTERVAL
+    private static final String PREF_SCHEDULE_TIME = "backup_schedule_time"; // HH:mm
+    private static final String PREF_SCHEDULE_INTERVAL_MIN = "backup_schedule_interval_min"; // minutes
+    private static final String PREF_BACKUP_MODE = "backup_mode"; // INCREMENTAL | FULL
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Config.class);
     private static final Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
     private static volatile String cachedDbPathKey;
@@ -127,6 +132,60 @@ public final class Config {
         if (!enabled) {
             prefsPutBoolean("backup_password_active", false);
         }
+    }
+
+    // --- Agendamento (preferências) ---
+    public static boolean isScheduleEnabled() {
+        return prefsGetBoolean(PREF_SCHEDULE_ENABLED, false);
+    }
+
+    public static void setScheduleEnabled(boolean enabled) {
+        prefsPutBoolean(PREF_SCHEDULE_ENABLED, enabled);
+    }
+
+    public static String getScheduleMode() {
+        String v = prefsGet(PREF_SCHEDULE_MODE, "DAILY");
+        return (v == null || v.isBlank()) ? "DAILY" : v;
+    }
+
+    public static void setScheduleMode(String mode) {
+        if (mode == null || mode.isBlank()) mode = "DAILY";
+        prefsPut(PREF_SCHEDULE_MODE, mode);
+    }
+
+    public static String getScheduleTime() {
+        String v = prefsGet(PREF_SCHEDULE_TIME, "22:00");
+        return (v == null || v.isBlank()) ? "22:00" : v;
+    }
+
+    public static void setScheduleTime(String time) {
+        if (time == null || time.isBlank()) time = "22:00";
+        prefsPut(PREF_SCHEDULE_TIME, time);
+    }
+
+    public static int getScheduleIntervalMinutes() {
+        String v = prefsGet(PREF_SCHEDULE_INTERVAL_MIN, "120");
+        try {
+            return Integer.parseInt(v);
+        } catch (Exception ignored) {
+            return 120;
+        }
+    }
+
+    public static void setScheduleIntervalMinutes(int minutes) {
+        int safe = Math.max(15, Math.min(minutes, 1440));
+        prefsPut(PREF_SCHEDULE_INTERVAL_MIN, Integer.toString(safe));
+    }
+
+    // --- Modo de backup ---
+    public static String getBackupMode() {
+        String v = prefsGet(PREF_BACKUP_MODE, "INCREMENTAL");
+        return (v == null || v.isBlank()) ? "INCREMENTAL" : v;
+    }
+
+    public static void setBackupMode(String mode) {
+        if (mode == null || mode.isBlank()) mode = "INCREMENTAL";
+        prefsPut(PREF_BACKUP_MODE, mode);
     }
 
     public static boolean isBackupEncryptionEnabled() {

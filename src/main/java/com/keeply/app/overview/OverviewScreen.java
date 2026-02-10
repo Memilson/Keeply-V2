@@ -366,7 +366,7 @@ public final class OverviewScreen {
             return row;
         });
 
-        table.getColumns().setAll(cName, cPid, cValue);
+        table.getColumns().setAll(java.util.List.of(cName, cPid, cValue));
         return table;
     }
 
@@ -395,7 +395,7 @@ public final class OverviewScreen {
             return row;
         });
 
-        table.getColumns().setAll(cIf, cValue);
+        table.getColumns().setAll(java.util.List.of(cIf, cValue));
         return table;
     }
 

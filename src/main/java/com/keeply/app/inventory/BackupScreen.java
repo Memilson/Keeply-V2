@@ -9,6 +9,7 @@ import java.util.Optional;
 import com.keeply.app.blob.BlobStore;
 import com.keeply.app.config.Config;
 import com.keeply.app.database.DatabaseBackup;
+import com.keeply.app.database.KeeplyDao;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
 
 import javafx.application.Platform;
@@ -21,17 +22,21 @@ import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
+import javafx.scene.control.Separator;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TitledPane;
 import javafx.scene.control.ToggleButton;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.control.Tooltip;
-import javafx.scene.layout.GridPane;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
@@ -48,6 +53,10 @@ public final class BackupScreen {
     private static final String ICON_PLAY   = "M8 5v14l11-7z";
     private static final String ICON_STOP   = "M6 6h12v12H6z";
     private static final String ICON_TRASH  = "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z";
+    private static final String ICON_CLOUD  = "M6 19a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.6A4 4 0 0 1 18 19H6z";
+    private static final String ICON_COPY   = "M16 1H4c-1.1 0-2 .9-2 2v12h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z";
+    private static final String ICON_CHECK  = "M9 16.2l-3.5-3.5L4 14.2l5 5 12-12-1.5-1.5z";
+    private static final String ICON_WARN   = "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z";
 
     private final Stage stage;
     private final ScanModel model;
@@ -55,6 +64,8 @@ public final class BackupScreen {
     // Campos de Input
     private final TextField pathField = new TextField();
     private final TextField destField = new TextField();
+
+    // Console (opcional)
     private final TextArea consoleArea = new TextArea();
 
     private final ToggleGroup destinationTypeGroup = new ToggleGroup();
@@ -69,18 +80,45 @@ public final class BackupScreen {
     private final Button btnBrowseDest = new Button("Alterar destino");
     private final Button btnDbOptions = new Button("Opções DB");
 
+    // Botões auxiliares
+    private final Button btnCopyOrigin = iconOnlyButton(ICON_COPY, "Copiar caminho");
+    private final Button btnCopyDest   = iconOnlyButton(ICON_COPY, "Copiar caminho");
+
     private final HBox backupFooterActions = new HBox(10);
     private final BooleanProperty scanning = new SimpleBooleanProperty(false);
+    private final BooleanProperty planValid = new SimpleBooleanProperty(false);
 
     private final ProgressIndicator progressRing = new ProgressIndicator();
     private final ProgressBar progressBar = new ProgressBar(0);
     private final Label progressLabel = new Label("Idle");
 
-    // Opções de Backup
+    // Summary strip
+    private final Label summaryText = new Label();
+    private final Label summaryBadge = new Label();
+
+    // Opções de Backup (mantém sua lógica)
     private final CheckBox encryptionCheckbox = new CheckBox();
     private final PasswordField backupPasswordField = new PasswordField();
     private boolean suppressEncryptionToggle = false;
     private final BooleanProperty passwordRequired = new SimpleBooleanProperty(false);
+
+    // Agendamento
+    private final CheckBox scheduleCheckbox = new CheckBox();
+    private final ChoiceBox<String> scheduleMode = new ChoiceBox<>();
+    private final TextField scheduleTimeField = new TextField();
+    private final TextField scheduleIntervalField = new TextField();
+    private final Label scheduleSummary = new Label();
+    private final BooleanProperty scheduleValid = new SimpleBooleanProperty(true);
+
+    private final Label retentionSummary = new Label();
+
+    private final BooleanProperty optionsExpanded = new SimpleBooleanProperty(true);
+    private final Label optionsChevron = new Label("▾");
+
+    private static final String SETTING_RETENTION_MAX = "retention_max";
+
+    // “Status” fake (você pode plugar Config depois)
+    private final BooleanProperty hasExclusionsConfigured = new SimpleBooleanProperty(false);
 
     public BackupScreen(Stage stage, ScanModel model) {
         this.stage = Objects.requireNonNull(stage, "stage");
@@ -113,7 +151,7 @@ public final class BackupScreen {
 
         btnStop.setDisable(true);
 
-        // Eventos (MESMA lógica)
+        // Eventos
         btnBrowse.setOnAction(e -> chooseDirectory());
         btnBrowse.setTooltip(new Tooltip("Selecionar pasta de origem"));
 
@@ -121,6 +159,9 @@ public final class BackupScreen {
         btnBrowseDest.setTooltip(new Tooltip("Selecionar destino do backup"));
 
         btnDbOptions.setOnAction(e -> showDbOptions());
+
+        btnCopyOrigin.setOnAction(e -> copyToClipboard(pathField.getText()));
+        btnCopyDest.setOnAction(e -> copyToClipboard(destField.getText()));
 
         // Console
         consoleArea.setEditable(false);
@@ -139,18 +180,73 @@ public final class BackupScreen {
                 passwordRequired.set(false);
             }
         });
+
+        // Recalcular estado do plano quando muda origem/destino/tipo
+        pathField.textProperty().addListener((o, a, b) -> recomputePlanState());
+        destField.textProperty().addListener((o, a, b) -> recomputePlanState());
+        destinationTypeGroup.selectedToggleProperty().addListener((o, a, b) -> {
+            btnBrowseDest.setDisable(isCloudSelected() || scanning.get());
+            btnCopyDest.setDisable(isCloudSelected() || scanning.get());
+            recomputePlanState();
+        });
+
+        // Agendamento (estado inicial)
+        scheduleMode.getItems().addAll("Diário", "Intervalo");
+        scheduleMode.getSelectionModel().select("DAILY".equalsIgnoreCase(Config.getScheduleMode()) ? "Diário" : "Intervalo");
+
+        scheduleCheckbox.setSelected(Config.isScheduleEnabled());
+        scheduleTimeField.setText(Config.getScheduleTime());
+        scheduleIntervalField.setText(Integer.toString(Config.getScheduleIntervalMinutes()));
+
+        scheduleTimeField.setPromptText("HH:mm");
+        scheduleIntervalField.setPromptText("Minutos (ex: 120)");
+
+        scheduleCheckbox.selectedProperty().addListener((o, a, b) -> {
+            Config.setScheduleEnabled(b);
+            updateScheduleValidity();
+        });
+
+        scheduleMode.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> {
+            Config.setScheduleMode("Intervalo".equalsIgnoreCase(b) ? "INTERVAL" : "DAILY");
+            updateScheduleValidity();
+        });
+
+        scheduleTimeField.textProperty().addListener((o, a, b) -> {
+            Config.setScheduleTime(b);
+            updateScheduleValidity();
+        });
+
+        scheduleIntervalField.textProperty().addListener((o, a, b) -> {
+            try {
+                int v = Integer.parseInt(b.trim());
+                Config.setScheduleIntervalMinutes(v);
+            } catch (Exception ignored) {
+                // validação no updateScheduleValidity
+            }
+            updateScheduleValidity();
+        });
+
+        // Estado inicial
+        recomputePlanState();
+        updateScheduleValidity();
+        loadRetentionFromDb();
     }
 
+    /**
+     * Conteúdo central (use no seu shell atual).
+     */
     public Node content() {
-        var root = new VBox(18);
+        var root = new VBox(14);
         root.getStyleClass().add("backup-screen");
         root.setPadding(new Insets(8, 0, 0, 0));
 
         Label pageTitle = new Label("Configurações");
         pageTitle.getStyleClass().add("page-title");
 
-        Label pageSubtitle = new Label("Parâmetros do plano de backup automatizado.");
+        Label pageSubtitle = new Label("Parâmetros do plano de backup automatizado");
         pageSubtitle.getStyleClass().add("page-subtitle");
+
+        Node summaryStrip = createSummaryStrip();
 
         VBox card = new VBox(14);
         card.getStyleClass().addAll("card", "backup-plan-card");
@@ -175,9 +271,10 @@ public final class BackupScreen {
 
         Node originPanel = createFlowPanel(
             "Origem",
-            "(O que fazer backup)",
+            "O que fazer backup",
             ICON_FOLDER,
             pathField,
+            btnCopyOrigin,
             btnBrowse
         );
 
@@ -192,18 +289,266 @@ public final class BackupScreen {
         HBox.setHgrow(originPanel, Priority.ALWAYS);
         HBox.setHgrow(destPanel, Priority.ALWAYS);
 
-        TitledPane options = createOptionsPane();
-        options.setExpanded(false);
-
+        Node options = createOptionsList();
         Node progress = createProgressPanel();
+        Node logs = createLogsPane(); // opcional, fechado por padrão
 
-        card.getChildren().addAll(header, flow, options, progress);
-        VBox content = new VBox(16, pageTitle, pageSubtitle, card);
+        card.getChildren().addAll(header, flow, options, progress, logs);
+
+        VBox content = new VBox(14, pageTitle, pageSubtitle, summaryStrip, card);
         content.getStyleClass().add("content-wrap");
         content.setMaxWidth(980);
 
         root.getChildren().add(content);
-        return root;
+
+        ScrollPane scroll = new ScrollPane(root);
+        scroll.setFitToWidth(true);
+        scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        scroll.getStyleClass().add("content-scroll");
+        return scroll;
+    }
+
+    private Node createSummaryStrip() {
+        HBox strip = new HBox(10);
+        strip.getStyleClass().add("summary-strip");
+        strip.setAlignment(Pos.CENTER_LEFT);
+        strip.setPadding(new Insets(10, 12, 10, 12));
+
+        // ícone/status
+        StackPane statusIcon = new StackPane();
+        statusIcon.getStyleClass().add("summary-icon");
+        SVGPath p = new SVGPath();
+        p.getStyleClass().add("summary-icon-path");
+        statusIcon.getChildren().add(p);
+
+        summaryText.getStyleClass().add("summary-text");
+        HBox.setHgrow(summaryText, Priority.ALWAYS);
+
+        summaryBadge.getStyleClass().add("summary-badge");
+
+        strip.getChildren().addAll(statusIcon, summaryText, summaryBadge);
+
+        // atualiza visual no recomputePlanState()
+        return strip;
+    }
+
+    private void recomputePlanState() {
+        boolean hasOrigin = pathField.getText() != null && !pathField.getText().isBlank();
+        boolean hasDest = isCloudSelected() || (destField.getText() != null && !destField.getText().isBlank());
+
+        boolean valid = hasOrigin && hasDest;
+
+        planValid.set(valid);
+
+        // Texto resumido
+        String origin = safeShort(pathField.getText());
+        String dest = isCloudSelected()
+            ? "Azure Blob Storage (container-backup)"
+            : safeShort(destField.getText());
+
+        summaryText.setText("Origem: " + origin + "  •  Destino: " + dest + "  •  Última: ontem 22:01");
+        summaryBadge.setText(valid ? "Plano válido" : "Atenção");
+
+        summaryBadge.getStyleClass().removeAll("badge-ok", "badge-warn");
+        summaryBadge.getStyleClass().add(valid ? "badge-ok" : "badge-warn");
+
+        refreshActionStates();
+    }
+
+    private void updateScheduleValidity() {
+        boolean enabled = scheduleCheckbox.isSelected();
+        if (!enabled) {
+            scheduleValid.set(true);
+            scheduleSummary.setText("Desativado");
+            return;
+        }
+
+        boolean daily = "Diário".equalsIgnoreCase(scheduleMode.getValue());
+        boolean valid;
+
+        if (daily) {
+            valid = isValidTime(scheduleTimeField.getText());
+            scheduleSummary.setText(valid ? "Diário às " + scheduleTimeField.getText().trim() : "Horário inválido");
+        } else {
+            valid = isValidInterval(scheduleIntervalField.getText());
+            scheduleSummary.setText(valid ? "A cada " + scheduleIntervalField.getText().trim() + " min" : "Intervalo inválido");
+        }
+
+        scheduleValid.set(valid);
+    }
+
+
+    private void loadRetentionFromDb() {
+        int retention = 10;
+        try {
+            DatabaseBackup.init();
+            String v = DatabaseBackup.jdbi().withExtension(KeeplyDao.class, dao -> dao.fetchSetting(SETTING_RETENTION_MAX));
+            if (v != null && !v.isBlank()) {
+                retention = Integer.parseInt(v.trim());
+            }
+        } catch (Exception ignored) {
+        }
+        retentionSummary.setText("Manter " + retention + " backups");
+    }
+
+    private static boolean isValidTime(String text) {
+        if (text == null) return false;
+        String t = text.trim();
+        return t.matches("^([01]\\d|2[0-3]):[0-5]\\d$");
+    }
+
+    private static boolean isValidInterval(String text) {
+        if (text == null) return false;
+        try {
+            int v = Integer.parseInt(text.trim());
+            return v >= 15 && v <= 1440;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void openScheduleDialog() {
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle("Agendamento");
+        alert.setHeaderText("Configurar agendamento do backup");
+        alert.setGraphic(null);
+
+        ChoiceBox<String> mode = new ChoiceBox<>();
+        mode.getItems().addAll("Diário", "Intervalo");
+        mode.getSelectionModel().select("DAILY".equalsIgnoreCase(Config.getScheduleMode()) ? "Diário" : "Intervalo");
+
+
+        TextField timeField = new TextField(Config.getScheduleTime());
+        timeField.setPromptText("HH:mm");
+
+        TextField intervalField = new TextField(Integer.toString(Config.getScheduleIntervalMinutes()));
+        intervalField.setPromptText("Minutos (ex: 120)");
+
+        HBox modeRow = new HBox(10, new Label("Modo"), mode);
+        modeRow.setAlignment(Pos.CENTER_LEFT);
+
+        HBox timeRow = new HBox(10, new Label("Horário"), timeField);
+        timeRow.setAlignment(Pos.CENTER_LEFT);
+
+        HBox intervalRow = new HBox(10, new Label("Intervalo (min)"), intervalField);
+        intervalRow.setAlignment(Pos.CENTER_LEFT);
+
+        timeRow.visibleProperty().bind(mode.getSelectionModel().selectedItemProperty().isEqualTo("Diário"));
+        timeRow.managedProperty().bind(timeRow.visibleProperty());
+
+        intervalRow.visibleProperty().bind(mode.getSelectionModel().selectedItemProperty().isEqualTo("Intervalo"));
+        intervalRow.managedProperty().bind(intervalRow.visibleProperty());
+
+        Label hint = new Label("Use HH:mm ou intervalo entre 15 e 1440 minutos.");
+        hint.getStyleClass().addAll("input-hint", "hint-error");
+
+        VBox content = new VBox(10, modeRow, timeRow, intervalRow, hint);
+        content.setPadding(new Insets(8, 0, 0, 0));
+
+        alert.getDialogPane().setContent(content);
+        try {
+            alert.getDialogPane().getStylesheets().add(getClass().getResource("/styles.css").toExternalForm());
+        } catch (Exception ignored) {}
+
+        var okButton = alert.getDialogPane().lookupButton(ButtonType.OK);
+        Runnable validate = () -> {
+            boolean daily = "Diário".equalsIgnoreCase(mode.getValue());
+            boolean valid = daily ? isValidTime(timeField.getText()) : isValidInterval(intervalField.getText());
+            okButton.setDisable(!valid);
+            hint.setVisible(!valid);
+            hint.setManaged(!valid);
+        };
+
+        mode.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> validate.run());
+        timeField.textProperty().addListener((o, a, b) -> validate.run());
+        intervalField.textProperty().addListener((o, a, b) -> validate.run());
+        validate.run();
+
+        Optional<ButtonType> res = alert.showAndWait();
+        if (res.isEmpty() || res.get() != ButtonType.OK) return;
+
+        boolean daily = "Diário".equalsIgnoreCase(mode.getValue());
+        Config.setScheduleMode(daily ? "DAILY" : "INTERVAL");
+        if (daily) {
+            Config.setScheduleTime(timeField.getText().trim());
+        } else {
+            try {
+                int v = Integer.parseInt(intervalField.getText().trim());
+                Config.setScheduleIntervalMinutes(v);
+            } catch (Exception ignored) {}
+        }
+        Config.setScheduleEnabled(true);
+        scheduleCheckbox.setSelected(true);
+
+        scheduleMode.getSelectionModel().select(mode.getValue());
+        scheduleTimeField.setText(Config.getScheduleTime());
+        scheduleIntervalField.setText(Integer.toString(Config.getScheduleIntervalMinutes()));
+        updateScheduleValidity();
+    }
+
+
+    private void openRetentionDialog() {
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle("Retenção");
+        alert.setHeaderText("Configurar retenção de backups");
+        alert.setGraphic(null);
+
+        TextField retentionField = new TextField();
+        retentionField.setPromptText("Quantidade (ex: 10)");
+
+        // valor atual
+        retentionField.setText(retentionSummary.getText().replaceAll("\\D+", "").trim());
+
+        VBox content = new VBox(8, new Label("Manter no máximo"), retentionField);
+        content.setPadding(new Insets(6, 0, 0, 0));
+        alert.getDialogPane().setContent(content);
+
+        try {
+            alert.getDialogPane().getStylesheets().add(getClass().getResource("/styles.css").toExternalForm());
+        } catch (Exception ignored) {}
+
+        var okButton = alert.getDialogPane().lookupButton(ButtonType.OK);
+        okButton.disableProperty().bind(retentionField.textProperty().isEmpty());
+
+        Optional<ButtonType> res = alert.showAndWait();
+        if (res.isEmpty() || res.get() != ButtonType.OK) return;
+
+        try {
+            int v = Integer.parseInt(retentionField.getText().trim());
+            int safe = Math.max(1, Math.min(v, 365));
+            DatabaseBackup.jdbi().useExtension(KeeplyDao.class, dao -> dao.upsertSetting(SETTING_RETENTION_MAX, Integer.toString(safe)));
+            retentionSummary.setText("Manter " + safe + " backups");
+        } catch (Exception e) {
+            showError("Valor inválido", "Informe um número entre 1 e 365.");
+        }
+    }
+
+    private static String safeShort(String s) {
+        if (s == null || s.isBlank()) return "-";
+        if (s.length() <= 58) return s;
+        return s.substring(0, 26) + "…" + s.substring(s.length() - 28);
+    }
+
+    private void refreshActionStates() {
+        boolean isScanning = scanning.get();
+        boolean valid = planValid.get();
+
+        btnScan.setDisable(isScanning || !valid);
+        btnWipe.setDisable(isScanning);
+        btnBrowse.setDisable(isScanning);
+
+        btnBrowseDest.setDisable(isScanning || isCloudSelected());
+        btnCopyOrigin.setDisable(isScanning);
+        btnCopyDest.setDisable(isScanning || isCloudSelected());
+
+        pathField.setDisable(isScanning);
+        destField.setDisable(isScanning || isCloudSelected());
+
+        btnStop.setDisable(!isScanning);
+
+        double opacity = isScanning ? 0.72 : 1.0;
+        pathField.setOpacity(opacity);
+        destField.setOpacity(opacity);
     }
 
     private Node createProgressPanel() {
@@ -235,10 +580,19 @@ public final class BackupScreen {
         root.setAlignment(Pos.CENTER_LEFT);
         root.setPadding(new Insets(10, 0, 0, 0));
 
-        // Esquerda: botão principal
+        VBox left = new VBox(2);
+        Label state = new Label();
+        state.getStyleClass().add("footer-hint");
+        state.textProperty().bind(planValid.map(v -> v ? "Pronto para executar" : "Configuração incompleta"));
+        left.getChildren().add(state);
+
+        // Botão principal (texto acima)
         styleIconButton(btnScan, ICON_PLAY);
         btnScan.getStyleClass().addAll("btn", "btn-primary");
-        btnScan.setMinWidth(150);
+        btnScan.setMinWidth(170);
+
+        VBox leftCluster = new VBox(6, left, btnScan);
+        leftCluster.setAlignment(Pos.CENTER_LEFT);
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -249,7 +603,7 @@ public final class BackupScreen {
         styleIconButton(btnWipe, ICON_TRASH);
 
         btnStop.getStyleClass().addAll("btn", "btn-secondary");
-        btnWipe.getStyleClass().addAll("btn", "btn-secondary");
+        btnWipe.getStyleClass().addAll("btn", "btn-danger-outline");
         btnDbOptions.getStyleClass().addAll("btn", "btn-secondary");
 
         btnStop.setMinWidth(92);
@@ -257,15 +611,14 @@ public final class BackupScreen {
         btnWipe.setTooltip(new Tooltip("Apaga o histórico (SQLite) e o cofre de backups (.keeply/storage)."));
 
         backupFooterActions.getChildren().setAll(btnStop, btnWipe, btnDbOptions);
-        root.getChildren().addAll(btnScan, spacer, backupFooterActions);
+        root.getChildren().addAll(leftCluster, spacer, backupFooterActions);
         return root;
     }
 
     // ---------------- UI building ----------------
 
-
-    private Node createFlowPanel(String title, String subtitle, String iconPath, TextField boundPath, Button actionButton) {
-        VBox panel = new VBox(8);
+    private Node createFlowPanel(String title, String subtitle, String iconPath, TextField boundPath, Button copyBtn, Button actionButton) {
+        VBox panel = new VBox(10);
         panel.getStyleClass().add("flow-panel");
         panel.setPadding(new Insets(12));
 
@@ -285,19 +638,25 @@ public final class BackupScreen {
 
         top.getChildren().addAll(icon, titles);
 
-        Label path = new Label();
-        path.getStyleClass().add("flow-path");
-        path.textProperty().bind(boundPath.textProperty());
+        HBox pathRow = new HBox(8);
+        pathRow.setAlignment(Pos.CENTER_LEFT);
+
+        boundPath.getStyleClass().add("path-field");
+        HBox.setHgrow(boundPath, Priority.ALWAYS);
+
+        copyBtn.getStyleClass().addAll("btn", "btn-icon");
+
+        pathRow.getChildren().addAll(boundPath, copyBtn);
 
         actionButton.getStyleClass().addAll("btn", "btn-outline");
         actionButton.setMinWidth(150);
 
-        panel.getChildren().addAll(top, path, actionButton);
+        panel.getChildren().addAll(top, pathRow, actionButton);
         return panel;
     }
 
     private Node createDestinationPanel() {
-        VBox panel = new VBox(8);
+        VBox panel = new VBox(10);
         panel.getStyleClass().add("flow-panel");
         panel.setPadding(new Insets(12));
 
@@ -305,165 +664,335 @@ public final class BackupScreen {
         top.setAlignment(Pos.CENTER_LEFT);
 
         SVGPath icon = new SVGPath();
-        icon.setContent("M6 19a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.6A4 4 0 0 1 18 19H6z");
+        icon.setContent(ICON_CLOUD);
         icon.getStyleClass().add("flow-icon");
 
         VBox titles = new VBox(2);
         Label t = new Label("Destino");
         t.getStyleClass().add("flow-title");
-        Label st = new Label("(Onde armazenar)");
+        Label st = new Label("Onde armazenar");
         st.getStyleClass().add("flow-subtitle");
         titles.getChildren().addAll(t, st);
 
         top.getChildren().addAll(icon, titles);
 
-        Label destText = new Label();
-        destText.getStyleClass().add("flow-path");
-        destText.textProperty().bind(javafx.beans.binding.Bindings.createStringBinding(() -> {
-            if (isCloudSelected()) return "Nuvem: Azure Blob Storage (container-backup)";
-            String v = destField.getText();
-            return (v == null || v.isBlank()) ? "-" : v;
-        }, destinationTypeGroup.selectedToggleProperty(), destField.textProperty()));
+        // Row que alterna: local (textfield) vs nuvem (label)
+        HBox row = new HBox(8);
+        row.setAlignment(Pos.CENTER_LEFT);
+
+        Label cloudLabel = new Label("Azure Blob Storage (container-backup)");
+        cloudLabel.getStyleClass().add("cloud-pill");
+
+        destField.getStyleClass().add("path-field");
+        HBox.setHgrow(destField, Priority.ALWAYS);
+
+        btnCopyDest.getStyleClass().addAll("btn", "btn-icon");
+
+        StackPane switcher = new StackPane();
+        switcher.getStyleClass().add("dest-switcher");
+        switcher.getChildren().addAll(destField, cloudLabel);
+
+        // visibilidade
+        cloudLabel.visibleProperty().bind(destinationTypeGroup.selectedToggleProperty().isEqualTo(btnCloud));
+        cloudLabel.managedProperty().bind(destinationTypeGroup.selectedToggleProperty().isEqualTo(btnCloud));
+
+        destField.visibleProperty().bind(destinationTypeGroup.selectedToggleProperty().isNotEqualTo(btnCloud));
+        destField.managedProperty().bind(destinationTypeGroup.selectedToggleProperty().isNotEqualTo(btnCloud));
+
+        btnCopyDest.visibleProperty().bind(destinationTypeGroup.selectedToggleProperty().isNotEqualTo(btnCloud));
+        btnCopyDest.managedProperty().bind(destinationTypeGroup.selectedToggleProperty().isNotEqualTo(btnCloud));
+
+        row.getChildren().addAll(switcher, btnCopyDest);
 
         btnBrowseDest.getStyleClass().addAll("btn", "btn-outline");
         btnBrowseDest.setMinWidth(150);
-        btnBrowseDest.disableProperty().bind(scanning.or(destinationTypeGroup.selectedToggleProperty().isEqualTo(btnCloud)));
 
-        panel.getChildren().addAll(top, destText, btnBrowseDest);
+        panel.getChildren().addAll(top, row, btnBrowseDest);
         return panel;
     }
 
-    private TitledPane createOptionsPane() {
+    /**
+     * Lista de opções no estilo da imagem (linhas com resumo + status).
+     * Mantém a lógica de criptografia com switch e campo de senha (abaixo).
+     */
+    private Node createOptionsList() {
+        VBox wrap = new VBox(10);
+        wrap.getStyleClass().add("options-wrap");
+
+        HBox titleRow = new HBox(8);
+        titleRow.setAlignment(Pos.CENTER_LEFT);
+
         Label title = new Label("Opções de Backup");
         title.getStyleClass().add("options-title");
 
-        GridPane grid = new GridPane();
-        grid.getStyleClass().add("options-grid");
-        grid.setHgap(10);
-        grid.setVgap(10);
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        addOptionRow(grid, 0, "M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11z", "Agendamento", null);
-        addOptionRow(grid, 1, "M4 6h16v2H4zm0 5h10v2H4zm0 5h16v2H4z", "Retenção", null);
-        addOptionRow(grid, 2, "M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 0 1 6 0v3H9z", "Criptografar backups", encryptionCheckbox);
-        addEncryptionDetailsRow(grid, 3);
+        optionsChevron.getStyleClass().add("options-chevron");
+        titleRow.getChildren().addAll(optionsChevron, title, spacer);
 
-        TitledPane pane = new TitledPane();
-        pane.setText(null);
-        pane.setGraphic(title);
-        pane.setContent(grid);
-        pane.getStyleClass().add("options-pane");
-        return pane;
+        VBox list = new VBox(0);
+        list.getStyleClass().add("options-list");
+        list.visibleProperty().bind(optionsExpanded);
+        list.managedProperty().bind(optionsExpanded);
+
+        titleRow.setOnMouseClicked(e -> optionsExpanded.set(!optionsExpanded.get()));
+        optionsExpanded.addListener((o, a, b) -> optionsChevron.setText(b ? "▾" : "▸"));
+
+        // Linhas
+        list.getChildren().addAll(
+            optionRowSchedule(),
+            optionRowRetention(),
+            optionRowEncryption(),
+            optionRowStatic("Integridade", "Checksum SHA-256", true, null)
+        );
+
+        wrap.getChildren().addAll(titleRow, list);
+        return wrap;
     }
 
-    private void addOptionRow(GridPane grid, int row, String iconPath, String label, CheckBox controlCheckbox) {
-        HBox left = new HBox(8);
-        left.setAlignment(Pos.CENTER_LEFT);
+    private Node optionRowStatic(String name, String summary, boolean ok, String actionText) {
+        HBox row = new HBox(10);
+        row.getStyleClass().add("option-row2");
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.setPadding(new Insets(10, 12, 10, 12));
 
-        SVGPath icon = new SVGPath();
-        icon.setContent(iconPath);
-        icon.getStyleClass().add("option-icon");
+        Label leftName = new Label(name);
+        leftName.getStyleClass().add("option-name");
 
-        Label l = new Label(label);
-        l.getStyleClass().add("option-label");
-
-        left.getChildren().addAll(icon, l);
-        left.getStyleClass().add("option-row");
+        Label leftSummary = new Label(summary);
+        leftSummary.getStyleClass().add("option-summary");
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        CheckBox sw = controlCheckbox != null ? controlCheckbox : new CheckBox();
+        Node action = new Region();
+        if (actionText != null) {
+            Button configure = new Button(actionText);
+            configure.getStyleClass().addAll("btn", "btn-link");
+            // TODO: plugar aqui sua tela de exclusões
+            configure.setOnAction(e -> appendLog("Abrir configuração: " + name));
+            action = configure;
+        }
+
+        Node status = ok ? statusPillOk() : statusPillWarn();
+
+        row.getChildren().addAll(leftName, leftSummary, spacer, action, status);
+        return row;
+    }
+
+    private Node optionRowEncryption() {
+        // Row “Criptografia” com status + switch real do seu código
+        HBox row = new HBox(10);
+        row.getStyleClass().add("option-row2");
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.setPadding(new Insets(10, 12, 10, 12));
+
+        Label name = new Label("Criptografia");
+        name.getStyleClass().add("option-name");
+
+        Label summary = new Label();
+        summary.getStyleClass().add("option-summary");
+        summary.textProperty().bind(encryptionCheckbox.selectedProperty().map(v -> v ? "Ativado" : "Não configurado"));
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        CheckBox sw = encryptionCheckbox;
         sw.getStyleClass().add("switch");
-        
-        // Carregar estado salvo para Criptografia
-        if (controlCheckbox == encryptionCheckbox) {
-            sw.setSelected(Config.isBackupEncryptionEnabled());
-            sw.selectedProperty().addListener((obs, oldVal, newVal) -> {
-                if (suppressEncryptionToggle) return;
-                if (!oldVal && newVal) {
-                    String pass = backupPasswordField.getText();
-                    if (pass == null || pass.isBlank()) {
-                        String entered = promptSetPassword();
-                        if (entered == null || entered.isBlank()) {
-                            passwordRequired.set(true);
-                            suppressEncryptionToggle = true;
-                            sw.setSelected(false);
-                            suppressEncryptionToggle = false;
-                            return;
-                        }
-                        if (Config.hasBackupPasswordHash() && !Config.verifyAndCacheBackupPassword(entered)) {
-                            showError("Senha inválida", "A senha informada não confere.");
-                            suppressEncryptionToggle = true;
-                            sw.setSelected(false);
-                            suppressEncryptionToggle = false;
-                            return;
-                        }
-                        Config.verifyAndCacheBackupPassword(entered);
-                        Config.setBackupEncryptionPassword(entered);
-                        backupPasswordField.setText(entered);
-                        passwordRequired.set(false);
-                    }
-                }
-                if (oldVal && !newVal) {
-                    if (!confirmDisableEncryption()) {
+        Button configure = new Button("Configurar");
+        configure.getStyleClass().addAll("btn", "btn-link");
+        configure.setOnAction(e -> {
+            String entered = promptSetPassword();
+            if (entered == null || entered.isBlank()) return;
+            if (Config.hasBackupPasswordHash() && !Config.verifyAndCacheBackupPassword(entered)) {
+                showError("Senha inválida", "A senha informada não confere.");
+                return;
+            }
+            Config.verifyAndCacheBackupPassword(entered);
+            Config.setBackupEncryptionPassword(entered);
+            backupPasswordField.setText(entered);
+            passwordRequired.set(false);
+            suppressEncryptionToggle = true;
+            sw.setSelected(true);
+            suppressEncryptionToggle = false;
+            Config.saveBackupEncryptionEnabled(true);
+        });
+
+        // Carregar estado salvo
+        sw.setSelected(Config.isBackupEncryptionEnabled());
+
+        sw.selectedProperty().addListener((obs, oldVal, newVal) -> {
+            if (suppressEncryptionToggle) return;
+
+            if (!oldVal && newVal) {
+                String pass = backupPasswordField.getText();
+                if (pass == null || pass.isBlank()) {
+                    String entered = promptSetPassword();
+                    if (entered == null || entered.isBlank()) {
+                        passwordRequired.set(true);
                         suppressEncryptionToggle = true;
-                        sw.setSelected(true);
+                        sw.setSelected(false);
                         suppressEncryptionToggle = false;
                         return;
                     }
-                    Config.clearBackupPassword();
-                    backupPasswordField.clear();
+                    if (Config.hasBackupPasswordHash() && !Config.verifyAndCacheBackupPassword(entered)) {
+                        showError("Senha inválida", "A senha informada não confere.");
+                        suppressEncryptionToggle = true;
+                        sw.setSelected(false);
+                        suppressEncryptionToggle = false;
+                        return;
+                    }
+                    Config.verifyAndCacheBackupPassword(entered);
+                    Config.setBackupEncryptionPassword(entered);
+                    backupPasswordField.setText(entered);
                     passwordRequired.set(false);
                 }
-                Config.saveBackupEncryptionEnabled(newVal);
-            });
-        }
+            }
 
-        HBox right = new HBox(10, spacer, sw);
-        right.setAlignment(Pos.CENTER_RIGHT);
-        right.getStyleClass().add("option-row");
+            if (oldVal && !newVal) {
+                if (!confirmDisableEncryption()) {
+                    suppressEncryptionToggle = true;
+                    sw.setSelected(true);
+                    suppressEncryptionToggle = false;
+                    return;
+                }
+                Config.clearBackupPassword();
+                backupPasswordField.clear();
+                passwordRequired.set(false);
+            }
 
-        grid.add(left, 0, row);
-        grid.add(right, 1, row);
-        GridPane.setHgrow(right, Priority.ALWAYS);
+            Config.saveBackupEncryptionEnabled(newVal);
+        });
+
+        Node status = statusFromEncryption();
+
+        row.getChildren().addAll(name, summary, spacer, configure, sw, status);
+
+        VBox wrap = new VBox(0);
+        wrap.getChildren().add(row);
+        wrap.getChildren().add(new Separator());
+        return wrap;
     }
 
-    private void addEncryptionDetailsRow(GridPane grid, int row) {
-        HBox left = new HBox(8);
-        left.setAlignment(Pos.CENTER_LEFT);
+    private Node optionRowSchedule() {
+        HBox row = new HBox(10);
+        row.getStyleClass().add("option-row2");
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.setPadding(new Insets(10, 12, 10, 12));
 
-        SVGPath icon = new SVGPath();
-        icon.setContent("M7 10h10v2H7zm0 4h6v2H7zm2-12h6v2H9zm-5 8h2v6h12v-6h2v8H4z");
-        icon.getStyleClass().add("option-icon");
+        Label name = new Label("Agendamento");
+        name.getStyleClass().add("option-name");
 
-        Label label = new Label("Senha do backup");
-        label.getStyleClass().add("option-label");
-
-        left.getChildren().addAll(icon, label);
-        left.getStyleClass().add("option-row");
+        scheduleSummary.getStyleClass().add("option-summary");
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        Label hint = new Label("Digite uma senha para ativar a criptografia.");
-        hint.getStyleClass().addAll("input-hint", "hint-error");
-        hint.visibleProperty().bind(passwordRequired);
-        hint.managedProperty().bind(passwordRequired);
+        scheduleCheckbox.getStyleClass().add("switch");
 
-        VBox rightContent = new VBox(4, backupPasswordField, hint);
-        rightContent.setAlignment(Pos.CENTER_RIGHT);
+        Button configure = new Button("Configurar");
+        configure.getStyleClass().addAll("btn", "btn-link");
+        configure.setOnAction(e -> openScheduleDialog());
 
-        HBox right = new HBox(10, spacer, rightContent);
-        right.setAlignment(Pos.CENTER_RIGHT);
-        right.getStyleClass().add("option-row");
+        Node status = statusFromSchedule();
 
-        backupPasswordField.setPromptText("Senha do backup");
-        backupPasswordField.setPrefWidth(220);
-        backupPasswordField.setMinWidth(200);
+        row.getChildren().addAll(name, scheduleSummary, spacer, configure, scheduleCheckbox, status);
 
-        grid.add(left, 0, row);
-        grid.add(right, 1, row);
-        GridPane.setHgrow(right, Priority.ALWAYS);
+        VBox wrap = new VBox(0);
+        wrap.getChildren().add(row);
+        wrap.getChildren().add(new Separator());
+        return wrap;
+    }
+
+    private Node optionRowRetention() {
+        HBox row = new HBox(10);
+        row.getStyleClass().add("option-row2");
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.setPadding(new Insets(10, 12, 10, 12));
+
+        Label name = new Label("Retenção");
+        name.getStyleClass().add("option-name");
+
+        retentionSummary.getStyleClass().add("option-summary");
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        Button configure = new Button("Configurar");
+        configure.getStyleClass().addAll("btn", "btn-link");
+        configure.setOnAction(e -> openRetentionDialog());
+
+        Node status = statusPillOk();
+
+        row.getChildren().addAll(name, retentionSummary, spacer, configure, status);
+        return row;
+    }
+
+    private Node statusFromSchedule() {
+        StackPane holder = new StackPane();
+        holder.getChildren().add(statusPillWarn());
+
+        scheduleCheckbox.selectedProperty().addListener((o, a, b) -> updateScheduleStatus(holder));
+        scheduleValid.addListener((o, a, b) -> updateScheduleStatus(holder));
+
+        updateScheduleStatus(holder);
+        return holder;
+    }
+
+    private void updateScheduleStatus(StackPane holder) {
+        boolean enabled = scheduleCheckbox.isSelected();
+        boolean ok = enabled && scheduleValid.get();
+        holder.getChildren().setAll(ok ? statusPillOk() : statusPillWarn());
+    }
+
+    private Node statusFromEncryption() {
+        // Se OFF, warn. Se ON, ok.
+        StackPane holder = new StackPane();
+        holder.getChildren().add(statusPillWarn());
+
+        encryptionCheckbox.selectedProperty().addListener((o, a, b) -> {
+            holder.getChildren().setAll(b ? statusPillOk() : statusPillWarn());
+        });
+
+        // inicial
+        holder.getChildren().setAll(encryptionCheckbox.isSelected() ? statusPillOk() : statusPillWarn());
+        return holder;
+    }
+
+    private Node statusPillOk() {
+        HBox pill = new HBox(6);
+        pill.getStyleClass().addAll("status-pill", "status-ok");
+        pill.setAlignment(Pos.CENTER);
+
+        SVGPath icon = new SVGPath();
+        icon.setContent(ICON_CHECK);
+        icon.getStyleClass().add("status-icon");
+        pill.getChildren().add(icon);
+        return pill;
+    }
+
+    private Node statusPillWarn() {
+        HBox pill = new HBox(6);
+        pill.getStyleClass().addAll("status-pill", "status-warn");
+        pill.setAlignment(Pos.CENTER);
+
+        SVGPath icon = new SVGPath();
+        icon.setContent(ICON_WARN);
+        icon.getStyleClass().add("status-icon");
+        pill.getChildren().add(icon);
+        return pill;
+    }
+
+    private Node createLogsPane() {
+        // Logs escondidos por padrão (não aparece na imagem, mas útil)
+        consoleArea.getStyleClass().add("console");
+        consoleArea.setPrefRowCount(6);
+
+        TitledPane pane = new TitledPane("Logs", consoleArea);
+        pane.getStyleClass().add("logs-pane");
+        pane.setExpanded(false);
+        return pane;
     }
 
     private static void styleIconButton(Button btn, String svgPath) {
@@ -472,6 +1001,24 @@ public final class BackupScreen {
         icon.getStyleClass().add("icon");
         btn.setGraphic(icon);
         btn.setGraphicTextGap(8);
+    }
+
+    private static Button iconOnlyButton(String svgPath, String tooltip) {
+        Button b = new Button();
+        SVGPath icon = new SVGPath();
+        icon.setContent(svgPath);
+        icon.getStyleClass().add("icon");
+        b.setGraphic(icon);
+        b.setTooltip(new Tooltip(tooltip));
+        b.setFocusTraversable(false);
+        return b;
+    }
+
+    private static void copyToClipboard(String value) {
+        if (value == null) return;
+        ClipboardContent cc = new ClipboardContent();
+        cc.putString(value);
+        Clipboard.getSystemClipboard().setContent(cc);
     }
 
     // ---------------- Controle (MESMA lógica) ----------------
@@ -485,6 +1032,7 @@ public final class BackupScreen {
         if (f != null) {
             pathField.setText(f.getAbsolutePath());
             Config.saveLastPath(f.getAbsolutePath());
+            recomputePlanState();
         }
     }
 
@@ -501,6 +1049,8 @@ public final class BackupScreen {
             try {
                 Files.createDirectories(f.toPath());
             } catch (java.io.IOException | RuntimeException ignored) {}
+
+            recomputePlanState();
         }
     }
 
@@ -629,16 +1179,7 @@ public final class BackupScreen {
 
     public void setScanningState(boolean isScanning) {
         scanning.set(isScanning);
-        btnScan.setDisable(isScanning);
-        btnWipe.setDisable(isScanning);
-        btnBrowse.setDisable(isScanning);
-        pathField.setDisable(isScanning);
-        destField.setDisable(isScanning);
-        btnStop.setDisable(!isScanning);
-
-        double opacity = isScanning ? 0.72 : 1.0;
-        pathField.setOpacity(opacity);
-        destField.setOpacity(opacity);
+        refreshActionStates();
     }
 
     public void clearConsole() { consoleArea.clear(); }

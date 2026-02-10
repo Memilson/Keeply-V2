@@ -306,6 +306,20 @@ public interface KeeplyDao {
     @RegisterConstructorMapper(SnapshotBlobRow.class)
     List<SnapshotBlobRow> fetchSnapshotBlobs(@Bind("scanId") long scanId);
 
+    // --- Settings (backup) -------------------------------------------------
+
+    @SqlUpdate("""
+        INSERT INTO backup_settings(key, value, updated_at)
+        VALUES(:key, :value, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        """)
+    void upsertSetting(@Bind("key") String key, @Bind("value") String value);
+
+    @SqlQuery("SELECT value FROM backup_settings WHERE key = :key")
+    String fetchSetting(@Bind("key") String key);
+
     // --- Mapper --------------------------------------------------------------
 
     final class InventorySnapshotMapper implements RowMapper<InventoryRow> {
