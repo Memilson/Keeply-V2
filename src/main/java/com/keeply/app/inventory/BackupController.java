@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 import com.keeply.app.blob.BlobStore;
 import com.keeply.app.config.Config;
 import com.keeply.app.database.DatabaseBackup;
+import com.keeply.app.database.KeeplyDao;
 import com.keeply.app.templates.KeeplyTemplate.ScanModel;
 
 import javafx.animation.KeyFrame;
@@ -49,6 +50,49 @@ public final class BackupController {
         this.view = view;
         this.model = model;
         wireEvents();
+        initSettings();
+    }
+
+    private void initSettings() {
+        view.onScheduleConfigured(state -> {
+            Config.setScheduleEnabled(state.enabled());
+            Config.setScheduleMode(state.mode() == BackupScreen.ScheduleMode.INTERVAL ? "INTERVAL" : "DAILY");
+            Config.setScheduleTime(state.time());
+            Config.setScheduleIntervalMinutes(state.intervalMinutes());
+        });
+
+        view.onRetentionConfigured(retention -> {
+            try {
+                DatabaseBackup.init();
+                DatabaseBackup.jdbi().useExtension(KeeplyDao.class, dao ->
+                        dao.upsertSetting("retention_max", Integer.toString(retention))
+                );
+            } catch (Exception e) {
+                logger.warn("Falha ao salvar retenção", e);
+            }
+        });
+
+        BackupScreen.ScheduleState state = new BackupScreen.ScheduleState(
+                Config.isScheduleEnabled(),
+                "INTERVAL".equalsIgnoreCase(Config.getScheduleMode())
+                        ? BackupScreen.ScheduleMode.INTERVAL
+                        : BackupScreen.ScheduleMode.DAILY,
+                Config.getScheduleTime(),
+                Config.getScheduleIntervalMinutes()
+        );
+        view.setScheduleState(state);
+
+        int retention = 10;
+        try {
+            DatabaseBackup.init();
+            String v = DatabaseBackup.jdbi().withExtension(KeeplyDao.class, dao -> dao.fetchSetting("retention_max"));
+            if (v != null && !v.isBlank()) {
+                retention = Integer.parseInt(v.trim());
+            }
+        } catch (Exception e) {
+            logger.warn("Falha ao carregar retenção", e);
+        }
+        view.setRetentionValue(retention);
     }
 
     private void wireEvents() {
