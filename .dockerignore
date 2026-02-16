@@ -1,0 +1,12 @@
+.git
+.github
+.vscode
+bin
+keeply-react
+keeply-spring-test
+keeply-auth-service/target
+target
+**/target
+node_modules
+keeply.log
+session.keeply

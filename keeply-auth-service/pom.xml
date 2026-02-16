@@ -1,5 +1,7 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
@@ -10,10 +12,10 @@
     </parent>
 
     <groupId>com.keeply</groupId>
-    <artifactId>keeply-spring-test</artifactId>
+    <artifactId>keeply-auth-service</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name>keeply-spring-test</name>
-    <description>Spring app to test integration with Keeply CLI</description>
+    <name>keeply-auth-service</name>
+    <description>Keeply Auth microservice</description>
 
     <properties>
         <java.version>21</java.version>
@@ -24,15 +26,22 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
+
         <dependency>
-            <groupId>org.xerial</groupId>
-            <artifactId>sqlite-jdbc</artifactId>
-            <version>3.46.1.0</version>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-crypto</artifactId>
         </dependency>
+
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -48,4 +57,5 @@
             </plugin>
         </plugins>
     </build>
+
 </project>

@@ -1,0 +1,53 @@
+services:
+  keeply-pg:
+    image: postgres:16
+    container_name: keeply-pg
+    environment:
+      POSTGRES_DB: ${KEEPly_DB_NAME:-keeply_auth}
+      POSTGRES_USER: ${KEEPly_DB_USER:-keeply}
+      POSTGRES_PASSWORD: ${KEEPly_DB_PASSWORD:-keeply123}
+    ports:
+      - "${KEEPly_DB_PORT:-5432}:5432"
+    volumes:
+      - keeply_pg_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KEEPly_DB_USER:-keeply} -d ${KEEPly_DB_NAME:-keeply_auth}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  keeply-auth-service:
+    build:
+      context: ./keeply-auth-service
+      dockerfile: Dockerfile
+    container_name: keeply-auth-service
+    depends_on:
+      keeply-pg:
+        condition: service_healthy
+    environment:
+      KEEPly_AUTH_PG_URL: jdbc:postgresql://keeply-pg:5432/${KEEPly_DB_NAME:-keeply_auth}?currentSchema=auth
+      KEEPly_AUTH_PG_USERNAME: ${KEEPly_DB_USER:-keeply}
+      KEEPly_AUTH_PG_PASSWORD: ${KEEPly_DB_PASSWORD:-keeply123}
+
+      SPRING_DATASOURCE_URL: jdbc:postgresql://keeply-pg:5432/${KEEPly_DB_NAME:-keeply_auth}?currentSchema=auth
+      SPRING_DATASOURCE_USERNAME: ${KEEPly_DB_USER:-keeply}
+      SPRING_DATASOURCE_PASSWORD: ${KEEPly_DB_PASSWORD:-keeply123}
+    ports:
+       - "18081:8081"
+    restart: unless-stopped
+
+  keeply-react:
+    build:
+      context: ./keeply-react
+      dockerfile: Dockerfile
+    container_name: keeply-react
+    depends_on:
+      - keeply-auth-service
+    ports:
+      - "${KEEPly_WEB_PORT:-18080}:80"
+    restart: unless-stopped
+
+volumes:
+  keeply_pg_data:

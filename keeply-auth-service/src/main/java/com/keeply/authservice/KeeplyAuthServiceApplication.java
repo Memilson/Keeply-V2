@@ -1,12 +1,12 @@
-package com.keeply.springtest;
+package com.keeply.authservice;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class KeeplySpringTestApplication {
+public class KeeplyAuthServiceApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(KeeplySpringTestApplication.class, args);
+        SpringApplication.run(KeeplyAuthServiceApplication.class, args);
     }
 }
