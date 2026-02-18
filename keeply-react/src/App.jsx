@@ -4,13 +4,21 @@ import LandingPage from "./components/LandingPage";
 import Dashboard from "./components/Dashboard";
 import { MIN_PASSWORD_LEN } from "./lib/constants";
 import { normalizeEmail } from "./lib/format";
-import { request } from "./lib/api";
+import { request, agentRequest } from "./lib/api";
 
 const emptyRegister = { name: "", email: "", password: "" };
 const emptyLogin = { email: "", password: "" };
 
 function getMsg(err, fallback) {
   return err?.message || fallback;
+}
+
+function apiErr(res, fallback) {
+  const msg = res?.data?.error?.message || res?.data?.message || fallback;
+  const raw = res?.data?.raw ? ` | raw: ${res.data.raw}` : "";
+  const url = res?.data?.url ? ` | url: ${res.data.url}` : "";
+  const status = res?.status ? ` [HTTP ${res.status}]` : "";
+  return `${msg}${status}${url}${raw}`;
 }
 
 function isAuthFail(res) {
@@ -97,9 +105,13 @@ export default function App() {
       return;
     }
 
+    const existsInPanel = Boolean(res.data?.existsInPanel);
+    const paired = Boolean(res.data?.paired) || existsInPanel;
+
     setPairingState({
-      paired: Boolean(res.data?.paired),
-      requiresPairing: Boolean(res.data?.requiresPairing),
+      paired,
+      requiresPairing: !paired,
+      existsInPanel,
       code: res.data?.code || "",
       linkedAt: res.data?.linkedAt || null,
       userEmail: res.data?.userEmail || null,
@@ -325,6 +337,68 @@ export default function App() {
     [loadDevices, resetSignedOutState]
   );
 
+  const handleRunBackup = useCallback(async ({ root, dest, password }) => {
+    if (!root?.trim() || !dest?.trim()) {
+      return { ok: false, error: "Informe origem e destino antes de executar backup." };
+    }
+
+    try {
+      const res = await agentRequest("/scan", {
+        method: "POST",
+        body: JSON.stringify({
+          root: root.trim(),
+          dest: dest.trim(),
+          password: password || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        return { ok: false, error: apiErr(res, "Falha ao iniciar backup no agente.") };
+      }
+
+      return { ok: true, data: res.data };
+    } catch (err) {
+      return { ok: false, error: getMsg(err, "Erro ao conectar na API do agente") };
+    }
+  }, []);
+
+  const handleRunRestore = useCallback(async ({ backupId, scanId, targetMode, targetPath, deviceId }) => {
+    if (!String(backupId || scanId || "").trim()) {
+      return { ok: false, error: "Informe o backupId/scanId para restaurar." };
+    }
+
+    try {
+      const res = await agentRequest("/restore", {
+        method: "POST",
+        body: JSON.stringify({
+          backupId: String(backupId || "").trim() || undefined,
+          scanId: Number.isFinite(Number(scanId)) ? Number(scanId) : undefined,
+          targetMode: targetMode || "original",
+          targetPath: targetPath || undefined,
+          deviceId: deviceId || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        return { ok: false, error: apiErr(res, "Falha ao restaurar backup.") };
+      }
+      return { ok: true, data: res.data };
+    } catch (err) {
+      return { ok: false, error: getMsg(err, "Erro ao conectar na API do agente") };
+    }
+  }, []);
+
+  const handleListAgentFolders = useCallback(async ({ path }) => {
+    try {
+      const q = path ? `?path=${encodeURIComponent(path)}` : "";
+      const res = await agentRequest(`/folders${q}`, { method: "GET" });
+      if (!res.ok) return { ok: false, error: apiErr(res, "Falha ao listar pastas.") };
+      return { ok: true, data: res.data };
+    } catch (err) {
+      return { ok: false, error: getMsg(err, "Erro ao listar pastas do agente") };
+    }
+  }, []);
+
   // UI states
   if (loading && !session) {
     return (
@@ -382,6 +456,9 @@ export default function App() {
       error={error}
       onActivatePairing={handleActivatePairing}
       onDeleteDevice={handleDeleteDevice}
+      onRunBackup={handleRunBackup}
+      onRunRestore={handleRunRestore}
+      onListAgentFolders={handleListAgentFolders}
       onRefresh={bootstrap}
       onLogout={handleLogout}
     />

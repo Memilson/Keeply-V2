@@ -319,11 +319,13 @@ public class KeeplyWsController {
             localHash = text(agent.data().get("machine"), "hardwareHashHex");
         }
         boolean existsInPanel = false;
+        JsonNode matchedMachine = null;
         if (!isBlank(localHash) && devices.data() != null && devices.data().path("items").isArray()) {
             for (JsonNode item : devices.data().path("items")) {
                 String hash = text(item, "hardwareHashHex");
                 if (!isBlank(hash) && localHash.equalsIgnoreCase(hash)) {
                     existsInPanel = true;
+                    matchedMachine = item;
                     break;
                 }
             }
@@ -332,6 +334,27 @@ public class KeeplyWsController {
         JsonNode responseData = agent.data() == null ? mapper.createObjectNode() : agent.data().deepCopy();
         if (responseData instanceof ObjectNode on) {
             on.put("existsInPanel", existsInPanel);
+            if (existsInPanel) {
+                // Estado local do agente pode ter sido apagado; não force novo pairing se já existe no painel.
+                on.put("paired", true);
+                on.put("requiresPairing", false);
+                on.putNull("code");
+                if (isBlank(text(on, "linkedAt"))) {
+                    putNullable(on, "linkedAt", Instant.now().toString());
+                }
+
+                ObjectNode markLinked = mapper.createObjectNode();
+                if (matchedMachine != null && matchedMachine.get("id") != null) {
+                    markLinked.set("machineId", matchedMachine.get("id"));
+                }
+                if (session.user() != null && session.user().isObject()) {
+                    if (session.user().get("id") != null) markLinked.set("userId", session.user().get("id"));
+                    putNullable(markLinked, "userEmail", text(session.user(), "email"));
+                } else {
+                    putNullable(markLinked, "userEmail", session.email());
+                }
+                request(agentApiBaseUrl, "/pairing/mark-linked", "POST", null, markLinked, "agent_api_unreachable", "Falha ao sincronizar estado local do agente");
+            }
         }
         return ResponseEntity.ok(responseData == null ? mapper.createObjectNode() : responseData);
     }

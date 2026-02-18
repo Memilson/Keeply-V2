@@ -1,11 +1,11 @@
 export const API_BASE = import.meta.env.VITE_API_BASE || "/api/keeply-ws";
+export const AGENT_API_BASE = import.meta.env.VITE_AGENT_API_BASE || "/api/keeply";
 
-export async function request(path, options = {}) {
+async function doRequest(base, label, path, options = {}) {
   let response;
   try {
-    response = await fetch(`${API_BASE}${path}`, {
+    response = await fetch(`${base}${path}`, {
       method: options.method || "GET",
-      // Keeply ws/auth flow is token-based, so cross-origin requests should not force cookies.
       credentials: options.credentials ?? "same-origin",
       headers: {
         "Content-Type": "application/json",
@@ -15,7 +15,7 @@ export async function request(path, options = {}) {
     });
   } catch (err) {
     const message =
-      `Falha de conexao com a API (${API_BASE}). ` +
+      `Falha de conexao com a API ${label} (${base}). ` +
       "Verifique se o backend esta no ar e se a URL da API esta correta.";
     throw new Error(message, { cause: err });
   }
@@ -29,9 +29,19 @@ export async function request(path, options = {}) {
       data = {
         message: "Resposta nao-JSON do servidor",
         raw: text.slice(0, 300),
+        url: response.url,
+        contentType: response.headers.get("content-type") || "",
       };
     }
   }
 
   return { ok: response.ok, status: response.status, data };
+}
+
+export async function request(path, options = {}) {
+  return doRequest(API_BASE, "web", path, options);
+}
+
+export async function agentRequest(path, options = {}) {
+  return doRequest(AGENT_API_BASE, "do agente", path, options);
 }

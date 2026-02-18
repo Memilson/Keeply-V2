@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -128,8 +129,90 @@ public final class BackupHistoryDb {
         return out;
     }
 
+    public static HistoryRow findByScanId(long scanId) {
+        init();
+        if (scanId <= 0) return null;
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT id, started_at, finished_at, status, backup_type, root_path, dest_path, files_processed, errors, scan_id, message " +
+                             "FROM backup_history WHERE scan_id = ? ORDER BY id DESC LIMIT 1"
+             )) {
+            ps.setLong(1, scanId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return new HistoryRow(
+                        rs.getLong(1),
+                        rs.getString(2),
+                        rs.getString(3),
+                        rs.getString(4),
+                        rs.getString(5),
+                        rs.getString(6),
+                        rs.getString(7),
+                        rs.getLong(8),
+                        rs.getLong(9),
+                        (rs.getObject(10) == null) ? null : rs.getLong(10),
+                        rs.getString(11)
+                );
+            }
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    public static int recoverStaleRunning(Duration maxAge, String message) {
+        init();
+        Duration age = (maxAge == null || maxAge.isNegative() || maxAge.isZero())
+                ? Duration.ofMinutes(10)
+                : maxAge;
+        Instant cutoff = Instant.now().minus(age);
+
+        List<Long> staleIds = new ArrayList<>();
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT id, started_at FROM backup_history WHERE status = 'RUNNING' AND finished_at IS NULL"
+             )) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long id = rs.getLong(1);
+                    String startedAt = rs.getString(2);
+                    Instant started = parseInstantOrNull(startedAt);
+                    if (started != null && started.isBefore(cutoff)) staleIds.add(id);
+                }
+            }
+
+            if (staleIds.isEmpty()) return 0;
+
+            String now = Instant.now().toString();
+            String msg = (message == null || message.isBlank()) ? "stale job recovered" : message;
+
+            int updated = 0;
+            try (PreparedStatement upd = c.prepareStatement(
+                    "UPDATE backup_history SET finished_at=?, status='ERROR', message=? WHERE id=? AND status='RUNNING' AND finished_at IS NULL"
+            )) {
+                for (Long id : staleIds) {
+                    upd.setString(1, now);
+                    upd.setString(2, msg);
+                    upd.setLong(3, id);
+                    updated += upd.executeUpdate();
+                }
+            }
+            return updated;
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
     private static Connection open() throws Exception {
         return DriverManager.getConnection(Config.getDbUrl());
+    }
+
+    private static Instant parseInstantOrNull(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return Instant.parse(raw.trim());
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private static void ensureColumn(Connection c, String table, String column, String ddl) {

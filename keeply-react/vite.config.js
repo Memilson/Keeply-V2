@@ -13,6 +13,10 @@ export default defineConfig({
         target: "http://localhost:8092",
         changeOrigin: true,
       },
+      "/api/keeply": {
+        target: "http://127.0.0.1:8082",
+        changeOrigin: true,
+      },
     },
   },
 });

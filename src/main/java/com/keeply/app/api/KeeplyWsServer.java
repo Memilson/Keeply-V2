@@ -1,4 +1,4 @@
-// KeeplyWsServer.java
+// KeeplyWsServer.java (Java 21 - versão limpa)
 package com.keeply.app.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -15,20 +15,28 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.*;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 final class KeeplyWsServer extends WebSocketServer {
     private static final String PRIMARY_PATH = "/ws/keeply";
     private static final String LEGACY_PATH  = "/ws";
 
     private static final int MAX_MESSAGE_BYTES = 64 * 1024; // 64KB
-    private static final int RATE_LIMIT_PER_10S = 30;       // msgs / 10s por conexão
+    private static final int RATE_LIMIT_MAX_PER_WINDOW = 30; // msgs / janela
+    private static final long RATE_LIMIT_WINDOW_MS = 10_000; // 10s
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final Map<WebSocket, SessionState> sessions = new ConcurrentHashMap<>();
-    private final String expectedToken;
+    private final ConcurrentMap<WebSocket, SessionState> sessions = new ConcurrentHashMap<>();
+    private final String expectedToken; // token estático do UI/admin (pode ser null)
 
     KeeplyWsServer(InetSocketAddress address, String expectedToken) {
         super(address);
@@ -37,41 +45,35 @@ final class KeeplyWsServer extends WebSocketServer {
 
     @Override
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
-        String rd = (handshake == null) ? "" : String.valueOf(handshake.getResourceDescriptor());
-        UriParts parts = parsePathAndQuery(rd);
+        if (conn == null) return;
+
+        var rd = handshake == null ? "" : String.valueOf(handshake.getResourceDescriptor());
+        var parts = parsePathAndQuery(rd);
 
         if (!PRIMARY_PATH.equals(parts.path()) && !LEGACY_PATH.equals(parts.path())) {
-            conn.close(CloseFrame.POLICY_VALIDATION, "invalid_path");
+            safeClose(conn, CloseFrame.POLICY_VALIDATION, "invalid_path");
             return;
         }
 
-        String token = extractToken(handshake, parts.query());
-
-        boolean loopback = false;
-        try {
-            loopback = conn != null
-                    && conn.getRemoteSocketAddress() != null
-                    && conn.getRemoteSocketAddress().getAddress() != null
-                    && conn.getRemoteSocketAddress().getAddress().isLoopbackAddress();
-        } catch (Exception ignored) {}
+        var token = extractToken(handshake, parts.query());
+        boolean loopback = isLoopback(conn);
 
         boolean staticTokenOk = expectedToken != null
                 && token != null
-                && timingSafeEquals(token, expectedToken);
+                && KeeplyApi.timingSafeEquals(token, expectedToken);
 
         KeeplyApi.AgentJwtClaims jwtClaims = KeeplyApi.verifyAgentJwt(token).orElse(null);
         boolean agentOk = jwtClaims != null;
 
         // UI/admin pode conectar com token estático.
-        // Para desenvolvimento local, também permite conexão sem token via loopback (127.0.0.1).
+        // Dev local: permite sem token somente via loopback (127.0.0.1/::1).
         boolean uiOk = staticTokenOk || ((token == null || token.isBlank()) && loopback);
 
         if (!uiOk && !agentOk) {
-            conn.close(CloseFrame.POLICY_VALIDATION, "unauthorized");
+            safeClose(conn, CloseFrame.POLICY_VALIDATION, "unauthorized");
             return;
         }
 
-        // Se é uma conexão de agente, valida se bate com o device pareado (quando existir)
         SessionRole role;
         String deviceId = null;
 
@@ -79,14 +81,14 @@ final class KeeplyWsServer extends WebSocketServer {
             deviceId = jwtClaims.deviceId();
 
             Optional<String> pairedDevice = KeeplyApi.getPairedDeviceId();
-            if (pairedDevice.isPresent() && !timingSafeEquals(pairedDevice.get(), deviceId)) {
-                conn.close(CloseFrame.POLICY_VALIDATION, "device_mismatch");
+            if (pairedDevice.isPresent() && !KeeplyApi.timingSafeEquals(pairedDevice.get(), deviceId)) {
+                safeClose(conn, CloseFrame.POLICY_VALIDATION, "device_mismatch");
                 return;
             }
 
-            // Se está marcado como "paired", mas sem deviceId salvo, fecha (estado inconsistente)
+            // Se está marcado como paired, mas não há deviceId persistido => estado inconsistente
             if (KeeplyApi.isAgentPaired() && pairedDevice.isEmpty()) {
-                conn.close(CloseFrame.POLICY_VALIDATION, "paired_state_invalid");
+                safeClose(conn, CloseFrame.POLICY_VALIDATION, "paired_state_invalid");
                 return;
             }
 
@@ -95,27 +97,34 @@ final class KeeplyWsServer extends WebSocketServer {
             role = SessionRole.UI;
         }
 
-        SessionState st = new SessionState(parts.path(), Instant.now().toString(), role, deviceId);
+        var st = new SessionState(
+                parts.path(),
+                Instant.now().toString(),
+                role,
+                deviceId,
+                new FixedWindowRateLimiter(RATE_LIMIT_MAX_PER_WINDOW, RATE_LIMIT_WINDOW_MS),
+                new AtomicLong(System.currentTimeMillis())
+        );
+
         sessions.put(conn, st);
 
-        if (st.deviceId != null) {
-            KeeplyApi.touchAgentLastSeen(st.deviceId, Instant.now().toString());
+        if (st.deviceId() != null) {
+            KeeplyApi.touchAgentLastSeen(st.deviceId(), Instant.now().toString());
         }
 
-        Map<String, Object> connectedPayload = new LinkedHashMap<>();
-        connectedPayload.put("service", "keeply-ws");
-        connectedPayload.put("path", parts.path());
-        connectedPayload.put("role", st.role.name().toLowerCase(Locale.ROOT));
-        connectedPayload.put("ts", Instant.now().toString());
-        if (st.deviceId != null) {
-            connectedPayload.put("deviceId", st.deviceId);
-        }
-        safeSend(conn, jsonOk("connected", connectedPayload));
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("service", "keeply-ws");
+        payload.put("path", parts.path());
+        payload.put("role", st.role().name().toLowerCase(Locale.ROOT));
+        payload.put("ts", Instant.now().toString());
+        if (st.deviceId() != null) payload.put("deviceId", st.deviceId());
+
+        safeSend(conn, jsonOk("connected", payload, null));
     }
 
     @Override
     public void onClose(WebSocket conn, int code, String reason, boolean remote) {
-        sessions.remove(conn);
+        if (conn != null) sessions.remove(conn);
     }
 
     @Override
@@ -124,17 +133,17 @@ final class KeeplyWsServer extends WebSocketServer {
 
         SessionState st = sessions.get(conn);
         if (st == null) {
-            conn.close(CloseFrame.PROTOCOL_ERROR, "no_session");
+            safeClose(conn, CloseFrame.PROTOCOL_ERROR, "no_session");
             return;
         }
 
-        if (!st.rate.allow()) {
-            conn.close(CloseFrame.POLICY_VALIDATION, "rate_limited");
+        if (!st.rate().allow()) {
+            safeClose(conn, CloseFrame.POLICY_VALIDATION, "rate_limited");
             return;
         }
 
-        if (message != null && message.getBytes(StandardCharsets.UTF_8).length > MAX_MESSAGE_BYTES) {
-            conn.close(1009, "message_too_big");
+        if (message != null && utf8LenExceeds(message, MAX_MESSAGE_BYTES)) {
+            safeClose(conn, 1009, "message_too_big"); // 1009 = message too big
             return;
         }
 
@@ -153,13 +162,14 @@ final class KeeplyWsServer extends WebSocketServer {
 
             switch (type) {
                 case "ping" -> {
-                    if (st.deviceId != null) {
-                        KeeplyApi.touchAgentLastSeen(st.deviceId, Instant.now().toString());
+                    if (st.deviceId() != null) {
+                        KeeplyApi.touchAgentLastSeen(st.deviceId(), Instant.now().toString());
                     }
                     safeSend(conn, jsonOk("pong", Map.of("ts", Instant.now().toString()), requestId));
                 }
                 case "echo" -> {
                     JsonNode payload = root.path("payload");
+                    // manda payload como JsonNode, preservando estrutura
                     safeSend(conn, jsonOk("echo", Map.of("payload", payload), requestId));
                 }
                 default -> safeSend(conn, jsonErr("unknown_type", "unsupported type: " + type, requestId));
@@ -172,7 +182,7 @@ final class KeeplyWsServer extends WebSocketServer {
 
     @Override
     public void onMessage(WebSocket conn, ByteBuffer bytes) {
-        if (conn != null) conn.close(1003, "binary_not_supported");
+        if (conn != null) safeClose(conn, 1003, "binary_not_supported"); // 1003 = unsupported data
     }
 
     @Override
@@ -189,25 +199,30 @@ final class KeeplyWsServer extends WebSocketServer {
 
     @Override
     public void onWebsocketPong(WebSocket conn, Framedata f) {
+        if (conn == null) return;
+
         SessionState st = sessions.get(conn);
         if (st != null) {
-            st.lastPongEpochMs = System.currentTimeMillis();
-            if (st.deviceId != null) KeeplyApi.touchAgentLastSeen(st.deviceId, Instant.now().toString());
+            st.lastPongEpochMs().set(System.currentTimeMillis());
+            if (st.deviceId() != null) {
+                KeeplyApi.touchAgentLastSeen(st.deviceId(), Instant.now().toString());
+            }
         }
     }
 
-    int broadcastEvent(String type, Map<String, Object> payload) {
-        String msg = jsonOk(type, payload);
-        return broadcastRaw(msg);
+    int broadcastEvent(String type, Map<String, ?> payload) {
+        return broadcastRaw(jsonOk(type, payload, null));
     }
 
     int broadcastRaw(String payload) {
         if (payload == null) return 0;
 
         int delivered = 0;
-        for (WebSocket ws : new ArrayList<>(sessions.keySet())) {
+        for (var it = sessions.entrySet().iterator(); it.hasNext();) {
+            var e = it.next();
+            var ws = e.getKey();
             if (ws == null || !ws.isOpen()) {
-                sessions.remove(ws);
+                it.remove();
                 continue;
             }
             if (safeSend(ws, payload)) delivered++;
@@ -217,7 +232,33 @@ final class KeeplyWsServer extends WebSocketServer {
 
     // ----------------- helpers -----------------
 
-    private boolean safeSend(WebSocket ws, String text) {
+    private static boolean utf8LenExceeds(String s, int maxBytes) {
+        // heurística rápida: UTF-8 usa até 4 bytes por char
+        if ((long) s.length() * 4L <= maxBytes) {
+            // pode caber; mede exato
+            return StandardCharsets.UTF_8.encode(s).remaining() > maxBytes;
+        }
+        // certamente excede (ou está perto; mesmo assim mede exato para evitar falsos positivos em ASCII)
+        return StandardCharsets.UTF_8.encode(s).remaining() > maxBytes;
+    }
+
+    private static boolean isLoopback(WebSocket conn) {
+        try {
+            return conn.getRemoteSocketAddress() != null
+                    && conn.getRemoteSocketAddress().getAddress() != null
+                    && conn.getRemoteSocketAddress().getAddress().isLoopbackAddress();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static void safeClose(WebSocket conn, int code, String reason) {
+        try {
+            conn.close(code, reason);
+        } catch (Exception ignored) {}
+    }
+
+    private static boolean safeSend(WebSocket ws, String text) {
         try {
             if (ws != null && ws.isOpen()) {
                 ws.send(text);
@@ -227,11 +268,7 @@ final class KeeplyWsServer extends WebSocketServer {
         return false;
     }
 
-    private static String jsonOk(String type, Map<String, Object> payload) {
-        return jsonOk(type, payload, null);
-    }
-
-    private static String jsonOk(String type, Map<String, Object> payload, String requestId) {
+    private static String jsonOk(String type, Map<String, ?> payload, String requestId) {
         ObjectNode o = MAPPER.createObjectNode();
         o.put("ok", true);
         o.put("type", type);
@@ -239,7 +276,10 @@ final class KeeplyWsServer extends WebSocketServer {
 
         ObjectNode p = o.putObject("payload");
         if (payload != null) {
-            payload.forEach((k, v) -> p.set(k, MAPPER.valueToTree(v)));
+            payload.forEach((k, v) -> {
+                if (v == null) p.putNull(k);
+                else p.set(k, MAPPER.valueToTree(v));
+            });
         }
         return toJson(o);
     }
@@ -277,36 +317,31 @@ final class KeeplyWsServer extends WebSocketServer {
                 : t.getMessage();
     }
 
-    private String extractToken(ClientHandshake hs, Map<String, String> query) {
+    private static String extractToken(ClientHandshake hs, Map<String, String> query) {
         String qt = query.get("token");
         if (qt != null && !qt.isBlank()) return qt.trim();
 
         try {
             String auth = hs == null ? null : hs.getFieldValue("Authorization");
-            if (auth != null) {
-                auth = auth.trim();
-                if (auth.regionMatches(true, 0, "bearer ", 0, 7)) {
-                    return auth.substring(7).trim();
-                }
-                return auth;
-            }
-        } catch (Exception ignored) {}
+            if (auth == null || auth.isBlank()) return null;
 
-        return null;
-    }
-
-    private static boolean timingSafeEquals(String a, String b) {
-        return KeeplyApi.timingSafeEquals(a, b);
+            auth = auth.trim();
+            if (auth.regionMatches(true, 0, "bearer ", 0, 7)) return auth.substring(7).trim();
+            return auth;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private static UriParts parsePathAndQuery(String resourceDescriptor) {
         try {
-            URI u = URI.create("ws://localhost" + (resourceDescriptor == null ? "" : resourceDescriptor));
+            var u = URI.create("ws://localhost" + (resourceDescriptor == null ? "" : resourceDescriptor));
             String path = u.getPath() == null ? "" : u.getPath();
             Map<String, String> q = parseQuery(u.getRawQuery());
-            return new UriParts(path, q);
+            return new UriParts(path, Map.copyOf(q));
         } catch (Exception e) {
-            return new UriParts(resourceDescriptor == null ? "" : resourceDescriptor, Map.of());
+            String p = resourceDescriptor == null ? "" : resourceDescriptor;
+            return new UriParts(p, Map.of());
         }
     }
 
@@ -335,38 +370,42 @@ final class KeeplyWsServer extends WebSocketServer {
 
     private record UriParts(String path, Map<String, String> query) {}
 
-    private static final class SessionState {
-        final String path;
-        final String connectedAt;
-        final SessionRole role;
-        final RateLimiter rate = new RateLimiter(RATE_LIMIT_PER_10S, 10_000);
-        volatile long lastPongEpochMs = System.currentTimeMillis();
-        final String deviceId;
+    private record SessionState(
+            String path,
+            String connectedAt,
+            SessionRole role,
+            String deviceId,
+            FixedWindowRateLimiter rate,
+            AtomicLong lastPongEpochMs
+    ) {}
 
-        SessionState(String path, String connectedAt, SessionRole role, String deviceId) {
-            this.path = path;
-            this.connectedAt = connectedAt;
-            this.role = role;
-            this.deviceId = deviceId;
-        }
-    }
-
-    private static final class RateLimiter {
+    /**
+     * Rate limiter simples e leve (janela fixa).
+     * Para WS (mensagens curtas) costuma ser suficiente e evita alocações de fila.
+     */
+    private static final class FixedWindowRateLimiter {
         private final int max;
         private final long windowMs;
-        private final Deque<Long> hits = new ArrayDeque<>();
 
-        RateLimiter(int max, long windowMs) {
-            this.max = max;
-            this.windowMs = windowMs;
+        private final AtomicLong windowStartMs = new AtomicLong(System.currentTimeMillis());
+        private final AtomicInteger count = new AtomicInteger(0);
+
+        FixedWindowRateLimiter(int max, long windowMs) {
+            this.max = Math.max(1, max);
+            this.windowMs = Math.max(1L, windowMs);
         }
 
-        synchronized boolean allow() {
+        boolean allow() {
             long now = System.currentTimeMillis();
-            while (!hits.isEmpty() && now - hits.peekFirst() > windowMs) hits.pollFirst();
-            if (hits.size() >= max) return false;
-            hits.addLast(now);
-            return true;
+            long start = windowStartMs.get();
+
+            if (now - start >= windowMs) {
+                // tenta “virar” a janela
+                if (windowStartMs.compareAndSet(start, now)) {
+                    count.set(0);
+                }
+            }
+            return count.incrementAndGet() <= max;
         }
     }
 }
