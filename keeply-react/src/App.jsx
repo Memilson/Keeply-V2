@@ -1,224 +1,389 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import AuthModal from "./components/AuthModal";
+import LandingPage from "./components/LandingPage";
+import Dashboard from "./components/Dashboard";
+import { MIN_PASSWORD_LEN } from "./lib/constants";
+import { normalizeEmail } from "./lib/format";
+import { request } from "./lib/api";
 
-const API_BASE = "/api/auth/api/auth";
-const MIN_PASSWORD_LEN = 6;
+const emptyRegister = { name: "", email: "", password: "" };
+const emptyLogin = { email: "", password: "" };
 
-async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-    ...options,
-  });
+function getMsg(err, fallback) {
+  return err?.message || fallback;
+}
 
-  const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
-  return { ok: response.ok, status: response.status, data };
+function isAuthFail(res) {
+  return res?.status === 401 || res?.status === 403;
+}
+
+function validateLogin(form) {
+  if (!normalizeEmail(form.email)) return "Email e obrigatorio.";
+  if ((form.password || "").length < MIN_PASSWORD_LEN)
+    return `Senha deve ter no minimo ${MIN_PASSWORD_LEN} caracteres.`;
+  return "";
+}
+
+function validateRegister(form) {
+  if (!form.name?.trim()) return "Nome e obrigatorio.";
+  if (!normalizeEmail(form.email)) return "Email e obrigatorio.";
+  if ((form.password || "").length < MIN_PASSWORD_LEN)
+    return `Senha deve ter no minimo ${MIN_PASSWORD_LEN} caracteres.`;
+  return "";
 }
 
 export default function App() {
-  const [registerForm, setRegisterForm] = useState({
-    name: "",
-    email: "",
-    password: "",
+  const didInit = useRef(false); // evita double-bootstrap do StrictMode (dev)
+
+  // forms
+  const [registerForm, setRegisterForm] = useState(emptyRegister);
+  const [loginForm, setLoginForm] = useState(emptyLogin);
+
+  // data
+  const [session, setSession] = useState(null);
+  const [devices, setDevices] = useState([]);
+  const [pairingState, setPairingState] = useState(null);
+  const [pairingInput, setPairingInput] = useState("");
+  const [pairingAlias, setPairingAlias] = useState("");
+  const [wsConnected, setWsConnected] = useState(false);
+  const [wsEvents, setWsEvents] = useState([]);
+  const [wsMetrics, setWsMetrics] = useState({
+    created: 0,
+    running: 0,
+    success: 0,
+    failed: 0,
+    cancelled: 0,
   });
-  const [loginForm, setLoginForm] = useState({ email: "", password: "" });
-  const [token, setToken] = useState("");
-  const [result, setResult] = useState(null);
-  const [formError, setFormError] = useState("");
-  const [loading, setLoading] = useState(false);
 
-  function normalizeEmail(email) {
-    return email.trim().toLowerCase();
-  }
+  // ui
+  const [authMode, setAuthMode] = useState(null); // "login" | "register" | null
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
-  function validateRegisterForm() {
-    if (!registerForm.name.trim()) return "Nome completo e obrigatorio.";
-    if (!normalizeEmail(registerForm.email)) return "Email e obrigatorio.";
-    if (registerForm.password.length < MIN_PASSWORD_LEN) {
-      return `Senha deve ter no minimo ${MIN_PASSWORD_LEN} caracteres.`;
-    }
-    return "";
-  }
+  const resetSignedOutState = useCallback(() => {
+    setSession(null);
+    setDevices([]);
+    setPairingState(null);
+    setPairingInput("");
+    setPairingAlias("");
+    setWsConnected(false);
+    setWsEvents([]);
+    setWsMetrics({ created: 0, running: 0, success: 0, failed: 0, cancelled: 0 });
+  }, []);
 
-  function validateLoginForm() {
-    if (!normalizeEmail(loginForm.email)) return "Email e obrigatorio.";
-    if (loginForm.password.length < MIN_PASSWORD_LEN) {
-      return `Senha deve ter no minimo ${MIN_PASSWORD_LEN} caracteres.`;
-    }
-    return "";
-  }
+  const loadDevices = useCallback(async () => {
+    const res = await request("/devices", { method: "GET" });
 
-  async function handleStatus() {
-    setFormError("");
-    setLoading(true);
-    try {
-      const res = await request("/status", { method: "GET" });
-      setResult(res);
-    } catch (error) {
-      setResult({ ok: false, status: 0, data: { message: error.message } });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleRegister(event) {
-    event.preventDefault();
-    setFormError("");
-    const validationError = validateRegisterForm();
-    if (validationError) {
-      setFormError(validationError);
+    if (!res.ok) {
+      if (isAuthFail(res)) {
+        resetSignedOutState();
+        return;
+      }
+      setDevices([]);
+      setError(res.data?.message || "Nao foi possivel listar dispositivos");
       return;
     }
 
-    setLoading(true);
-    try {
-      const res = await request("/register", {
-        method: "POST",
-        body: JSON.stringify({
-          name: registerForm.name.trim(),
-          email: normalizeEmail(registerForm.email),
-          password: registerForm.password,
-        }),
-      });
-      if (res.ok && res.data?.token) setToken(res.data.token);
-      setResult(res);
-    } catch (error) {
-      setResult({ ok: false, status: 0, data: { message: error.message } });
-    } finally {
-      setLoading(false);
-    }
-  }
+    setDevices(Array.isArray(res.data?.items) ? res.data.items : []);
+    if (res.data?.session) setSession(res.data.session);
+  }, [resetSignedOutState]);
 
-  async function handleLogin(event) {
-    event.preventDefault();
-    setFormError("");
-    const validationError = validateLoginForm();
-    if (validationError) {
-      setFormError(validationError);
+  const loadPairingState = useCallback(async () => {
+    const res = await request("/pairing/code", { method: "GET" });
+
+    if (!res.ok) {
+      // pairing pode não existir ainda, sem ser erro fatal
+      setPairingState({ paired: false, requiresPairing: true });
       return;
     }
 
+    setPairingState({
+      paired: Boolean(res.data?.paired),
+      requiresPairing: Boolean(res.data?.requiresPairing),
+      code: res.data?.code || "",
+      linkedAt: res.data?.linkedAt || null,
+      userEmail: res.data?.userEmail || null,
+    });
+  }, []);
+
+  const bootstrap = useCallback(async () => {
     setLoading(true);
+    setError("");
+
     try {
-      const res = await request("/login", {
-        method: "POST",
-        body: JSON.stringify({
-          email: normalizeEmail(loginForm.email),
-          password: loginForm.password,
-        }),
-      });
-      if (res.ok && res.data?.token) setToken(res.data.token);
-      setResult(res);
-    } catch (error) {
-      setResult({ ok: false, status: 0, data: { message: error.message } });
+      const sessionRes = await request("/session", { method: "GET" });
+
+      if (!sessionRes.ok) {
+        resetSignedOutState();
+        return;
+      }
+
+      setSession(sessionRes.data?.session || null);
+
+      // não deixe um endpoint derrubar os outros
+      await Promise.allSettled([loadDevices(), loadPairingState()]);
+    } catch (err) {
+      setError(getMsg(err, "Falha ao carregar sessao"));
     } finally {
       setLoading(false);
     }
+  }, [loadDevices, loadPairingState, resetSignedOutState]);
+
+  useEffect(() => {
+    if (didInit.current) return;
+    didInit.current = true;
+    bootstrap();
+  }, [bootstrap]);
+
+  const handleLogin = useCallback(
+    async (event) => {
+      event.preventDefault();
+      const v = validateLogin(loginForm);
+      if (v) return setError(v);
+
+      setLoading(true);
+      setError("");
+
+      try {
+        const res = await request("/login", {
+          method: "POST",
+          body: JSON.stringify({
+            email: normalizeEmail(loginForm.email),
+            password: loginForm.password,
+          }),
+        });
+
+        if (!res.ok) {
+          setError(res.data?.message || "Falha no login");
+          return;
+        }
+
+        setAuthMode(null);
+        await bootstrap();
+      } catch (err) {
+        setError(getMsg(err, "Erro ao logar"));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loginForm, bootstrap]
+  );
+
+  const handleRegister = useCallback(
+    async (event) => {
+      event.preventDefault();
+      const v = validateRegister(registerForm);
+      if (v) return setError(v);
+
+      setLoading(true);
+      setError("");
+
+      try {
+        const res = await request("/register", {
+          method: "POST",
+          body: JSON.stringify({
+            name: registerForm.name.trim(),
+            email: normalizeEmail(registerForm.email),
+            password: registerForm.password,
+          }),
+        });
+
+        if (!res.ok) {
+          setError(res.data?.message || "Falha no cadastro");
+          return;
+        }
+
+        setAuthMode(null);
+        await bootstrap();
+      } catch (err) {
+        setError(getMsg(err, "Erro ao cadastrar"));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [registerForm, bootstrap]
+  );
+
+  const handleLogout = useCallback(async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      await request("/logout", { method: "POST" });
+      resetSignedOutState();
+    } catch (err) {
+      setError(getMsg(err, "Erro ao fazer logout"));
+    } finally {
+      setLoading(false);
+    }
+  }, [resetSignedOutState]);
+
+  const handleActivatePairing = useCallback(async () => {
+    const code = (pairingInput || "").trim().toUpperCase();
+    if (!code) return setError("Informe o codigo do agente para ativacao.");
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const res = await request("/pairing/activate", {
+        method: "POST",
+        body: JSON.stringify({
+          code,
+          alias: (pairingAlias || "").trim() || null,
+        }),
+      });
+
+      if (!res.ok) {
+        setError(res.data?.message || "Falha ao ativar agente");
+        return;
+      }
+
+      setPairingInput("");
+      setPairingAlias("");
+
+      await Promise.allSettled([loadDevices(), loadPairingState()]);
+    } catch (err) {
+      setError(getMsg(err, "Erro ao ativar agente"));
+    } finally {
+      setLoading(false);
+    }
+  }, [pairingInput, pairingAlias, loadDevices, loadPairingState]);
+
+  useEffect(() => {
+    if (!session) return;
+    const envUrl = import.meta.env.VITE_AGENT_WS_URL;
+    const defaultUrl = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:8091/ws/keeply`;
+    const wsUrl = envUrl || defaultUrl;
+    let ws;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch {
+      setWsConnected(false);
+      return;
+    }
+
+    ws.onopen = () => setWsConnected(true);
+    ws.onclose = () => setWsConnected(false);
+    ws.onerror = () => setWsConnected(false);
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        const type = msg?.type || "unknown";
+        const payload = msg?.payload || {};
+        const ts = payload?.ts || new Date().toISOString();
+        const item = { type, ts, payload };
+        setWsEvents((prev) => [item, ...prev].slice(0, 30));
+
+        setWsMetrics((prev) => {
+          const next = { ...prev };
+          if (type === "scan.created") next.created += 1;
+          if (type === "scan.running") next.running += 1;
+          if (type === "scan.success") next.success += 1;
+          if (type === "scan.failed") next.failed += 1;
+          if (type === "scan.cancelled") next.cancelled += 1;
+          return next;
+        });
+      } catch {
+        // ignore malformed frame
+      }
+    };
+
+    return () => {
+      try {
+        ws.close();
+      } catch {}
+    };
+  }, [session]);
+
+  const handleDeleteDevice = useCallback(
+    async (deviceId) => {
+      if (!deviceId) return;
+
+      const ok = window.confirm("Excluir/desvincular este dispositivo?");
+      if (!ok) return;
+
+      setLoading(true);
+      setError("");
+
+      try {
+        const res = await request(`/devices/${deviceId}`, { method: "DELETE" });
+
+        if (!res.ok) {
+          if (isAuthFail(res)) resetSignedOutState();
+          else setError(res.data?.message || "Falha ao excluir dispositivo");
+          return;
+        }
+
+        await loadDevices();
+      } catch (err) {
+        setError(getMsg(err, "Erro ao excluir dispositivo"));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loadDevices, resetSignedOutState]
+  );
+
+  // UI states
+  if (loading && !session) {
+    return (
+      <main className="page">
+        <h1 className="h1">Keeply</h1>
+        <p className="mutedBlock">Carregando...</p>
+      </main>
+    );
+  }
+
+  if (!session) {
+    return (
+      <>
+        <LandingPage
+          loading={loading}
+          onOpenLogin={() => {
+            setError("");
+            setAuthMode("login");
+          }}
+          onOpenRegister={() => {
+            setError("");
+            setAuthMode("register");
+          }}
+        />
+
+        <AuthModal
+          mode={authMode}
+          onClose={() => setAuthMode(null)}
+          loading={loading}
+          error={error}
+          registerForm={registerForm}
+          setRegisterForm={setRegisterForm}
+          loginForm={loginForm}
+          setLoginForm={setLoginForm}
+          onLogin={handleLogin}
+          onRegister={handleRegister}
+        />
+      </>
+    );
   }
 
   return (
-    <main className="page">
-      <h1>Keeply Auth Test (React)</h1>
-      <p>Proxy atual usa base: {API_BASE}</p>
-      <p className="hint">Schema: full_name, email unico (citext), password_hash.</p>
-      <p className="hint">Regras aplicadas: nome obrigatorio, email obrigatorio, senha minima de 6 caracteres.</p>
-
-      {formError ? <p className="error">{formError}</p> : null}
-
-      <section className="panel">
-        <button onClick={handleStatus} disabled={loading}>
-          {loading ? "Aguarde..." : "Checar status auth"}
-        </button>
-      </section>
-
-      <section className="grid">
-        <form className="panel" onSubmit={handleRegister}>
-          <h2>Register</h2>
-          <label>
-            Nome
-            <input
-              value={registerForm.name}
-              onChange={(event) =>
-                setRegisterForm((prev) => ({ ...prev, name: event.target.value }))
-              }
-              placeholder="Nome completo"
-              required
-            />
-          </label>
-          <label>
-            Email
-            <input
-              type="email"
-              value={registerForm.email}
-              onChange={(event) =>
-                setRegisterForm((prev) => ({ ...prev, email: event.target.value }))
-              }
-              placeholder="voce@dominio.com"
-              required
-            />
-          </label>
-          <label>
-            Senha
-            <input
-              type="password"
-              value={registerForm.password}
-              onChange={(event) =>
-                setRegisterForm((prev) => ({ ...prev, password: event.target.value }))
-              }
-              minLength={MIN_PASSWORD_LEN}
-              placeholder={`Minimo ${MIN_PASSWORD_LEN} caracteres`}
-              required
-            />
-          </label>
-          <button type="submit" disabled={loading}>
-            Registrar
-          </button>
-        </form>
-
-        <form className="panel" onSubmit={handleLogin}>
-          <h2>Login</h2>
-          <label>
-            Email
-            <input
-              type="email"
-              value={loginForm.email}
-              onChange={(event) =>
-                setLoginForm((prev) => ({ ...prev, email: event.target.value }))
-              }
-              placeholder="voce@dominio.com"
-              required
-            />
-          </label>
-          <label>
-            Senha
-            <input
-              type="password"
-              value={loginForm.password}
-              onChange={(event) =>
-                setLoginForm((prev) => ({ ...prev, password: event.target.value }))
-              }
-              minLength={MIN_PASSWORD_LEN}
-              placeholder={`Minimo ${MIN_PASSWORD_LEN} caracteres`}
-              required
-            />
-          </label>
-          <button type="submit" disabled={loading}>
-            Entrar
-          </button>
-        </form>
-      </section>
-
-      <section className="panel">
-        <h2>Token</h2>
-        <textarea readOnly rows={3} value={token} placeholder="Token aparece aqui" />
-      </section>
-
-      <section className="panel">
-        <h2>Resposta</h2>
-        <pre>{result ? JSON.stringify(result, null, 2) : "Sem resposta ainda."}</pre>
-      </section>
-    </main>
+    <Dashboard
+      session={session}
+      devices={devices}
+      pairingState={pairingState}
+      pairingInput={pairingInput}
+      setPairingInput={setPairingInput}
+      pairingAlias={pairingAlias}
+      setPairingAlias={setPairingAlias}
+      wsConnected={wsConnected}
+      wsEvents={wsEvents}
+      wsMetrics={wsMetrics}
+      loading={loading}
+      error={error}
+      onActivatePairing={handleActivatePairing}
+      onDeleteDevice={handleDeleteDevice}
+      onRefresh={bootstrap}
+      onLogout={handleLogout}
+    />
   );
 }

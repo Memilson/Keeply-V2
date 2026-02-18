@@ -139,6 +139,11 @@ public class AuthService {
         String ip = (lastIp == null || lastIp.isBlank()) ? null : lastIp.trim();
         String pub = (publicKey == null || publicKey.isBlank()) ? null : publicKey.trim();
 
+        Long existingOwner = findMachineOwnerByHardwareHash(normalizedHex);
+        if (existingOwner != null && existingOwner.longValue() != session.id()) {
+            throw new AuthException("machine_already_linked", "Esta maquina ja esta vinculada a outro usuario");
+        }
+
         String sql = """
                 INSERT INTO keeply_machines(
                   user_id, machine_name, hostname, os_name, os_version,
@@ -146,7 +151,7 @@ public class AuthService {
                   hardware_hash, hardware_hash_algo, machine_alias,
                   registered_at, last_seen_at, created_at, updated_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,decode(?, 'hex'),?,?, now(), now(), now(), now())
+                VALUES(?,?,?,?,?,?,?::inet,?,decode(?, 'hex'),?,?, now(), now(), now(), now())
                 ON CONFLICT (hardware_hash) DO UPDATE SET
                   user_id = EXCLUDED.user_id,
                   machine_name = EXCLUDED.machine_name,
@@ -253,6 +258,29 @@ public class AuthService {
         return out;
     }
 
+    public void deleteMachine(String token, long machineId) {
+        requireEnabled();
+        SessionUser session = requireSession(token);
+        if (machineId <= 0) {
+            throw new AuthException("bad_request", "machineId invalido");
+        }
+
+        String sql = "DELETE FROM keeply_machines WHERE id = ? AND user_id = ?";
+        try (Connection c = authDataSource.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, machineId);
+            ps.setLong(2, session.id());
+            int rows = ps.executeUpdate();
+            if (rows == 0) {
+                throw new AuthException("not_found", "Dispositivo nao encontrado");
+            }
+        } catch (AuthException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new AuthException("db_error", safeMsg(e));
+        }
+    }
+
     private boolean existsEmail(String email) {
         String sql = "SELECT 1 FROM keeply_users WHERE email = ? LIMIT 1";
         try (Connection c = authDataSource.getConnection();
@@ -260,6 +288,20 @@ public class AuthService {
             ps.setString(1, email);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next();
+            }
+        } catch (Exception e) {
+            throw new AuthException("db_error", safeMsg(e));
+        }
+    }
+
+    private Long findMachineOwnerByHardwareHash(String hardwareHashHex) {
+        String sql = "SELECT user_id FROM keeply_machines WHERE hardware_hash = decode(?, 'hex') LIMIT 1";
+        try (Connection c = authDataSource.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, hardwareHashHex);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return rs.getLong("user_id");
             }
         } catch (Exception e) {
             throw new AuthException("db_error", safeMsg(e));

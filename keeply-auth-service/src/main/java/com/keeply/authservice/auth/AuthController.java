@@ -126,9 +126,28 @@ public class AuthController {
         }
     }
 
+    @DeleteMapping("/machines/{machineId}")
+    public ResponseEntity<?> deleteMachine(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable("machineId") long machineId
+    ) {
+        try {
+            authService.deleteMachine(extractToken(authorization), machineId);
+            return ResponseEntity.ok(Map.of("ok", true, "deleted", true, "machineId", machineId));
+        } catch (AuthService.AuthException e) {
+            return ResponseEntity.status(mapAuthStatus(e.code())).body(Map.of(
+                    "ok", false,
+                    "code", e.code(),
+                    "message", e.getMessage()
+            ));
+        }
+    }
+
     private HttpStatus mapAuthStatus(String code) {
         return switch (code) {
             case "email_exists" -> HttpStatus.CONFLICT;
+            case "machine_already_linked" -> HttpStatus.CONFLICT;
+            case "not_found" -> HttpStatus.NOT_FOUND;
             case "invalid_credentials", "unauthorized" -> HttpStatus.UNAUTHORIZED;
             case "auth_disabled" -> HttpStatus.SERVICE_UNAVAILABLE;
             case "bad_request" -> HttpStatus.BAD_REQUEST;

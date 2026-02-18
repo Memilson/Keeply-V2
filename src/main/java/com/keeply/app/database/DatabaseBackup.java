@@ -134,7 +134,13 @@ public final class DatabaseBackup {
     }
     private static synchronized void createDataSource() {
         if (dataSource != null) return;
+        try {
+            Class.forName("org.sqlite.JDBC");
+        } catch (ClassNotFoundException e) {
+            throw new IllegalStateException("Driver SQLite nao encontrado no classpath", e);
+        }
         HikariConfig hc = new HikariConfig();
+        hc.setDriverClassName("org.sqlite.JDBC");
         hc.setJdbcUrl(Config.getDbUrl());
         hc.setMaximumPoolSize(2);
         hc.setMinimumIdle(1);
@@ -151,7 +157,11 @@ public final class DatabaseBackup {
             PRAGMA temp_store=MEMORY;
             PRAGMA cache_size=-20000;
             """);
-        dataSource = new HikariDataSource(hc);
+        try {
+            dataSource = new HikariDataSource(hc);
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("Falha ao iniciar pool SQLite para " + Config.getDbUrl() + ": " + e.getMessage(), e);
+        }
     }
     public static synchronized void init() {
         if (dataSource == null) {
@@ -208,10 +218,75 @@ public final class DatabaseBackup {
                 flyway.repair();
                 flyway.migrate();
             }
+            ensureCoreSchemaFallback();
             migrated = true;
         } catch (RuntimeException e) {
             logger.error("Flyway migration failed", e);
             throw new IllegalStateException("Flyway migration failed", e);
+        }
+    }
+
+    private static void ensureCoreSchemaFallback() {
+        if (dataSource == null) return;
+        try (Connection c = dataSource.getConnection(); Statement st = c.createStatement()) {
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS scans (
+                    scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    root_path TEXT,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    total_usage INTEGER,
+                    status TEXT
+                )
+                """);
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS file_inventory (
+                    root_path TEXT NOT NULL,
+                    path_rel TEXT NOT NULL,
+                    name TEXT,
+                    size_bytes INTEGER,
+                    modified_millis INTEGER,
+                    created_millis INTEGER,
+                    last_scan_id INTEGER,
+                    status TEXT,
+                    PRIMARY KEY (root_path, path_rel)
+                )
+                """);
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS file_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scan_id INTEGER,
+                    root_path TEXT,
+                    path_rel TEXT,
+                    size_bytes INTEGER,
+                    status_event TEXT,
+                    created_at TEXT,
+                    created_millis INTEGER,
+                    modified_millis INTEGER,
+                    content_hash TEXT
+                )
+                """);
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS scan_issues (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scan_id INTEGER,
+                    path TEXT,
+                    message TEXT,
+                    created_at TEXT
+                )
+                """);
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS backup_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """);
+            st.execute("CREATE INDEX IF NOT EXISTS idx_scans_root_scanid ON scans(root_path, scan_id)");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_file_inventory_root_lastscan ON file_inventory(root_path, last_scan_id)");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_file_history_root_path_scan ON file_history(root_path, path_rel, scan_id)");
+        } catch (SQLException e) {
+            throw new IllegalStateException("Falha ao garantir schema base do SQLite", e);
         }
     }
     public static synchronized void shutdown() {

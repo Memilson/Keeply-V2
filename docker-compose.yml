@@ -45,8 +45,27 @@ services:
     container_name: keeply-react
     depends_on:
       - keeply-auth-service
+      - keeply-ws
     ports:
       - "${KEEPly_WEB_PORT:-18080}:80"
+    restart: unless-stopped
+
+  keeply-ws:
+    build:
+      context: ./keeply-ws
+      dockerfile: Dockerfile
+    container_name: keeply-ws
+    depends_on:
+      - keeply-auth-service
+    environment:
+      KEEPLY_WS_PORT: 8092
+      KEEPLY_AUTH_BASE_URL: http://keeply-auth-service:8081/api/auth
+      # agente local nao roda em container; acessa o host
+      KEEPLY_AGENT_API_BASE_URL: http://host.docker.internal:8082/api/keeply
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8092:8092"
     restart: unless-stopped
 
 volumes:
