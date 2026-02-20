@@ -1,20 +1,23 @@
-// KeeplyWsServer.java (Java 21 - versão limpa)
 package com.keeply.app.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+
 import org.java_websocket.WebSocket;
 import org.java_websocket.framing.CloseFrame;
 import org.java_websocket.framing.Framedata;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -56,7 +59,7 @@ final class KeeplyWsServer extends WebSocketServer {
         }
 
         var token = extractToken(handshake, parts.query());
-        boolean loopback = isLoopback(conn);
+        boolean localPeer = isLocalPeer(conn);
 
         boolean staticTokenOk = expectedToken != null
                 && token != null
@@ -66,8 +69,9 @@ final class KeeplyWsServer extends WebSocketServer {
         boolean agentOk = jwtClaims != null;
 
         // UI/admin pode conectar com token estático.
-        // Dev local: permite sem token somente via loopback (127.0.0.1/::1).
-        boolean uiOk = staticTokenOk || ((token == null || token.isBlank()) && loopback);
+        // Dev local: permite sem token para conexões da própria máquina
+        // (loopback e interfaces locais, incluindo bridges Docker do host).
+        boolean uiOk = staticTokenOk || ((token == null || token.isBlank()) && localPeer);
 
         if (!uiOk && !agentOk) {
             safeClose(conn, CloseFrame.POLICY_VALIDATION, "unauthorized");
@@ -242,14 +246,23 @@ final class KeeplyWsServer extends WebSocketServer {
         return StandardCharsets.UTF_8.encode(s).remaining() > maxBytes;
     }
 
-    private static boolean isLoopback(WebSocket conn) {
+    private static boolean isLocalPeer(WebSocket conn) {
         try {
-            return conn.getRemoteSocketAddress() != null
-                    && conn.getRemoteSocketAddress().getAddress() != null
-                    && conn.getRemoteSocketAddress().getAddress().isLoopbackAddress();
+            if (conn == null || conn.getRemoteSocketAddress() == null || conn.getRemoteSocketAddress().getAddress() == null) {
+                return false;
+            }
+            InetAddress remote = conn.getRemoteSocketAddress().getAddress();
+            if (remote.isLoopbackAddress()) return true;
+
+            for (NetworkInterface nif : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                for (InetAddress localAddr : Collections.list(nif.getInetAddresses())) {
+                    if (remote.equals(localAddr)) return true;
+                }
+            }
         } catch (Exception ignored) {
             return false;
         }
+        return false;
     }
 
     private static void safeClose(WebSocket conn, int code, String reason) {

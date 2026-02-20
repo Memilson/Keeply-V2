@@ -1,8 +1,0 @@
-.git
-.github
-.vscode
-data
-*.log
-.env
-.env.*
-README.md

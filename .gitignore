@@ -42,3 +42,6 @@ System Volume Information/
 .env
 .env
 .env
+
+# TLS certs
+infra/nginx/certs/*.pem

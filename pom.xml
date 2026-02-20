@@ -11,6 +11,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <openhtml.version>1.0.10</openhtml.version>
         <slf4j.version>2.0.12</slf4j.version>
+        <exec.args>api --bind 0.0.0.0 --port 8082 --ws-port 8091</exec.args>
     </properties>
 
     <dependencies>
@@ -195,6 +196,10 @@
                 <version>3.13.0</version>
                 <configuration>
                     <release>21</release>
+                    <compilerArgs>
+                        <arg>--add-modules</arg>
+                        <arg>jdk.httpserver</arg>
+                    </compilerArgs>
                 </configuration>
             </plugin>
             <plugin>
@@ -203,6 +208,7 @@
                 <version>3.3.0</version>
                 <configuration>
                     <mainClass>com.keeply.app.Main</mainClass>
+                    <commandlineArgs>${exec.args}</commandlineArgs>
                     <classpathScope>runtime</classpathScope>
                     <includeProjectDependencies>true</includeProjectDependencies>
                     <includePluginDependencies>false</includePluginDependencies>
@@ -215,6 +221,7 @@
                 <version>3.2.5</version>
                 <configuration>
                     <useModulePath>false</useModulePath>
+                    <argLine>--add-modules jdk.httpserver</argLine>
                     <systemPropertyVariables>
                         <keeply.dataDir>${project.build.directory}/keeply-test-data</keeply.dataDir>
                         <keeply.dbEncryption>file</keeply.dbEncryption>
